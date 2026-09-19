@@ -156,6 +156,18 @@ def test_spa_nhan_dien_qua_leisure_spa() -> None:
     assert osm_category({"leisure": "park"}) == ("park", "Công viên")
 
 
+def test_nha_khoa_va_tiec_cuoi_nhan_dien_qua_amenity_moi() -> None:
+    """`amenity=dentist` và `amenity=events_venue` từng không nằm trong
+    `poi_import.OSM_FILTERS["amenity"]` — cùng lớp lỗi đã sửa cho spa: BM25
+    rỗng khiến truy vấn "nha khoa"/"tiệc cưới" rơi về ứng viên gần nhất bất
+    kể loại gì."""
+    assert osm_category({"amenity": "dentist"}) == ("dentist", "Nha khoa")
+    assert osm_category({"amenity": "events_venue"}) == (
+        "event_venue",
+        "Tiệc cưới & sự kiện",
+    )
+
+
 @pytest.mark.parametrize(
     "query",
     ["xem phim", "Xem Phim", "rạp chiếu phim", "rap chieu phim", "coi phim", "phim"],

@@ -19,7 +19,8 @@ from .poi_features import normalize_district, normalize_osm_element
 OSM_FILTERS = {
     "amenity": (
         "cafe|restaurant|fast_food|bar|pub|hospital|clinic|pharmacy|school|"
-        "university|bank|atm|marketplace|cinema|theatre|library"
+        "university|bank|atm|marketplace|cinema|theatre|library|dentist|"
+        "events_venue"
     ),
     "tourism": "museum|attraction|viewpoint|hotel|gallery",
     "leisure": "park|garden|fitness_centre|sports_centre|playground|spa",

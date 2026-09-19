@@ -46,6 +46,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("amenity", "hospital"): ("hospital", "Y tế"),
     ("amenity", "clinic"): ("hospital", "Y tế"),
     ("amenity", "pharmacy"): ("pharmacy", "Y tế"),
+    ("amenity", "dentist"): ("dentist", "Nha khoa"),
     ("amenity", "school"): ("school", "Giáo dục"),
     ("amenity", "university"): ("university", "Giáo dục"),
     ("amenity", "bank"): ("bank", "Dịch vụ"),
@@ -54,6 +55,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("amenity", "cinema"): ("cinema", "Xem phim"),
     ("amenity", "theatre"): ("theatre", "Văn hóa"),
     ("amenity", "library"): ("library", "Văn hóa"),
+    ("amenity", "events_venue"): ("event_venue", "Tiệc cưới & sự kiện"),
     ("tourism", "museum"): ("museum", "Văn hóa"),
     ("tourism", "attraction"): ("landmark", "Địa danh"),
     ("tourism", "viewpoint"): ("landmark", "Địa danh"),
@@ -112,6 +114,7 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     # Y tế
     "hospital": ("bệnh viện", "phòng khám", "khám bệnh", "cấp cứu"),
     "pharmacy": ("nhà thuốc", "hiệu thuốc", "tiệm thuốc", "thuốc tây", "mua thuốc"),
+    "dentist": ("nha khoa", "phòng khám nha khoa", "nha sĩ", "khám răng", "trồng răng"),
     # Giáo dục
     "school": ("trường học", "trường tiểu học", "trường cấp hai", "trường cấp ba"),
     "university": ("đại học", "trường đại học", "cao đẳng"),
@@ -125,6 +128,14 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "theatre": ("nhà hát", "sân khấu", "xem kịch"),
     "library": ("thư viện",),
     "gallery": ("phòng tranh", "triển lãm"),
+    "event_venue": (
+        "tiệc cưới",
+        "nhà hàng tiệc cưới",
+        "trung tâm tiệc cưới",
+        "sảnh tiệc",
+        "tổ chức sự kiện",
+        "hội trường",
+    ),
     # Giải trí
     "cinema": (
         "rạp chiếu phim",
