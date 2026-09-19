@@ -148,8 +148,8 @@ $COMPOSE up -d database redis opensearch neo4j
 $COMPOSE run --rm migrate
 ```
 
-Trên database MỚI, `alembic upgrade head` chạy sạch tới `0014_district_boundaries`
-(head hiện tại của repo — chuỗi 0012 -> 0013 -> 0014 liền mạch).
+Trên database MỚI, `alembic upgrade head` chạy sạch tới `0015_cinema_pois`
+(head hiện tại của repo — chuỗi 0012 -> 0013 -> 0014 -> 0015 liền mạch).
 
 > **Nếu mang dữ liệu từ máy dev sang, dùng dump CHỈ DỮ LIỆU.** Dump toàn phần
 > mang theo cả bảng `alembic_version`, đè lên trạng thái migration mà máy chủ
@@ -233,7 +233,47 @@ tuyến. Thiếu đồ thị thì backend lặng lẽ lùi về deep-link.
 
 ---
 
-## 10. Dừng / gỡ
+## 10. Cập nhật một bản ĐANG CHẠY
+
+Khác hẳn lần triển khai đầu: không dựng lại OSRM, không nhập lại OSM.
+
+```bash
+cd ~/nearby
+git pull                 # hoặc: git fetch && git checkout <nhánh>
+COMPOSE="docker compose --env-file config/production.env -f docker-compose.yml -f deploy/docker-compose.prod.yml"
+
+$COMPOSE run --rm migrate                        # chạy migration mới
+$COMPOSE build backend frontend
+$COMPOSE up -d --no-deps backend frontend
+```
+
+**Dựng lại chỉ mục khi migration đụng vào dữ liệu hoặc mã truy xuất đổi trường
+index.** Chỉ mục OpenSearch tồn tại độc lập với Postgres và KHÔNG tự cập nhật:
+
+```bash
+$COMPOSE --profile data run --rm search-index    # lệnh đã kèm --recreate
+```
+
+Bỏ bước này là kiểu hỏng IM LẶNG tệ nhất của hệ thống: API vẫn 200, vẫn trả kết
+quả, chỉ là trả theo chỉ mục cũ. `0005` (embedding v2), `0015` (nhãn "Xem phim"
++ trường `search_keywords`) đều thuộc diện bắt buộc dựng lại.
+
+Kiểm chứng sau khi cập nhật — đo, đừng đoán:
+
+```bash
+curl -s https://<PUBLIC_HOST>/api/v1/categories | grep -o '"Xem phim"' | head -1
+curl -s -X POST https://<PUBLIC_HOST>/api/v1/search \
+     -H 'Content-Type: application/json' \
+     -d '{"query":"xem phim","latitude":10.7757,"longitude":106.7009,"radius":3000,"limit":5}' \
+  | grep -o '"categoryLabel":"[^"]*"' | sort | uniq -c
+```
+
+Dòng thứ hai phải ra toàn `"Xem phim"`. Ra lẫn loại khác nghĩa là chỉ mục chưa
+được dựng lại, không phải ranking sai.
+
+---
+
+## 11. Dừng / gỡ
 
 ```bash
 $COMPOSE down              # dừng, GIỮ dữ liệu
