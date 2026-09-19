@@ -22,7 +22,7 @@ OSM_FILTERS = {
         "university|bank|atm|marketplace|cinema|theatre|library"
     ),
     "tourism": "museum|attraction|viewpoint|hotel|gallery",
-    "leisure": "park|garden|fitness_centre|sports_centre|playground",
+    "leisure": "park|garden|fitness_centre|sports_centre|playground|spa",
     "shop": "supermarket|mall|convenience|books|bakery|clothes|electronics",
     "aeroway": "aerodrome",
 }

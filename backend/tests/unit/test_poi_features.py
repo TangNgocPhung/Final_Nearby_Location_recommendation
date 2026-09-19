@@ -145,6 +145,17 @@ def test_san_bay_nhan_dien_qua_khoa_aeroway() -> None:
     assert osm_category({"aeroway": "helipad"}) is None
 
 
+def test_spa_nhan_dien_qua_leisure_spa() -> None:
+    """`leisure=spa` từng không nằm trong danh sách giá trị lọc của khoá
+    `leisure` (`poi_import.OSM_FILTERS`), nên không có spa nào được nhập —
+    truy vấn "spa" vì vậy có BM25 rỗng và rơi về ứng viên gần nhất bất kể
+    loại gì, đúng lớp lỗi đã sửa cho sân bay."""
+    assert osm_category({"leisure": "spa"}) == ("spa", "Spa")
+    # Khoá `leisure` đã được `osm_category` duyệt từ trước; các giá trị khác
+    # của nó giữ nguyên hành vi cũ.
+    assert osm_category({"leisure": "park"}) == ("park", "Công viên")
+
+
 @pytest.mark.parametrize(
     "query",
     ["xem phim", "Xem Phim", "rạp chiếu phim", "rap chieu phim", "coi phim", "phim"],

@@ -11,6 +11,7 @@ import {
   Drama,
   Dumbbell,
   Film,
+  Flower2,
   Fuel,
   GraduationCap,
   Hotel,
@@ -46,9 +47,9 @@ type CoverStyle = { icon: LucideIcon; surface: string };
 // phụ thuộc biến --tw-gradient-*; nếu vì lý do gì đó lớp đó không sinh ra thì
 // thẻ vẫn là một mảng màu tử tế chứ không phải ô trắng trong buổi bảo vệ.
 //
-// 28 category dưới đây là TOÀN BỘ giá trị có thật trong bảng pois (đã đếm trên
-// DB đang chạy, cộng 'airport' sau khi thêm bộ lọc `aeroway`), cộng vài bí danh
-// mà giao diện hay gọi tên khác ('shopping').
+// 29 category dưới đây là TOÀN BỘ giá trị có thật trong bảng pois (đã đếm trên
+// DB đang chạy, cộng 'airport'/'spa' sau khi thêm bộ lọc `aeroway`/`leisure=spa`),
+// cộng vài bí danh mà giao diện hay gọi tên khác ('shopping').
 const COVER_STYLES: Record<string, CoverStyle> = {
   cafe: {
     icon: Coffee,
@@ -173,6 +174,10 @@ const COVER_STYLES: Record<string, CoverStyle> = {
   airport: {
     icon: Plane,
     surface: 'bg-sky-800 bg-linear-to-br from-sky-600 via-blue-800 to-slate-950',
+  },
+  spa: {
+    icon: Flower2,
+    surface: 'bg-rose-500 bg-linear-to-br from-rose-300 via-pink-500 to-fuchsia-700',
   },
 };
 

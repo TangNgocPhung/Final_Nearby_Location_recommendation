@@ -72,6 +72,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("shop", "clothes"): ("clothes", "Mua sắm"),
     ("shop", "electronics"): ("electronics", "Mua sắm"),
     ("aeroway", "aerodrome"): ("airport", "Sân bay"),
+    ("leisure", "spa"): ("spa", "Spa"),
 }
 
 # Từ khoá tiếng Việt gắn theo LOẠI địa điểm, dùng riêng cho truy xuất (không
@@ -142,6 +143,8 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "landmark": ("điểm tham quan", "địa danh", "danh lam", "chỗ tham quan"),
     # Giao thông
     "airport": ("sân bay", "phi trường", "sân bay quốc tế", "đi máy bay"),
+    # Chăm sóc sức khoẻ / làm đẹp
+    "spa": ("spa", "đi spa", "mát xa", "massage", "chăm sóc da", "thư giãn"),
 }
 
 
