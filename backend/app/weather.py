@@ -63,14 +63,27 @@ HEAVY_PRECIPITATION_MM = 2.5
 #
 # Bảng này KHÔNG suy ra được từ `CATEGORY_TIME_AFFINITY`: cái kia nói địa điểm
 # hợp buổi nào trong ngày, không nói nó có mái che hay không. Danh sách loại
-# lấy đúng từ `poi_features.CATEGORY_MAP` — toàn bộ 38 loại thật đang có trong
+# lấy đúng từ `poi_features.CATEGORY_MAP` — toàn bộ 54 loại thật đang có trong
 # dữ liệu, không bịa thêm loại nào.
 #
 # "necessity" là nhóm quan trọng nhất phải tách riêng: không ai hoãn đi bệnh
 # viện vì trời mưa, nên hạ điểm bệnh viện lúc mưa là một hành vi sai chứ không
 # phải một tinh chỉnh. Sân bay cùng nhóm: không ai hoãn chuyến bay vì trời mưa
 # ở đầu tìm kiếm, và bản thân nhà ga đã có mái che.
-OUTDOOR_CATEGORIES = frozenset({"park", "playground", "landmark", "market"})
+OUTDOOR_CATEGORIES = frozenset(
+    {
+        "park",
+        "playground",
+        "landmark",
+        "market",
+        # Rửa xe lúc đang mưa là việc vô nghĩa, nên đây là nhóm BỊ trời mưa
+        # ảnh hưởng mạnh nhất chứ không phải chỉ thiếu mái che.
+        "car_wash",
+        "theme_park",
+        "swimming_pool",
+        "sports_field",
+    }
+)
 INDOOR_CATEGORIES = frozenset(
     {
         "cafe",
@@ -87,17 +100,47 @@ INDOOR_CATEGORIES = frozenset(
         "convenience",
         "bookstore",
         "clothes",
+        "shoes",
+        "jewelry",
+        "optician",
+        "florist",
         "electronics",
         "hotel",
         "bank",
+        "post_office",
         "gym",
         "spa",
+        "beauty",
+        "laundry",
         "event_venue",
         "hairdresser",
+        # Chính điện chùa và nhà thờ đều có mái; trời mưa không cản việc đi lễ.
+        "place_of_worship",
     }
 )
+# Nhóm này được giữ TRUNG TÍNH (hệ số 1.0), không phải được cộng điểm: mưa hay
+# nắng thì vẫn phải đổ xăng, sửa xe hỏng, bắt xe khách, đón con ở trường mầm
+# non hay mang chó mèo đi khám. Hạ điểm chúng lúc mưa mới là hành vi sai.
 NECESSITY_CATEGORIES = frozenset(
-    {"hospital", "pharmacy", "school", "university", "atm", "airport", "dentist"}
+    {
+        "hospital",
+        "pharmacy",
+        "school",
+        "university",
+        "kindergarten",
+        "atm",
+        "airport",
+        "dentist",
+        "pet",
+        "fuel",
+        "charging_station",
+        "car_repair",
+        "parking",
+        "bus_station",
+        "train_station",
+        "police",
+        "government",
+    }
 )
 
 # Hệ số nhân vào `contextScore`. Cố ý nhẹ: thời tiết là ngữ cảnh, không phải

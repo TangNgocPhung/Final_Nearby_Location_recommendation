@@ -39,43 +39,99 @@ DISTRICT_ALIASES = {
 
 CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("amenity", "cafe"): ("cafe", "Cà phê"),
+    ("shop", "tea"): ("cafe", "Cà phê"),
+    ("shop", "coffee"): ("cafe", "Cà phê"),
     ("amenity", "restaurant"): ("restaurant", "Ăn uống"),
     ("amenity", "fast_food"): ("restaurant", "Ăn uống"),
+    ("amenity", "food_court"): ("restaurant", "Ăn uống"),
+    ("amenity", "ice_cream"): ("restaurant", "Ăn uống"),
     ("amenity", "bar"): ("bar", "Giải trí"),
     ("amenity", "pub"): ("bar", "Giải trí"),
+    ("amenity", "nightclub"): ("bar", "Giải trí"),
     ("amenity", "hospital"): ("hospital", "Y tế"),
     ("amenity", "clinic"): ("hospital", "Y tế"),
+    ("amenity", "doctors"): ("hospital", "Y tế"),
+    # Nhiều cơ sở y tế chỉ gắn `healthcare=*`; phòng xét nghiệm gom chung
+    # "Y tế" thay vì đẻ thêm một nhãn mà người dùng không gõ khi tìm.
+    ("healthcare", "clinic"): ("hospital", "Y tế"),
+    ("healthcare", "doctor"): ("hospital", "Y tế"),
+    ("healthcare", "laboratory"): ("hospital", "Y tế"),
     ("amenity", "pharmacy"): ("pharmacy", "Y tế"),
     ("amenity", "dentist"): ("dentist", "Nha khoa"),
+    ("amenity", "veterinary"): ("pet", "Thú cưng"),
+    ("shop", "pet"): ("pet", "Thú cưng"),
     ("amenity", "school"): ("school", "Giáo dục"),
     ("amenity", "university"): ("university", "Giáo dục"),
+    ("amenity", "college"): ("university", "Giáo dục"),
+    ("amenity", "kindergarten"): ("kindergarten", "Mầm non"),
     ("amenity", "bank"): ("bank", "Dịch vụ"),
     ("amenity", "atm"): ("atm", "Dịch vụ"),
+    ("amenity", "post_office"): ("post_office", "Bưu điện"),
+    ("amenity", "police"): ("police", "Công an"),
+    ("amenity", "townhall"): ("government", "Hành chính"),
+    ("office", "government"): ("government", "Hành chính"),
+    ("amenity", "place_of_worship"): ("place_of_worship", "Tín ngưỡng"),
     ("amenity", "marketplace"): ("market", "Chợ"),
     ("amenity", "cinema"): ("cinema", "Xem phim"),
     ("amenity", "theatre"): ("theatre", "Văn hóa"),
     ("amenity", "library"): ("library", "Văn hóa"),
     ("amenity", "events_venue"): ("event_venue", "Tiệc cưới & sự kiện"),
+    # Giao thông và dịch vụ xe — nhóm dày nhất mà bộ lọc cũ bỏ trống hoàn
+    # toàn, dù "cây xăng" và "sửa xe" là hai thứ người đi đường tìm nhiều nhất.
+    ("amenity", "fuel"): ("fuel", "Cây xăng"),
+    ("amenity", "charging_station"): ("charging_station", "Trạm sạc"),
+    ("amenity", "car_wash"): ("car_wash", "Rửa xe"),
+    ("shop", "car_repair"): ("car_repair", "Sửa xe"),
+    ("shop", "motorcycle"): ("car_repair", "Sửa xe"),
+    ("shop", "motorcycle_repair"): ("car_repair", "Sửa xe"),
+    ("amenity", "parking"): ("parking", "Bãi xe"),
+    ("amenity", "bus_station"): ("bus_station", "Bến xe"),
+    ("railway", "station"): ("train_station", "Ga tàu"),
     ("tourism", "museum"): ("museum", "Văn hóa"),
     ("tourism", "attraction"): ("landmark", "Địa danh"),
     ("tourism", "viewpoint"): ("landmark", "Địa danh"),
     ("tourism", "hotel"): ("hotel", "Lưu trú"),
+    ("tourism", "hostel"): ("hotel", "Lưu trú"),
+    ("tourism", "guest_house"): ("hotel", "Lưu trú"),
+    ("tourism", "motel"): ("hotel", "Lưu trú"),
+    ("tourism", "apartment"): ("hotel", "Lưu trú"),
     ("tourism", "gallery"): ("gallery", "Văn hóa"),
+    ("tourism", "zoo"): ("theme_park", "Khu vui chơi"),
+    ("tourism", "theme_park"): ("theme_park", "Khu vui chơi"),
+    ("leisure", "water_park"): ("theme_park", "Khu vui chơi"),
     ("leisure", "park"): ("park", "Công viên"),
     ("leisure", "garden"): ("park", "Công viên"),
     ("leisure", "fitness_centre"): ("gym", "Thể thao"),
     ("leisure", "sports_centre"): ("gym", "Thể thao"),
+    ("leisure", "swimming_pool"): ("swimming_pool", "Bể bơi"),
+    ("leisure", "stadium"): ("sports_field", "Sân thể thao"),
+    ("leisure", "pitch"): ("sports_field", "Sân thể thao"),
     ("leisure", "playground"): ("playground", "Giải trí"),
     ("shop", "supermarket"): ("supermarket", "Mua sắm"),
     ("shop", "mall"): ("shopping_mall", "Mua sắm"),
+    ("shop", "department_store"): ("shopping_mall", "Mua sắm"),
     ("shop", "convenience"): ("convenience", "Mua sắm"),
+    ("shop", "variety_store"): ("convenience", "Mua sắm"),
     ("shop", "books"): ("bookstore", "Mua sắm"),
+    ("shop", "stationery"): ("bookstore", "Mua sắm"),
     ("shop", "bakery"): ("bakery", "Ăn uống"),
+    ("shop", "confectionery"): ("bakery", "Ăn uống"),
+    ("shop", "pastry"): ("bakery", "Ăn uống"),
     ("shop", "clothes"): ("clothes", "Mua sắm"),
+    ("shop", "shoes"): ("shoes", "Giày dép"),
+    ("shop", "jewelry"): ("jewelry", "Tiệm vàng"),
+    ("shop", "optician"): ("optician", "Kính mắt"),
+    ("shop", "florist"): ("florist", "Tiệm hoa"),
+    ("shop", "laundry"): ("laundry", "Giặt ủi"),
     ("shop", "electronics"): ("electronics", "Mua sắm"),
+    ("shop", "mobile_phone"): ("electronics", "Mua sắm"),
+    ("shop", "computer"): ("electronics", "Mua sắm"),
     ("shop", "hairdresser"): ("hairdresser", "Cắt tóc"),
+    ("shop", "beauty"): ("beauty", "Làm đẹp"),
+    ("shop", "cosmetics"): ("beauty", "Làm đẹp"),
     ("aeroway", "aerodrome"): ("airport", "Sân bay"),
     ("leisure", "spa"): ("spa", "Spa"),
+    ("shop", "massage"): ("spa", "Spa"),
 }
 
 # Từ khoá tiếng Việt gắn theo LOẠI địa điểm, dùng riêng cho truy xuất (không
@@ -163,10 +219,85 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "gym": ("phòng gym", "phòng tập", "gym", "thể hình", "tập thể dục"),
     # Địa danh
     "landmark": ("điểm tham quan", "địa danh", "danh lam", "chỗ tham quan"),
+    "place_of_worship": (
+        # KHÔNG dùng "chùa" trần: bỏ dấu thành "chua", trùng với "canh chua",
+        # "chưa" — đúng cái bẫy âm tiết đơn mà chú thích ở trên cảnh báo.
+        "nhà thờ",
+        "đi chùa",
+        "ngôi chùa",
+        "chùa chiền",
+        "đình chùa",
+        "thánh đường",
+        "nơi thờ tự",
+    ),
     # Giao thông
     "airport": ("sân bay", "phi trường", "sân bay quốc tế", "đi máy bay"),
+    "bus_station": ("bến xe", "bến xe khách", "xe khách", "bến xe buýt"),
+    "train_station": ("ga tàu", "nhà ga", "ga xe lửa", "tàu hỏa", "ga metro", "metro"),
+    "parking": ("bãi xe", "bãi đỗ xe", "bãi giữ xe", "chỗ đậu xe", "gửi xe"),
+    # Xăng dầu và dịch vụ xe
+    "fuel": ("cây xăng", "trạm xăng", "đổ xăng", "xăng dầu", "bơm xăng"),
+    "charging_station": ("trạm sạc", "sạc xe điện", "trụ sạc", "sạc pin xe"),
+    "car_repair": (
+        "sửa xe",
+        "tiệm sửa xe",
+        "sửa xe máy",
+        "sửa ô tô",
+        "garage",
+        "ga ra",
+        "thay nhớt",
+        "vá xe",
+    ),
+    "car_wash": ("rửa xe", "tiệm rửa xe", "rửa xe máy", "rửa ô tô"),
+    # Hành chính công
+    "post_office": ("bưu điện", "bưu cục", "gửi thư", "gửi bưu phẩm"),
+    "police": ("công an", "đồn công an", "trụ sở công an", "cảnh sát"),
+    "government": (
+        "ủy ban nhân dân",
+        "ubnd",
+        "cơ quan nhà nước",
+        "trụ sở hành chính",
+        "hành chính công",
+    ),
+    # Giáo dục
+    "kindergarten": ("mầm non", "trường mầm non", "mẫu giáo", "nhà trẻ"),
+    # Thú cưng
+    "pet": (
+        "thú y",
+        "bác sĩ thú y",
+        "phòng khám thú y",
+        "thú cưng",
+        "cửa hàng thú cưng",
+        "pet shop",
+    ),
+    # Giải trí / thể thao ngoài trời
+    "theme_park": ("khu vui chơi", "công viên nước", "sở thú", "khu giải trí"),
+    "swimming_pool": ("bể bơi", "hồ bơi", "đi bơi", "bơi lội"),
+    "sports_field": (
+        "sân bóng",
+        "sân bóng đá",
+        "sân vận động",
+        "sân cầu lông",
+        "sân tennis",
+        "sân thể thao",
+    ),
+    # Mua sắm chuyên biệt
+    "shoes": ("giày dép", "cửa hàng giày", "shop giày", "tiệm giày", "mua giày"),
+    "jewelry": ("tiệm vàng", "tiệm kim hoàn", "trang sức", "mua vàng", "vàng bạc"),
+    "optician": ("kính mắt", "cửa hàng kính", "tiệm kính", "đo mắt", "cắt kính"),
+    "florist": ("tiệm hoa", "shop hoa", "cửa hàng hoa", "hoa tươi", "mua hoa"),
+    # Dịch vụ đời sống
+    "laundry": ("giặt ủi", "giặt là", "tiệm giặt", "giặt sấy"),
     # Chăm sóc sức khoẻ / làm đẹp
     "spa": ("spa", "đi spa", "mát xa", "massage", "chăm sóc da", "thư giãn"),
+    "beauty": (
+        "thẩm mỹ viện",
+        "làm đẹp",
+        "làm nail",
+        "tiệm nail",
+        "chăm sóc sắc đẹp",
+        "mỹ phẩm",
+    ),
 }
 
 
@@ -386,7 +517,21 @@ def categories_for_query(query_text: str | None) -> tuple[str, ...]:
 
 
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
-    for key in ("amenity", "tourism", "leisure", "shop", "aeroway"):
+    # Thứ tự khoá là thứ tự ƯU TIÊN, không phải tuỳ ý: một POI mang nhiều thẻ
+    # (nhà thờ vừa `amenity=place_of_worship` vừa `tourism=attraction`) sẽ lấy
+    # khoá đứng trước. `amenity` đi đầu vì nó mô tả CHỨC NĂNG của địa điểm,
+    # còn `tourism` chỉ nói nó có đáng ghé thăm hay không; `healthcare` đứng
+    # ngay sau để `amenity=clinic` vẫn thắng khi POI gắn cả hai.
+    for key in (
+        "amenity",
+        "healthcare",
+        "tourism",
+        "leisure",
+        "shop",
+        "aeroway",
+        "railway",
+        "office",
+    ):
         value = tags.get(key)
         if value and (key, value) in CATEGORY_MAP:
             return CATEGORY_MAP[(key, value)]

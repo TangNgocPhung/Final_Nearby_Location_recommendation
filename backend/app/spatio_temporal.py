@@ -73,6 +73,11 @@ CATEGORY_TIME_AFFINITY: dict[str, set[str]] = {
     "shopping_mall": {"afternoon", "evening"},
     "museum": {"noon", "afternoon"},
     "landmark": {"morning", "afternoon"},
+    "place_of_worship": {"morning"},
+    "kindergarten": {"morning", "evening"},
+    "sports_field": {"afternoon", "evening"},
+    "swimming_pool": {"afternoon", "evening"},
+    "theme_park": {"morning", "afternoon"},
 }
 
 # Vận tốc di chuyển trung bình trong đô thị (km/h) để ước lượng ETA thô.

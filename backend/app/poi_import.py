@@ -16,16 +16,44 @@ from psycopg.types.json import Jsonb
 from .poi_features import normalize_district, normalize_osm_element
 
 
+# Thẻ OSM được nhập. Mỗi giá trị thêm vào đây là một lớp POI mới xuất hiện
+# trong ứng dụng — `OSM_BBOX`/`OSM_MAX_POIS` đã mở hết cỡ từ lâu (cả TP.HCM,
+# trần 25.000), nên bảng này mới là thứ quyết định dữ liệu dày hay mỏng.
+#
+# Mọi giá trị ở đây PHẢI có mặt trong `poi_features.CATEGORY_MAP`, nếu không
+# `normalize_osm_element` loại nó đi và công nhập về là vô ích. Chiều ngược lại
+# thì không bắt buộc (CATEGORY_MAP còn phục vụ dữ liệu seed).
 OSM_FILTERS = {
     "amenity": (
-        "cafe|restaurant|fast_food|bar|pub|hospital|clinic|pharmacy|school|"
-        "university|bank|atm|marketplace|cinema|theatre|library|dentist|"
-        "events_venue"
+        "cafe|restaurant|fast_food|food_court|ice_cream|bar|pub|nightclub|"
+        "hospital|clinic|doctors|pharmacy|dentist|veterinary|"
+        "school|university|college|kindergarten|library|"
+        "bank|atm|post_office|police|townhall|marketplace|"
+        "cinema|theatre|events_venue|"
+        "fuel|charging_station|car_wash|parking|bus_station|"
+        "place_of_worship"
     ),
-    "tourism": "museum|attraction|viewpoint|hotel|gallery",
-    "leisure": "park|garden|fitness_centre|sports_centre|playground|spa",
-    "shop": "supermarket|mall|convenience|books|bakery|clothes|electronics|hairdresser",
+    "tourism": (
+        "museum|attraction|viewpoint|gallery|zoo|theme_park|"
+        "hotel|hostel|guest_house|motel|apartment"
+    ),
+    "leisure": (
+        "park|garden|fitness_centre|sports_centre|playground|spa|"
+        "swimming_pool|water_park|stadium|pitch"
+    ),
+    "shop": (
+        "supermarket|mall|department_store|convenience|variety_store|"
+        "books|stationery|bakery|confectionery|pastry|tea|coffee|"
+        "clothes|shoes|electronics|mobile_phone|computer|"
+        "hairdresser|beauty|cosmetics|massage|jewelry|optician|"
+        "laundry|florist|pet|car_repair|motorcycle|motorcycle_repair"
+    ),
     "aeroway": "aerodrome",
+    # Nhiều phòng khám ở TP.HCM chỉ gắn `healthcare=*` mà không gắn
+    # `amenity=clinic`, nên thiếu khoá này là bỏ sót một mảng y tế thật.
+    "healthcare": "clinic|doctor|laboratory",
+    "railway": "station",
+    "office": "government",
 }
 
 

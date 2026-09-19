@@ -1,41 +1,61 @@
 'use client';
 
 import {
+  Baby,
   Banknote,
+  BatteryCharging,
   Beer,
   BookOpen,
   Building2,
+  Bus,
   Cake,
+  Church,
+  CircleParking,
   Coffee,
   Croissant,
   CreditCard,
   Drama,
+  Droplets,
   Dumbbell,
+  FerrisWheel,
   Film,
+  Flower,
   Flower2,
+  Footprints,
   Fuel,
+  Gem,
+  Glasses,
   GraduationCap,
   Hotel,
   Landmark,
   Library,
   type LucideIcon,
+  Mailbox,
   MapPin,
   Palette,
+  PawPrint,
   Pill,
   Plane,
   Scissors,
   School,
+  Shield,
   Shirt,
   ShoppingBag,
   ShoppingCart,
   Smartphone,
   Smile,
+  Sparkles,
+  SprayCan,
   Store,
   Stethoscope,
   ToyBrick,
+  TrainFront,
   Trees,
   UtensilsCrossed,
+  Volleyball,
   Warehouse,
+  WashingMachine,
+  Wrench,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -50,10 +70,11 @@ type CoverStyle = { icon: LucideIcon; surface: string };
 // phụ thuộc biến --tw-gradient-*; nếu vì lý do gì đó lớp đó không sinh ra thì
 // thẻ vẫn là một mảng màu tử tế chứ không phải ô trắng trong buổi bảo vệ.
 //
-// 32 category dưới đây là TOÀN BỘ giá trị có thật trong bảng pois (đã đếm trên
-// DB đang chạy, cộng 'airport'/'spa'/'dentist'/'event_venue'/'hairdresser' sau
-// khi mở rộng bộ lọc OSM), cộng vài bí danh mà giao diện hay gọi tên khác
-// ('shopping').
+// Bảng này phải phủ TOÀN BỘ 54 mã category trong `poi_features.CATEGORY_MAP`
+// (tăng từ 32 sau đợt mở rộng bộ lọc OSM: cây xăng, sửa xe, bến xe, ga tàu,
+// tín ngưỡng, mầm non, thú cưng, tiệm vàng...), cộng vài bí danh mà giao diện
+// hay gọi tên khác ('shopping', 'office'). Thiếu một mã thì POI loại đó rơi về
+// DEFAULT_STYLE — vẫn hiển thị được, chỉ là mất dấu hiệu nhận biết bằng mắt.
 const COVER_STYLES: Record<string, CoverStyle> = {
   cafe: {
     icon: Coffee,
@@ -194,6 +215,90 @@ const COVER_STYLES: Record<string, CoverStyle> = {
   event_venue: {
     icon: Cake,
     surface: 'bg-fuchsia-700 bg-linear-to-br from-fuchsia-500 via-purple-700 to-indigo-900',
+  },
+  charging_station: {
+    icon: BatteryCharging,
+    surface: 'bg-lime-700 bg-linear-to-br from-lime-500 via-emerald-700 to-teal-900',
+  },
+  car_repair: {
+    icon: Wrench,
+    surface: 'bg-zinc-700 bg-linear-to-br from-zinc-500 via-stone-700 to-neutral-900',
+  },
+  car_wash: {
+    icon: SprayCan,
+    surface: 'bg-sky-600 bg-linear-to-br from-sky-400 via-cyan-600 to-blue-800',
+  },
+  parking: {
+    icon: CircleParking,
+    surface: 'bg-slate-600 bg-linear-to-br from-slate-400 via-blue-600 to-slate-900',
+  },
+  bus_station: {
+    icon: Bus,
+    surface: 'bg-amber-700 bg-linear-to-br from-amber-500 via-orange-700 to-stone-900',
+  },
+  train_station: {
+    icon: TrainFront,
+    surface: 'bg-indigo-700 bg-linear-to-br from-indigo-500 via-blue-700 to-slate-950',
+  },
+  place_of_worship: {
+    icon: Church,
+    surface: 'bg-yellow-700 bg-linear-to-br from-yellow-600 via-amber-700 to-stone-900',
+  },
+  post_office: {
+    icon: Mailbox,
+    surface: 'bg-orange-600 bg-linear-to-br from-orange-400 via-amber-600 to-red-800',
+  },
+  police: {
+    icon: Shield,
+    surface: 'bg-blue-800 bg-linear-to-br from-blue-600 via-indigo-800 to-slate-950',
+  },
+  government: {
+    icon: Building2,
+    surface: 'bg-slate-600 bg-linear-to-br from-slate-500 via-slate-700 to-slate-900',
+  },
+  kindergarten: {
+    icon: Baby,
+    surface: 'bg-pink-500 bg-linear-to-br from-pink-400 via-rose-500 to-orange-600',
+  },
+  pet: {
+    icon: PawPrint,
+    surface: 'bg-amber-600 bg-linear-to-br from-amber-400 via-orange-600 to-amber-900',
+  },
+  theme_park: {
+    icon: FerrisWheel,
+    surface: 'bg-fuchsia-600 bg-linear-to-br from-fuchsia-400 via-violet-600 to-indigo-800',
+  },
+  swimming_pool: {
+    icon: Droplets,
+    surface: 'bg-cyan-600 bg-linear-to-br from-cyan-400 via-sky-600 to-blue-900',
+  },
+  sports_field: {
+    icon: Volleyball,
+    surface: 'bg-green-700 bg-linear-to-br from-green-500 via-emerald-700 to-teal-900',
+  },
+  shoes: {
+    icon: Footprints,
+    surface: 'bg-stone-600 bg-linear-to-br from-stone-500 via-amber-700 to-stone-900',
+  },
+  jewelry: {
+    icon: Gem,
+    surface: 'bg-yellow-600 bg-linear-to-br from-yellow-400 via-amber-600 to-orange-800',
+  },
+  optician: {
+    icon: Glasses,
+    surface: 'bg-teal-600 bg-linear-to-br from-teal-400 via-cyan-600 to-slate-800',
+  },
+  florist: {
+    icon: Flower,
+    surface: 'bg-rose-500 bg-linear-to-br from-rose-400 via-pink-500 to-red-700',
+  },
+  laundry: {
+    icon: WashingMachine,
+    surface: 'bg-sky-700 bg-linear-to-br from-sky-500 via-blue-700 to-indigo-900',
+  },
+  beauty: {
+    icon: Sparkles,
+    surface: 'bg-purple-600 bg-linear-to-br from-purple-400 via-fuchsia-600 to-pink-800',
   },
 };
 

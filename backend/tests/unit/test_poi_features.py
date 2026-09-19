@@ -269,3 +269,37 @@ def test_tags_cua_poi_khong_bi_nhet_tu_khoa_truy_xuat() -> None:
     assert poi is not None
     assert poi["category_label"] == "Xem phim"
     assert poi["tags"] == ["cinema"]
+
+
+def test_moi_the_trong_bo_loc_osm_deu_co_trong_category_map() -> None:
+    """Nhập về rồi vứt đi là lỗi ĐẮT NHẤT ở tầng này: Overpass vẫn tải, importer
+    vẫn chạy, log vẫn sạch, nhưng `normalize_osm_element` trả None cho mọi phần
+    tử thuộc thẻ chưa ánh xạ nên không POI nào vào database.
+
+    Đúng kiểu hỏng im lặng mà năm bản vá "Sân bay/Spa/Nha khoa/Tiệc cưới/Cắt
+    tóc" đã phải sửa lần lượt từng loại một; test này khoá lại cả hai chiều
+    cùng lúc thay vì chờ phát hiện bằng mắt.
+    """
+    from app.poi_import import OSM_FILTERS
+
+    chua_anh_xa = {
+        f"{key}={value}"
+        for key, values in OSM_FILTERS.items()
+        for value in values.split("|")
+        if (key, value) not in CATEGORY_MAP
+    }
+    assert chua_anh_xa == set()
+
+
+def test_moi_khoa_trong_bo_loc_osm_deu_duoc_osm_category_doc_toi() -> None:
+    """`osm_category` duyệt một danh sách khoá CỐ ĐỊNH. Thêm khoá mới vào
+    `OSM_FILTERS` (như `healthcare`, `railway`, `office`) mà quên thêm vào danh
+    sách đó thì POI tải về vẫn bị loại — cùng một lỗi im lặng, chỉ khác chỗ."""
+    import inspect
+
+    from app.poi_features import osm_category
+    from app.poi_import import OSM_FILTERS
+
+    nguon = inspect.getsource(osm_category)
+    thieu = {key for key in OSM_FILTERS if f'"{key}"' not in nguon}
+    assert thieu == set()

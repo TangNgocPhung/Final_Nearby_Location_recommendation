@@ -140,7 +140,16 @@ Migration mới bổ sung giờ mở cửa, mức giá, tiện ích, tags, thư�
 lineage đa nguồn, H3 ở resolution 7/8/9 và embedding 64 chiều. Các bảng review,
 user preference và geofence subscription cũng được quản lý bằng Alembic.
 
-Nhập tối đa 3.000 POI OpenStreetMap trong bbox TP.HCM mặc định:
+Bộ lọc nhập phủ **90 cặp thẻ OSM** ánh xạ về **54 loại địa điểm** (`poi_import.
+OSM_FILTERS` → `poi_features.CATEGORY_MAP`): ngoài ăn uống/mua sắm/y tế còn có
+cây xăng, trạm sạc, sửa xe, rửa xe, bãi xe, bến xe, ga tàu, chùa/nhà thờ, bưu
+điện, công an, cơ quan hành chính, trường mầm non, thú y, bể bơi, sân thể thao,
+khu vui chơi, tiệm vàng, kính mắt, tiệm hoa, giặt ủi và thẩm mỹ viện.
+
+Số POI nhập về giới hạn bởi `OSM_MAX_POIS` (3.000 khi chạy Compose trần,
+60.000 trong `config/development.env` và `config/production.env`) trong bbox
+`OSM_BBOX`. Trần được nâng từ 25.000 cùng đợt mở rộng bộ lọc: bbox hiện tại với
+bộ lọc cũ chỉ ra 15.988 POI, còn bộ lọc mới gần như chắc chắn vượt 25.000.
 
 ```powershell
 docker compose --env-file config/development.env --profile data run --rm --build osm-import
