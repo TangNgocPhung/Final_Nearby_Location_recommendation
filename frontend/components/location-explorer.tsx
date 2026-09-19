@@ -11,6 +11,8 @@ import {
   Bell,
   BellRing,
   Bike,
+  Bookmark,
+  BookmarkCheck,
   Camera,
   CheckCircle2,
   Clock,
@@ -22,6 +24,7 @@ import {
   Film,
   Flame,
   GraduationCap,
+  Home,
   Hotel,
   Info,
   Landmark,
@@ -142,6 +145,17 @@ type CategoryOption = {
   categoryLabel: string;
   count: number;
 };
+/** Một địa điểm trong danh sách "Đã lưu" (GET /api/v1/saved). */
+type SavedPlace = {
+  id: string;
+  poiId: string | null;
+  kind: 'saved' | 'home' | 'work';
+  label: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+};
+
 type TrendingQuery = { query: string; score: number };
 type TrendingResponse = {
   redisConnected: boolean;
@@ -622,6 +636,10 @@ export function LocationExplorer() {
   const watchIdRef = useRef<number | null>(null);
   const lastPingRef = useRef<{ at: number; position: Position } | null>(null);
   // POI đã đăng ký "nhắc khi tới gần": poiId -> subscriptionId.
+  // Địa điểm đã lưu của phiên này. Giữ nguyên mảng từ API (đã sắp Nhà/Chỗ làm
+  // lên đầu) thay vì sắp lại ở client: thứ tự là quyết định của backend, hai
+  // nơi cùng sắp thì sẽ có ngày lệch nhau.
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [geofences, setGeofences] = useState<Map<string, string>>(
     () => new Map(),
   );
@@ -677,6 +695,110 @@ export function LocationExplorer() {
   }, []);
 
   // Nạp lại vùng nhắc đã đăng ký khi có phiên: người dùng tải lại trang vẫn
+  // --- Địa điểm đã lưu --------------------------------------------------------
+  //
+  // Danh sách thuộc về `session_id` ẩn danh, không phải tài khoản (chưa có
+  // đăng nhập). Backend gọi khoá đó là `owner_id` để hôm có tài khoản thật thì
+  // chỉ đổi thứ điền vào, không phải đổi schema — xem migration 0016.
+  const reloadSavedPlaces = useCallback(async () => {
+    const sessionId = telemetryState.sessionId;
+    if (!sessionId) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/saved`, {
+        headers: { 'X-Session-ID': sessionId },
+      });
+      if (!response.ok) return;
+      const data = (await response.json()) as { places?: SavedPlace[] };
+      setSavedPlaces(data.places ?? []);
+    } catch {
+      // Mất mạng thì giữ nguyên danh sách đang hiện, đừng xoá trắng: danh sách
+      // rỗng trông giống "bạn chưa lưu gì" và người dùng sẽ lưu lại lần nữa.
+    }
+  }, [telemetryState.sessionId]);
+
+  useEffect(() => {
+    void reloadSavedPlaces();
+  }, [reloadSavedPlaces]);
+
+  const savedByPoi = useMemo(() => {
+    const map = new Map<string, SavedPlace>();
+    for (const place of savedPlaces) {
+      if (place.poiId) map.set(place.poiId, place);
+    }
+    return map;
+  }, [savedPlaces]);
+
+  /** Lưu / bỏ lưu một POI. `kind` = 'home' để đặt làm nhà. */
+  const toggleSaved = useCallback(
+    async (poi: Poi, kind: SavedPlace['kind'] = 'saved') => {
+      const sessionId = telemetryState.sessionId;
+      if (!sessionId) {
+        setStatus('Chưa có phiên làm việc — tải lại trang rồi thử lại');
+        return;
+      }
+      // POI mẫu (id dạng 'poi-001') không tồn tại trong database, lưu sẽ 404.
+      // Nói thẳng lý do thay vì để người dùng đoán, giống toggleGeofence.
+      if (!UUID_PATTERN.test(poi.id)) {
+        setStatus('Đây là địa điểm mẫu, chưa có trong dữ liệu thật');
+        return;
+      }
+      const existing = savedByPoi.get(poi.id);
+      try {
+        if (existing && kind === 'saved') {
+          await fetch(`${API_BASE_URL}/api/v1/saved/${existing.id}`, {
+            method: 'DELETE',
+            headers: { 'X-Session-ID': sessionId },
+          });
+          setStatus(`Đã bỏ lưu "${poi.name}"`);
+        } else {
+          const response = await fetch(`${API_BASE_URL}/api/v1/saved`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': sessionId,
+            },
+            // KHÔNG gửi toạ độ: backend lấy thẳng từ pois.location, cùng lý do
+            // với geofence — lỗi phía này sẽ ghim "nhà" ở sai chỗ.
+            body: JSON.stringify({ poi_id: poi.id, kind }),
+          });
+          if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`HTTP ${response.status} ${detail.slice(0, 160)}`);
+          }
+          setStatus(
+            kind === 'home'
+              ? `Đã đặt "${poi.name}" làm nhà`
+              : `Đã lưu "${poi.name}"`,
+          );
+        }
+        await reloadSavedPlaces();
+      } catch (error) {
+        setStatus(
+          `Không lưu được: ${error instanceof Error ? error.message : 'lỗi không rõ'}`,
+        );
+      }
+    },
+    [savedByPoi, reloadSavedPlaces, telemetryState.sessionId],
+  );
+
+  const removeSavedPlace = useCallback(
+    async (place: SavedPlace) => {
+      const sessionId = telemetryState.sessionId;
+      if (!sessionId) return;
+      try {
+        await fetch(`${API_BASE_URL}/api/v1/saved/${place.id}`, {
+          method: 'DELETE',
+          headers: { 'X-Session-ID': sessionId },
+        });
+        setStatus(`Đã bỏ lưu "${place.label}"`);
+        await reloadSavedPlaces();
+      } catch {
+        setStatus('Không xoá được, thử lại sau');
+      }
+    },
+    [reloadSavedPlaces, telemetryState.sessionId],
+  );
+
   // phải thấy đúng những POI mình đã bật nhắc, nếu không nút sẽ báo sai trạng
   // thái và cú bấm kế tiếp tạo thêm một vùng trùng.
   useEffect(() => {
@@ -2269,6 +2391,70 @@ export function LocationExplorer() {
                 </div>
               )}
 
+            {/* "Đã lưu" — chỉ hiện khi có gì để hiện. Một mục rỗng kèm
+                câu "bạn chưa lưu địa điểm nào" chiếm chỗ vĩnh viễn trên
+                panel vốn đã chật, mà không nói thêm được gì.
+                ĐỨNG NGOÀI hộp lọc: đặt bên trong thì nó nằm dưới dải
+                chip danh mục trong một vùng cuộn riêng, người dùng lưu
+                xong không thấy gì xảy ra (đo được khi dựng tính năng). */}
+            {savedPlaces.length > 0 && (
+              <div className="flex flex-col gap-2 rounded-xl bg-muted/65 px-3 py-2.5">
+                <div className="flex items-center gap-2 text-sm">
+                  <Bookmark className="size-4 text-primary" />
+                  <span>Đã lưu</span>
+                  <span className="text-xs text-muted-foreground">
+                    {savedPlaces.length} địa điểm
+                  </span>
+                </div>
+                <ul className="flex max-h-44 flex-col gap-1 overflow-y-auto">
+                  {savedPlaces.map((place) => (
+                    <li
+                      key={place.id}
+                      className="flex items-center gap-2 rounded-lg bg-white px-2 py-1.5 dark:bg-card"
+                    >
+                      {place.kind === 'home' ? (
+                        <Home className="size-3.5 shrink-0 text-primary" aria-hidden />
+                      ) : (
+                        <Bookmark className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                      )}
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => {
+                        // Bay tới địa điểm đã lưu. Dùng chính toạ độ đã
+                        // lưu chứ không tra lại theo poiId: POI có thể đã
+                        // bị lần nhập OSM sau xoá đi (migration 0016 cố ý
+                        // giữ lại toạ độ cho đúng trường hợp này).
+                        mapRef.current?.flyTo({
+                          center: [place.longitude, place.latitude],
+                          zoom: 16,
+                        });
+                        }}
+                      >
+                        <span className="block truncate text-xs font-medium">
+                        {place.kind === 'home' ? `Nhà · ${place.label}` : place.label}
+                        </span>
+                        {place.address && (
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {place.address}
+                        </span>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-md p-1 text-muted-foreground hover:text-foreground"
+                        aria-label={`Bỏ lưu ${place.label}`}
+                        title="Bỏ lưu"
+                        onClick={() => void removeSavedPlace(place)}
+                      >
+                        <X className="size-3.5" aria-hidden />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {showDiscovery && recommendations.length > 0 && (
               <div className="shrink-0 space-y-2">
                 <div className="flex items-center gap-1.5 px-1 text-xs font-semibold text-muted-foreground">
@@ -2703,6 +2889,36 @@ export function LocationExplorer() {
                 >
                   <Info data-icon="inline-start" />
                   Xem chi tiết
+                </Button>
+                <Button
+                  variant={
+                    savedByPoi.has(selectedPoi.id) ? 'default' : 'outline'
+                  }
+                  size="sm"
+                  className="shrink-0"
+                  title={
+                    savedByPoi.has(selectedPoi.id)
+                      ? 'Bỏ khỏi danh sách đã lưu'
+                      : 'Lưu địa điểm này'
+                  }
+                  onClick={() => void toggleSaved(selectedPoi)}
+                >
+                  {savedByPoi.has(selectedPoi.id) ? (
+                    <BookmarkCheck data-icon="inline-start" />
+                  ) : (
+                    <Bookmark data-icon="inline-start" />
+                  )}
+                  {savedByPoi.has(selectedPoi.id) ? 'Đã lưu' : 'Lưu'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  title="Đặt địa điểm này làm nhà"
+                  onClick={() => void toggleSaved(selectedPoi, 'home')}
+                >
+                  <Home data-icon="inline-start" />
+                  Đặt làm nhà
                 </Button>
                 <Button
                   variant={

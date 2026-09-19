@@ -93,6 +93,39 @@ class ReviewRequest(BaseModel):
     body: str | None = Field(default=None, max_length=2_000)
 
 
+class SavedPlaceRequest(BaseModel):
+    """Lưu một địa điểm vào danh sách "Đã lưu".
+
+    Hai chế độ loại trừ nhau:
+
+    - ``poi_id``: lưu một POI có sẵn. Toạ độ, tên, địa chỉ lấy từ bảng ``pois``
+      trong chính câu lệnh chèn — KHÔNG nhận từ client, cùng lý do với
+      ``GeofenceRequest``: lỗi phía giao diện sẽ ghim "nhà" ở sai chỗ mà không
+      có gì phát hiện được.
+    - ``latitude``/``longitude``: điểm tự do (thả ghim). Cần cho đúng tình
+      huống "lưu địa chỉ nhà" khi nhà không có trong dữ liệu POI.
+
+    ``kind`` quyết định ràng buộc: ``home`` và ``work`` mỗi chủ sở hữu chỉ có
+    một, lưu lần hai là THAY chỗ cũ.
+    """
+
+    poi_id: UUID | None = None
+    session_id: UUID | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    kind: Literal["saved", "home", "work"] = "saved"
+    label: str | None = Field(default=None, max_length=160)
+    address: str | None = Field(default=None, max_length=300)
+    note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _need_poi_or_point(self) -> "SavedPlaceRequest":
+        has_point = self.latitude is not None and self.longitude is not None
+        if not self.poi_id and not has_point:
+            raise ValueError("cần poi_id, hoặc cả latitude và longitude")
+        return self
+
+
 class GeofenceRequest(BaseModel):
     """Đăng ký "nhắc tôi khi tới gần" cho một POI.
 

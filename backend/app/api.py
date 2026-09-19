@@ -9,13 +9,20 @@ from fastapi import FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import directions, geofence, photos, poi_detail, reviews
+from . import directions, geofence, photos, poi_detail, reviews, saved_places
 from .ranking_snapshots import record_snapshot
 from .config import settings
 from .geocoding import parse_location, reverse_geocode
 from .ingestion import ingestion_status, persist_events, publish_events
 from .ltr import model as ltr_model
-from .models import EventBatch, GeofenceRequest, GeoParseRequest, ReviewRequest, SearchRequest
+from .models import (
+    EventBatch,
+    GeofenceRequest,
+    GeoParseRequest,
+    ReviewRequest,
+    SavedPlaceRequest,
+    SearchRequest,
+)
 from .features.online import feature_store_status
 from .features.serving import profile_category_boost, session_profile
 from .graph.recommend import graph_candidate_ids
@@ -594,6 +601,66 @@ def delete_geofence(subscription_id: str, request: Request) -> dict[str, Any]:
     if not removed:
         return JSONResponse(status_code=404, content={"detail": "Không có vùng nhắc này"})
     return {"deleted": subscription_id}
+
+
+# --- Địa điểm đã lưu ----------------------------------------------------------
+#
+# Chủ sở hữu hiện là `session_id` ẩn danh. Khi có đăng nhập, chỗ duy nhất phải
+# sửa là hàm dưới đây (trả user id thay vì session id) — xem
+# `saved_places.transfer_owner` cho bước di cư dữ liệu cũ.
+
+
+def _owner_id(request: Request, payload_session: Any = None) -> str | None:
+    return getattr(request.state, "session_id", None) or (
+        str(payload_session) if payload_session else None
+    )
+
+
+@app.post("/api/v1/saved", status_code=201)
+def create_saved_place(payload: SavedPlaceRequest, request: Request) -> Any:
+    """Lưu một POI hoặc một điểm tự do. Lưu lại cùng POI là cập nhật, không nhân đôi."""
+    owner_id = _owner_id(request, payload.session_id)
+    if not owner_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Cần X-Session-ID hoặc session_id trong body"},
+        )
+    try:
+        saved = saved_places.save_place(
+            owner_id,
+            poi_id=str(payload.poi_id) if payload.poi_id else None,
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+            label=payload.label,
+            address=payload.address,
+            note=payload.note,
+            kind=payload.kind,
+        )
+    except ValueError as error:
+        return JSONResponse(status_code=400, content={"detail": str(error)})
+    if saved is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có POI này"})
+    return saved
+
+
+@app.get("/api/v1/saved")
+def list_saved_places(request: Request) -> dict[str, Any]:
+    """Không có phiên thì trả danh sách rỗng, không phải lỗi: giao diện luôn
+    gọi endpoint này lúc khởi động, kể cả trước khi người dùng lưu gì."""
+    owner_id = _owner_id(request)
+    if not owner_id:
+        return {"places": [], "reason": "no-session"}
+    return {"places": saved_places.list_places(owner_id)}
+
+
+@app.delete("/api/v1/saved/{place_id}")
+def delete_saved_place(place_id: str, request: Request) -> Any:
+    owner_id = _owner_id(request)
+    if not owner_id:
+        return JSONResponse(status_code=400, content={"detail": "Cần X-Session-ID"})
+    if not saved_places.delete_place(owner_id, place_id):
+        return JSONResponse(status_code=404, content={"detail": "Không có địa điểm này"})
+    return {"deleted": place_id}
 
 
 @app.get("/api/v1/notifications/stream")
