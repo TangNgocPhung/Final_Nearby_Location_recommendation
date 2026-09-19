@@ -173,6 +173,18 @@ type RecommendationsResponse = {
   results: Poi[];
 };
 
+/** Một gợi ý gõ-tới-đâu từ GET /api/v1/pois/suggest — nhẹ hơn Poi nhiều vì
+ *  chưa qua ranking/context, chỉ đủ để hiển thị trong dropdown và bay tới. */
+type PoiSuggestion = {
+  id: string;
+  name: string;
+  categoryLabel: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  distanceMeters: number | null;
+};
+
 const DEFAULT_POSITION: Position = {
   latitude: 10.7757,
   longitude: 106.7009,
@@ -604,6 +616,15 @@ export function LocationExplorer() {
     );
   }, [position]);
   const [query, setQuery] = useState('');
+  // Gợi ý gõ-tới-đâu (autocomplete) cho ô tìm kiếm. Tách khỏi `pois`/`areaPois`:
+  // đây là danh sách TÊN để chọn nhanh, không phải kết quả tìm kiếm đã qua
+  // ranking, nên không được trộn chung.
+  const [suggestions, setSuggestions] = useState<PoiSuggestion[]>([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  // Mục đang tô sáng khi điều hướng dropdown bằng bàn phím (-1 = chưa chọn).
+  // Theo đúng mẫu ARIA combobox: focus vẫn ở ô input, các mục chỉ được đánh
+  // dấu qua aria-activedescendant — không rời focus sang từng mục.
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const [radius, setRadius] = useState(3_000);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [minRating, setMinRating] = useState(0);
@@ -677,6 +698,17 @@ export function LocationExplorer() {
     dropped: 0,
     transport: 'idle',
   });
+  // Panel "Bảng điều khiển tầng 1" lộ chi tiết hạ tầng (GPS accuracy, trạng
+  // thái Redis Stream...) — hữu ích lúc trình bày kiến trúc cho hội đồng,
+  // nhưng luôn hiện với người xem link demo thì thiếu chuyên nghiệp. Ẩn mặc
+  // định, chỉ bật lại khi có ?debug=1 trên URL.
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  useEffect(() => {
+    const debugParam = new URLSearchParams(window.location.search).get(
+      'debug',
+    );
+    if (debugParam === '1' || debugParam === 'true') setShowDebugPanel(true);
+  }, []);
 
   // Kênh thông báo tới gần. Chỉ mở khi người dùng đã đăng ký ít nhất một vùng
   // nhắc: giữ một kết nối SSE cho người chưa dùng tính năng này là tốn một
@@ -1297,6 +1329,76 @@ export function LocationExplorer() {
     },
     [position, telemetry],
   );
+
+  /** POI thật (id là UUID) sau khi chọn từ dropdown autocomplete: điền tên vào
+   *  ô tìm kiếm, bay bản đồ tới đó và mở panel chi tiết — không phải chạy lại
+   *  toàn bộ tìm kiếm, vì người dùng đã chỉ đúng địa điểm họ muốn. */
+  const selectSuggestion = useCallback(
+    (suggestion: PoiSuggestion) => {
+      setQuery(suggestion.name);
+      setSuggestions([]);
+      setSuggestionsOpen(false);
+      setActiveSuggestionIndex(-1);
+      spotlightPoi(
+        {
+          id: suggestion.id,
+          name: suggestion.name,
+          description: '',
+          category: suggestion.categoryLabel,
+          categoryLabel: suggestion.categoryLabel,
+          address: suggestion.address,
+          latitude: suggestion.latitude,
+          longitude: suggestion.longitude,
+          rating: null,
+          reviewCount: 0,
+          popularityScore: 0,
+          distanceMeters: suggestion.distanceMeters ?? undefined,
+        },
+        'search-suggestion',
+      );
+      openDetail(suggestion.id, 'search-suggestion');
+    },
+    [spotlightPoi, openDetail],
+  );
+
+  // Debounce 250ms trước khi gọi /pois/suggest: tránh bắn một request mỗi phím
+  // gõ. AbortController huỷ request đang bay khi người dùng gõ tiếp — không thì
+  // một phản hồi chậm về sau có thể đè lên gợi ý của từ khóa mới hơn.
+  useEffect(() => {
+    const trimmed = query.trim();
+    setActiveSuggestionIndex(-1);
+    if (trimmed.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const params = new URLSearchParams({
+            q: trimmed,
+            limit: '8',
+            lat: String(positionRef.current.latitude),
+            lng: String(positionRef.current.longitude),
+          });
+          const response = await fetch(
+            `${API_BASE_URL}/api/v1/pois/suggest?${params}`,
+            { signal: controller.signal },
+          );
+          if (!response.ok) return;
+          const data = (await response.json()) as PoiSuggestion[];
+          setSuggestions(data);
+          setSuggestionsOpen(true);
+        } catch (error) {
+          if ((error as Error)?.name !== 'AbortError') setSuggestions([]);
+        }
+      })();
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
 
   useEffect(() => {
     const unsubscribe = telemetry.subscribe(setTelemetryState);
@@ -2177,9 +2279,108 @@ export function LocationExplorer() {
                     className="h-11 rounded-xl bg-white pl-9 dark:bg-input/40"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
+                    onFocus={() => {
+                      if (suggestions.length > 0) setSuggestionsOpen(true);
+                    }}
+                    onBlur={() => setSuggestionsOpen(false)}
+                    onKeyDown={(event) => {
+                      if (!suggestionsOpen || suggestions.length === 0) return;
+                      if (event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        setActiveSuggestionIndex(
+                          (current) => (current + 1) % suggestions.length,
+                        );
+                      } else if (event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        setActiveSuggestionIndex((current) =>
+                          current <= 0 ? suggestions.length - 1 : current - 1,
+                        );
+                      } else if (
+                        event.key === 'Enter' &&
+                        activeSuggestionIndex >= 0
+                      ) {
+                        event.preventDefault();
+                        selectSuggestion(suggestions[activeSuggestionIndex]);
+                      } else if (event.key === 'Escape') {
+                        setSuggestionsOpen(false);
+                      }
+                    }}
                     placeholder="Cà phê, phở, công viên…"
                     aria-label="Từ khóa tìm kiếm"
+                    // Input bọc một <input> thật; role="combobox" là mẫu ARIA
+                    // combobox chuẩn (kèm aria-controls/aria-activedescendant
+                    // dưới đây), không phải role đặt sai chỗ.
+                    // eslint-disable-next-line jsx-a11y/prefer-tag-over-role
+                    role="combobox"
+                    aria-expanded={suggestionsOpen && suggestions.length > 0}
+                    aria-autocomplete="list"
+                    aria-controls="poi-suggestion-listbox"
+                    aria-activedescendant={
+                      activeSuggestionIndex >= 0
+                        ? `poi-suggestion-${suggestions[activeSuggestionIndex]?.id}`
+                        : undefined
+                    }
+                    autoComplete="off"
                   />
+                  {suggestionsOpen && suggestions.length > 0 && (
+                    <div
+                      id="poi-suggestion-listbox"
+                      // <datalist>/<select> không render được icon, địa chỉ
+                      // và khoảng cách trên mỗi dòng — popup role="listbox"
+                      // là cách chuẩn ARIA để làm một combobox tuỳ biến.
+                      // eslint-disable-next-line jsx-a11y/prefer-tag-over-role
+                      role="listbox"
+                      aria-label="Gợi ý địa điểm"
+                      className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 max-h-72 overflow-y-auto rounded-xl border border-border bg-white py-1 shadow-xl dark:border-white/10 dark:bg-card"
+                    >
+                      {suggestions.map((suggestion, index) => (
+                        // Mục KHÔNG nhận focus: đây là mẫu combobox dùng
+                        // aria-activedescendant (focus luôn ở ô input phía
+                        // trên) — thêm tabIndex ở đây sẽ tạo thêm điểm dừng
+                        // Tab sai với mẫu này, không phải sửa đúng.
+                        // eslint-disable-next-line jsx-a11y/interactive-supports-focus
+                        <div
+                          key={suggestion.id}
+                          id={`poi-suggestion-${suggestion.id}`}
+                          // eslint-disable-next-line jsx-a11y/prefer-tag-over-role
+                          role="option"
+                          aria-selected={index === activeSuggestionIndex}
+                          className={`flex items-start gap-2 px-3 py-2 text-sm ${
+                            index === activeSuggestionIndex
+                              ? 'bg-muted'
+                              : 'hover:bg-muted'
+                          }`}
+                          onMouseEnter={() => setActiveSuggestionIndex(index)}
+                          // onMouseDown (không phải onClick) chạy TRƯỚC blur
+                          // của input, và preventDefault chặn luôn blur đó —
+                          // không thì onBlur đóng dropdown trước khi click
+                          // kịp đăng ký, và cú bấm coi như không xảy ra.
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            selectSuggestion(suggestion);
+                          }}
+                        >
+                          <MapPin className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">
+                              {suggestion.name}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {suggestion.categoryLabel}
+                              {suggestion.address
+                                ? ` · ${suggestion.address}`
+                                : ''}
+                            </span>
+                          </span>
+                          {suggestion.distanceMeters != null && (
+                            <span className="shrink-0 text-xs text-muted-foreground">
+                              {formatDistance(suggestion.distanceMeters)}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <Button
                   className="h-11 rounded-xl px-4"
@@ -2679,6 +2880,7 @@ export function LocationExplorer() {
               H3
             </div>
           </div>
+          {showDebugPanel && (
           <div className="absolute right-4 top-4 z-10 hidden w-[300px] rounded-2xl border border-white/75 bg-slate-950/88 p-4 text-white shadow-2xl backdrop-blur-xl xl:block">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -2749,6 +2951,7 @@ export function LocationExplorer() {
               · batch ≤ 50 events
             </div>
           </div>
+          )}
           {selectedPoi && (
             <div className="absolute bottom-5 left-5 right-5 z-10 rounded-2xl border border-white/70 bg-white/92 p-4 shadow-xl backdrop-blur-xl sm:right-auto sm:w-[360px] dark:border-white/10 dark:bg-card/95">
               <div className="flex items-start justify-between gap-3">

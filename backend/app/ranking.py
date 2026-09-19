@@ -656,6 +656,58 @@ def rank_pois(
     return results
 
 
+def suggest_pois(
+    query_text: str,
+    latitude: float | None,
+    longitude: float | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Gợi ý tên POI khi đang gõ (autocomplete), KHÔNG chạy qua ranking đầy đủ.
+
+    Cố tình chỉ so khớp theo TÊN — không như `fetch_candidates` vốn còn so cả
+    description/category_label — vì gõ-tới-đâu-gợi-ý-tới-đó chỉ có ý nghĩa khi
+    đúng là tên nơi người dùng đang nhớ; khớp qua mô tả sẽ trộn vào những POI
+    tình cờ chứa từ đó ở một câu mô tả không liên quan. Cũng không gọi
+    `enrich_candidates`/`rank_pois_detailed`: đây là gợi ý gõ chữ, không phải
+    kết quả tìm kiếm, nên không cần context không-thời gian hay re-rank.
+    """
+    query = """
+        SELECT
+            id::text AS id,
+            name,
+            category_label AS "categoryLabel",
+            address,
+            ST_Y(location::geometry) AS latitude,
+            ST_X(location::geometry) AS longitude,
+            CASE WHEN CAST(%(latitude)s AS double precision) IS NULL THEN NULL ELSE
+                ST_Distance(
+                    location,
+                    ST_SetSRID(ST_Point(%(longitude)s, %(latitude)s), 4326)::geography
+                )
+            END AS "distanceMeters"
+        FROM pois
+        WHERE name ILIKE %(contains)s OR similarity(name, %(query_text)s) > 0.2
+        ORDER BY
+            (name ILIKE %(prefix)s) DESC,
+            similarity(name, %(query_text)s) DESC,
+            "distanceMeters" ASC NULLS LAST,
+            popularity_score DESC NULLS LAST
+        LIMIT %(limit)s
+    """
+    params = {
+        "query_text": query_text,
+        "contains": f"%{query_text}%",
+        "prefix": f"{query_text}%",
+        "latitude": latitude,
+        "longitude": longitude,
+        "limit": limit,
+    }
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            return list(cursor.fetchall())
+
+
 def fetch_categories() -> list[dict[str, Any]]:
     """Nhóm theo NHÃN (category_label), không theo mã category chi tiết.
 
