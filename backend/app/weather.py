@@ -63,7 +63,7 @@ HEAVY_PRECIPITATION_MM = 2.5
 #
 # Bảng này KHÔNG suy ra được từ `CATEGORY_TIME_AFFINITY`: cái kia nói địa điểm
 # hợp buổi nào trong ngày, không nói nó có mái che hay không. Danh sách loại
-# lấy đúng từ `poi_features.CATEGORY_MAP` — toàn bộ 37 loại thật đang có trong
+# lấy đúng từ `poi_features.CATEGORY_MAP` — toàn bộ 38 loại thật đang có trong
 # dữ liệu, không bịa thêm loại nào.
 #
 # "necessity" là nhóm quan trọng nhất phải tách riêng: không ai hoãn đi bệnh
@@ -93,6 +93,7 @@ INDOOR_CATEGORIES = frozenset(
         "gym",
         "spa",
         "event_venue",
+        "hairdresser",
     }
 )
 NECESSITY_CATEGORIES = frozenset(

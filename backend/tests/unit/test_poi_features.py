@@ -168,6 +168,15 @@ def test_nha_khoa_va_tiec_cuoi_nhan_dien_qua_amenity_moi() -> None:
     )
 
 
+def test_cat_toc_nhan_dien_qua_shop_hairdresser() -> None:
+    """`shop=hairdresser` từng không nằm trong danh sách giá trị lọc của
+    khoá `shop` — cùng lớp lỗi đã sửa cho spa/nha khoa/tiệc cưới."""
+    assert osm_category({"shop": "hairdresser"}) == ("hairdresser", "Cắt tóc")
+    # Khoá `shop` đã được `osm_category` duyệt từ trước; các giá trị khác
+    # giữ nguyên hành vi cũ.
+    assert osm_category({"shop": "supermarket"}) == ("supermarket", "Mua sắm")
+
+
 @pytest.mark.parametrize(
     "query",
     ["xem phim", "Xem Phim", "rạp chiếu phim", "rap chieu phim", "coi phim", "phim"],

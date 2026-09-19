@@ -73,6 +73,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("shop", "bakery"): ("bakery", "Ăn uống"),
     ("shop", "clothes"): ("clothes", "Mua sắm"),
     ("shop", "electronics"): ("electronics", "Mua sắm"),
+    ("shop", "hairdresser"): ("hairdresser", "Cắt tóc"),
     ("aeroway", "aerodrome"): ("airport", "Sân bay"),
     ("leisure", "spa"): ("spa", "Spa"),
 }
@@ -111,6 +112,16 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "clothes": ("quần áo", "thời trang", "shop quần áo"),
     "electronics": ("điện máy", "điện tử", "đồ điện"),
     "market": ("chợ", "đi chợ", "chợ truyền thống"),
+    "hairdresser": (
+        "cắt tóc",
+        "tiệm cắt tóc",
+        "tiệm tóc",
+        "salon tóc",
+        "hớt tóc",
+        "làm tóc",
+        "uốn tóc",
+        "nhuộm tóc",
+    ),
     # Y tế
     "hospital": ("bệnh viện", "phòng khám", "khám bệnh", "cấp cứu"),
     "pharmacy": ("nhà thuốc", "hiệu thuốc", "tiệm thuốc", "thuốc tây", "mua thuốc"),
