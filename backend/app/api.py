@@ -33,6 +33,7 @@ from .ranking import (
     fetch_trending,
     rank_pois,
     rank_pois_detailed,
+    suggest_pois,
 )
 
 
@@ -150,6 +151,19 @@ def nearby_pois(
     limit: int = Query(default=50, ge=1, le=100),
 ) -> list[dict[str, Any]]:
     return rank_pois(lat, lng, radius, q, category, limit)
+
+
+@app.get("/api/v1/pois/suggest")
+def suggest(
+    q: str = Query(min_length=1, max_length=160),
+    lat: float | None = Query(default=None, ge=-90, le=90),
+    lng: float | None = Query(default=None, ge=-180, le=180),
+    limit: int = Query(default=8, ge=1, le=20),
+) -> list[dict[str, Any]]:
+    """Gợi ý gõ-tới-đâu (autocomplete) cho ô tìm kiếm — chỉ trả tên/toạ độ,
+    không chạy qua pipeline ranking đầy đủ nên phản hồi nhanh hơn nhiều.
+    """
+    return suggest_pois(q, lat, lng, limit)
 
 
 @app.post("/api/v1/search")

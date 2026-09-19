@@ -117,6 +117,9 @@ thời gian thực và các tín hiệu ngữ cảnh — xem [docs/layer-3.md](d
 
 Endpoint khác:
 
+- `GET /api/v1/pois/suggest?q=&lat=&lng=` — gợi ý gõ-tới-đâu (autocomplete) cho
+  ô tìm kiếm: chỉ so khớp theo tên (ILIKE + `pg_trgm`), không chạy qua pipeline
+  ranking/context nên phản hồi nhanh hơn nhiều so với `/api/pois/nearby`.
 - `GET /api/v1/categories` — danh sách category cho filter chip.
 - `GET /api/v1/trending` — POI và từ khóa đang được quan tâm.
 - `GET /api/v1/recommendations` — gợi ý cá nhân hóa theo lịch sử session và

@@ -67,3 +67,53 @@ def test_data_status_reports_enrichment_coverage() -> None:
     assert pois["total"] >= 28
     assert pois["with_h3"] == pois["total"]
     assert pois["with_embedding"] == pois["total"]
+
+
+def test_suggest_returns_matching_poi_names_for_autocomplete() -> None:
+    """"Cà phê Bến Nghé" (seed 0002) phải khớp cả khi gõ một phần tên — đây là
+    gợi ý gõ-tới-đâu cho ô tìm kiếm, không phải tìm kiếm đầy đủ, nên response
+    phải nhẹ (không kèm rating/popularity/context) và rất nhanh."""
+    response = httpx.get(
+        f"{API_BASE_URL}/api/v1/pois/suggest",
+        timeout=10,
+        params={"q": "Bến Nghé", "lat": 10.7757, "lng": 106.7009, "limit": 5},
+    )
+
+    assert response.status_code == 200
+    results = response.json()
+    assert results
+    assert any(item["name"] == "Cà phê Bến Nghé" for item in results)
+    first = results[0]
+    assert first.keys() == {
+        "id",
+        "name",
+        "categoryLabel",
+        "address",
+        "latitude",
+        "longitude",
+        "distanceMeters",
+    }
+    assert isinstance(first["distanceMeters"], float)
+
+
+def test_suggest_without_location_omits_distance() -> None:
+    response = httpx.get(
+        f"{API_BASE_URL}/api/v1/pois/suggest",
+        timeout=10,
+        params={"q": "Bến Nghé"},
+    )
+
+    assert response.status_code == 200
+    results = response.json()
+    assert results
+    assert all(item["distanceMeters"] is None for item in results)
+
+
+def test_suggest_rejects_empty_query() -> None:
+    response = httpx.get(
+        f"{API_BASE_URL}/api/v1/pois/suggest",
+        timeout=10,
+        params={"q": ""},
+    )
+
+    assert response.status_code == 422
