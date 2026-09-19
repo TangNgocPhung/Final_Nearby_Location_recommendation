@@ -11,7 +11,12 @@ import logging
 from typing import Any, Iterable
 
 from ..config import settings
-from ..poi_features import EMBEDDING_DIMENSION, normalize_text, text_embedding
+from ..poi_features import (
+    EMBEDDING_DIMENSION,
+    category_keywords,
+    normalize_text,
+    text_embedding,
+)
 
 logger = logging.getLogger("nearby-search")
 
@@ -108,6 +113,16 @@ def index_mappings() -> dict[str, Any]:
                 "strict": {"type": "text", "analyzer": "vi_strict"},
             },
         },
+        # Từ khoá tiếng Việt suy từ `category` (xem `poi_features.CATEGORY_
+        # KEYWORDS`). Là trường CHỈ CÓ trong chỉ mục: PostGIS vẫn là nguồn sự
+        # thật cho dữ liệu hiển thị, còn đây là từ vựng truy xuất sinh lúc
+        # index nên đổi bảng từ khoá chỉ cần dựng lại chỉ mục, không cần
+        # migration dữ liệu.
+        "search_keywords": {
+            "type": "text",
+            "analyzer": "vi_folded",
+            "fields": {"strict": {"type": "text", "analyzer": "vi_strict"}},
+        },
         "brand": {"type": "text", "analyzer": "vi_folded"},
         "district": {"type": "keyword"},
         "price_level": {"type": "integer"},
@@ -173,6 +188,7 @@ def build_document(row: dict[str, Any]) -> dict[str, Any]:
         "category": row.get("category"),
         "category_label": row.get("category_label") or row.get("categoryLabel"),
         "tags": row.get("tags") or [],
+        "search_keywords": list(category_keywords(row.get("category"))),
         "brand": row.get("brand"),
         "district": row.get("district"),
         "price_level": row.get("price_level") if row.get("price_level") is not None else 0,

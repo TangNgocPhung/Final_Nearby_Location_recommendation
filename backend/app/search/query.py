@@ -62,7 +62,13 @@ def bm25_body(
     phân biệt dấu thanh mà field này tồn tại để giải quyết. Hai clause cộng
     điểm (không phải lấy max) nên candidate khớp cả hai được thưởng thêm,
     còn candidate chỉ khớp nhờ fold vẫn giữ nguyên điểm cũ — không bị phạt,
-    chỉ không được thưởng."""
+    chỉ không được thưởng.
+
+    ``search_keywords`` là từ vựng tiếng Việt của LOẠI địa điểm, sinh lúc index
+    từ ``poi_features.CATEGORY_KEYWORDS``. Boost đặt ngang ``category_label``
+    (^2 fold, ^3 strict) vì cùng bản chất: cả hai nói POI này THUỘC LOẠI nào,
+    không phải nó TÊN gì — "rạp chiếu phim" không được thắng một POI thật sự
+    mang chữ đó trong tên (``name^3``/``name.strict^5``)."""
     filters = _category_filter(category) + [_geo_filter(latitude, longitude, radius_m)]
     return {
         "size": size,
@@ -82,6 +88,7 @@ def bm25_body(
                                             "name^3",
                                             "name.prefix^1.5",
                                             "category_label^2",
+                                            "search_keywords^2",
                                             "tags^1.5",
                                             "brand^1.5",
                                             "description",
@@ -105,6 +112,7 @@ def bm25_body(
                                         "fields": [
                                             "name.strict^5",
                                             "category_label.strict^3",
+                                            "search_keywords.strict^3",
                                             "tags.strict^2",
                                             "description.strict^1.5",
                                         ],

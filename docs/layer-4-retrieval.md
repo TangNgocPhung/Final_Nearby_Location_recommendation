@@ -35,8 +35,13 @@ Mã nguồn nằm trong `backend/app/search/`:
 ## Các kênh ứng viên
 
 - **BM25** (`multi_match`, `fuzziness: AUTO`) trên `name`/`category_label`/
-  `tags`/`brand`/`description`. Analyzer `vi_folded` = `lowercase` +
-  `asciifolding`, nên "cà phê", "ca phe", "Cà Phê" đều khớp; fuzzy chịu lỗi gõ.
+  `search_keywords`/`tags`/`brand`/`description`. Analyzer `vi_folded` =
+  `lowercase` + `asciifolding`, nên "cà phê", "ca phe", "Cà Phê" đều khớp;
+  fuzzy chịu lỗi gõ. `search_keywords` là từ vựng tiếng Việt của LOẠI địa điểm
+  (`poi_features.CATEGORY_KEYWORDS`), sinh lúc index chứ không lưu trong
+  PostGIS: tên rạp chiếu phim ở TP.HCM không chứa chữ "phim" nào, nên nếu
+  thiếu trường này thì "xem phim" không khớp BM25 ở đâu cả và hệ thống rơi về
+  xếp theo khoảng cách.
 - **Geo** — `geo_distance` trong bán kính, sắp theo khoảng cách. Đây là kênh
   recall phổ quát; geo rỗng nghĩa là chỉ mục chưa dựng ⇒ hệ thống fallback.
 - **Vector k-NN** — `knn_vector` 64 chiều (cosine) trên cùng embedding tất định

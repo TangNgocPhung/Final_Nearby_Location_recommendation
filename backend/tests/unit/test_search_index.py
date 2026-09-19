@@ -63,3 +63,32 @@ def test_index_settings_enable_knn_and_vietnamese_analyzer() -> None:
     assert body["index"]["knn"] is True
     analyzers = body["analysis"]["analyzer"]
     assert "asciifolding" in analyzers["vi_folded"]["filter"]
+
+
+# --- Từ vựng truy xuất theo loại (xem `poi_features.CATEGORY_KEYWORDS`) -------
+
+
+def test_document_mang_tu_khoa_tieng_viet_suy_tu_category() -> None:
+    """Rạp chiếu phim phải mang được chữ "phim" vào chỉ mục: tên rạp ở TP.HCM
+    (CGV, Lotte Cinema, BHD Star...) không có chữ nào để BM25 bám vào cho truy
+    vấn "xem phim"."""
+    document = build_document(_row(name="CGV Vincom Đồng Khởi", category="cinema"))
+
+    assert "xem phim" in document["search_keywords"]
+    assert "rạp chiếu phim" in document["search_keywords"]
+
+
+def test_document_cua_loai_chua_khai_bao_co_truong_rong() -> None:
+    """Rỗng chứ không thiếu trường: OpenSearch tự suy mapping cho trường lạ, và
+    một trường lúc có lúc không là cách chắc chắn nhất để mapping động đó khác
+    với mapping đã khai báo."""
+    assert build_document(_row(category="cafe"))["search_keywords"] == []
+
+
+def test_mapping_cua_search_keywords_dung_analyzer_tieng_viet() -> None:
+    """Phải là `vi_folded` + subfield `.strict` như `category_label`: bỏ dấu để
+    "rap chieu phim" khớp, giữ dấu ở `.strict` để thưởng điểm khi gõ đúng."""
+    field = index_mappings()["properties"]["search_keywords"]
+
+    assert field["analyzer"] == "vi_folded"
+    assert field["fields"]["strict"]["analyzer"] == "vi_strict"
