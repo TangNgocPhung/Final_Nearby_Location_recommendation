@@ -5,7 +5,7 @@
 #
 # Khác lần triển khai đầu (deploy/RUNBOOK.md mục 0-9): KHÔNG dựng lại OSRM
 # (60-90 phút), KHÔNG nhập lại OSM, KHÔNG xin lại chứng chỉ. Chỉ kéo mã mới,
-# chạy migration, dựng lại ảnh backend/frontend và DỰNG LẠI CHỈ MỤC.
+# dựng lại ảnh, chạy migration, thay container và DỰNG LẠI CHỈ MỤC.
 #
 # Bước chỉ mục là lý do script này tồn tại. Nó là bước duy nhất dễ quên mà hỏng
 # IM LẶNG: chỉ mục OpenSearch sống độc lập với Postgres và không tự cập nhật,
@@ -47,25 +47,41 @@ if [ "${SKIP_PULL:-0}" != "1" ]; then
 fi
 echo "Đang ở commit: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
 
-# --- 2. Migration -------------------------------------------------------------
-step "Chạy migration"
-"${COMPOSE[@]}" run --rm migrate || die "migration thất bại — DỪNG, không dựng ảnh mới"
+# --- 2. Dựng ảnh TRƯỚC KHI migrate --------------------------------------------
+#
+# Thứ tự này là bắt buộc, và đây là lỗi đã gặp thật trên production
+# (19/09/2026): `migrate`, `search-index` và `backend` cùng khai báo
+# `build: ./backend`, nhưng Compose dựng cho mỗi service MỘT ẢNH RIÊNG
+# (`<project>-migrate`, `<project>-search-index`, `<project>-backend`).
+#
+# Bản trước chạy `run --rm migrate` trước rồi mới `build backend frontend`, nên
+# migration chạy bằng ảnh migrate CŨ: alembic không thấy file migration mới,
+# báo "đã ở head" rồi thoát 0 — không một dấu hiệu lỗi nào. Sau đó
+# `search-index` cũng dùng ảnh cũ nên index lại đủ 15977 POI mà thiếu hẳn
+# trường `search_keywords`. Kết quả: deploy báo thành công, site chạy mã mới,
+# nhưng dữ liệu và chỉ mục vẫn là của phiên bản cũ.
+#
+# Vì vậy: dựng ĐỦ bốn ảnh trước, rồi mới chạy bất cứ thứ gì.
+step "Dựng lại ảnh (backend, frontend, migrate, search-index)"
+"${COMPOSE[@]}" --profile data build backend frontend migrate search-index \
+  || die "build thất bại"
 
-# --- 3. Dựng và thay ảnh ------------------------------------------------------
+# --- 3. Migration -------------------------------------------------------------
+step "Chạy migration"
+"${COMPOSE[@]}" run --rm migrate || die "migration thất bại — DỪNG, không thay container"
+
+# --- 4. Thay container --------------------------------------------------------
 #
 # --no-deps: chỉ thay backend/frontend, không đụng tới database/opensearch/neo4j
 # và ba container OSRM đang giữ 2,6 GB đồ thị trong bộ nhớ.
-step "Dựng lại ảnh backend + frontend"
-"${COMPOSE[@]}" build backend frontend || die "build thất bại"
-
 step "Khởi động lại backend + frontend"
 "${COMPOSE[@]}" up -d --no-deps backend frontend || die "không khởi động lại được"
 
-# --- 4. Dựng lại chỉ mục ------------------------------------------------------
+# --- 5. Dựng lại chỉ mục ------------------------------------------------------
 step "Dựng lại chỉ mục OpenSearch (bắt buộc)"
 "${COMPOSE[@]}" --profile data run --rm search-index || die "dựng chỉ mục thất bại — site đang chạy mã mới nhưng CHỈ MỤC CŨ, kết quả tìm kiếm sẽ sai"
 
-# --- 5. Đo, đừng đoán ---------------------------------------------------------
+# --- 6. Đo, đừng đoán ---------------------------------------------------------
 step "Kiểm chứng"
 PUBLIC_HOST="$(grep -E '^PUBLIC_HOST=' "$ENV_FILE" | tail -1 | cut -d= -f2-)"
 if [ -z "$PUBLIC_HOST" ]; then
@@ -84,4 +100,4 @@ curl -s -X POST "https://$PUBLIC_HOST/api/v1/search" \
 
 echo
 echo "Lẫn nhãn khác \"Xem phim\" nghĩa là chỉ mục chưa được dựng lại, KHÔNG phải"
-echo "xếp hạng sai — xem lại bước 4 ở trên."
+echo "xếp hạng sai — xem lại bước 5 ở trên."
