@@ -167,6 +167,14 @@ Kiểm tra hệ thống đang dùng đường nào: `POST /api/v1/search` trả 
 `retrievalBackend` — `opensearch` là truy xuất đa kênh, `postgis` nghĩa là đã rơi
 về đường dự phòng (thường do quên dựng chỉ mục).
 
+> **Bắt buộc dựng lại chỉ mục sau migration `0015`.** Migration này đổi nhãn của
+> rạp chiếu phim từ "Giải trí" sang "Xem phim" và thêm sáu rạp demo, còn bản
+> sửa kèm theo thêm trường `search_keywords` (từ vựng tiếng Việt theo loại địa
+> điểm) vào chỉ mục. Cả nhãn lẫn trường mới đều nằm trong document đã index,
+> nên chưa chạy `search-index` thì truy vấn "xem phim" / "rạp chiếu phim" vẫn
+> trả về POI gần nhất bất kể loại gì. Lệnh `search-index` của compose đã kèm
+> `--recreate`, tức mapping mới được áp đầy đủ.
+
 > **Bắt buộc materialize lại sau migration `0006`.** Migration này tách
 > `poi_impression` (đã được hiển thị) khỏi `poi_dwell` (thời gian ở lại), và
 > feature view `region_ctr` lên `v2` để giá trị CTR hỏng cũ không lẫn với giá trị

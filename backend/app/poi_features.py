@@ -51,7 +51,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("amenity", "bank"): ("bank", "Dịch vụ"),
     ("amenity", "atm"): ("atm", "Dịch vụ"),
     ("amenity", "marketplace"): ("market", "Chợ"),
-    ("amenity", "cinema"): ("cinema", "Giải trí"),
+    ("amenity", "cinema"): ("cinema", "Xem phim"),
     ("amenity", "theatre"): ("theatre", "Văn hóa"),
     ("amenity", "library"): ("library", "Văn hóa"),
     ("tourism", "museum"): ("museum", "Văn hóa"),
@@ -71,6 +71,36 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("shop", "bakery"): ("bakery", "Ăn uống"),
     ("shop", "clothes"): ("clothes", "Mua sắm"),
     ("shop", "electronics"): ("electronics", "Mua sắm"),
+}
+
+# Từ khoá tiếng Việt gắn theo LOẠI địa điểm, dùng riêng cho truy xuất (không
+# hiển thị, không ghi vào cột `tags` của POI).
+#
+# Vì sao cần: tên rạp chiếu phim ở TP.HCM gần như không bao giờ chứa chữ
+# "phim" (CGV, Lotte Cinema, BHD Star, Galaxy, Mega GS, Cinestar), còn thẻ OSM
+# chỉ để lại token tiếng Anh "cinema". Truy vấn "xem phim" vì thế không khớp
+# BM25 ở BẤT KỲ trường nào. Mà `search.retrieval._gate_by_text_relevance` chỉ
+# giữ candidate khớp chữ khi BM25 có kết quả, còn khi BM25 rỗng thì nhường cho
+# RRF — nên "xem phim" rơi vào đúng nhánh xấu nhất: trả về POI gần nhất bất kể
+# loại gì (đo được 19/09/2026: bảo tàng và quán phở đứng đầu).
+#
+# Gắn theo loại chứ không theo từng POI: một rạp mới nhập từ OSM ngày mai được
+# hưởng nguyên bộ từ khoá mà không phải sửa dữ liệu. Cũng không dùng synonym
+# filter của analyzer: filter đó áp lên MỌI trường (kể cả tên riêng) nên dễ tạo
+# khớp nhầm, và mỗi lần thêm một từ là một lần phải dựng lại chỉ mục.
+#
+# Mỗi loại thêm vào đây đều đổi kết quả truy xuất của loại đó, nên chỉ thêm khi
+# đã đo được một truy vấn hỏng thật — hiện mới có "cinema".
+CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "cinema": (
+        "rạp chiếu phim",
+        "rạp phim",
+        "xem phim",
+        "coi phim",
+        "chiếu phim",
+        "suất chiếu",
+        "phim",
+    ),
 }
 
 
@@ -257,6 +287,36 @@ def dedupe_fingerprint(
 ) -> str:
     payload = f"{normalize_text(name)}|{category}|{latitude:.5f}|{longitude:.5f}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def category_keywords(category: str | None) -> tuple[str, ...]:
+    """Từ khoá truy xuất của một loại địa điểm (rỗng nếu loại đó chưa khai báo)."""
+    return CATEGORY_KEYWORDS.get((category or "").strip(), ())
+
+
+def categories_for_query(query_text: str | None) -> tuple[str, ...]:
+    """Các loại địa điểm mà truy vấn đang NHẮM TỚI, suy từ `CATEGORY_KEYWORDS`.
+
+    So khớp trên chuỗi đã chuẩn hoá (`normalize_text`) nên "rạp chiếu phim",
+    "rap chieu phim" và "RẠP CHIẾU PHIM" cho cùng một kết quả — người dùng gõ
+    không dấu là trường hợp phổ biến nhất, không phải ngoại lệ.
+
+    So khớp theo RANH GIỚI TỪ (đệm dấu cách hai đầu) chứ không phải `in` trần:
+    từ khoá một âm tiết như "phim" mà so kiểu chuỗi con sẽ khớp cả vào giữa một
+    từ khác, đúng kiểu lỗi mà fuzzy "AUTO" đã gây ra cho "bệnh viện" (xem
+    `search.query.bm25_body`). Đệm dấu cách cũng xử lý luôn từ khoá nhiều âm
+    tiết, nên không cần tách token riêng.
+    """
+    normalized = normalize_text(query_text)
+    if not normalized:
+        return ()
+    haystack = f" {normalized} "
+    matched = {
+        category
+        for category, keywords in CATEGORY_KEYWORDS.items()
+        if any(f" {normalize_text(keyword)} " in haystack for keyword in keywords)
+    }
+    return tuple(sorted(matched))
 
 
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:

@@ -82,3 +82,17 @@ def test_bm25_fuzzy_khong_ap_len_am_tiet_ngan() -> None:
     folded_match = body["query"]["bool"]["must"][0]["bool"]["should"][0]["multi_match"]
     low, high = folded_match["fuzziness"].removeprefix("AUTO:").split(",")
     assert int(low) >= 5
+
+
+def test_bm25_tim_ca_trong_tu_vung_cua_loai_dia_diem() -> None:
+    """Không có `search_keywords`, truy vấn "xem phim" không khớp trường nào của
+    một rạp tên "CGV Vincom Đồng Khởi" — BM25 rỗng, cổng liên quan nhường cho
+    RRF và kết quả là POI gần nhất bất kể loại gì (đo 19/09/2026).
+
+    Boost đặt ngang `category_label` (^2 fold, ^3 strict): cùng là tín hiệu
+    LOẠI, không được thắng khớp theo TÊN (`name^3` / `name.strict^5`)."""
+    body = q.bm25_body("xem phim", 10.77, 106.70, 3000, None, 50)
+    should = body["query"]["bool"]["must"][0]["bool"]["should"]
+
+    assert "search_keywords^2" in should[0]["multi_match"]["fields"]
+    assert "search_keywords.strict^3" in should[1]["multi_match"]["fields"]

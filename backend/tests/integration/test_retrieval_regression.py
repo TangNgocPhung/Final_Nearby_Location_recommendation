@@ -111,3 +111,41 @@ def test_com_tam_khong_bi_le_van_tam_bm25_gia_vuot_mat() -> None:
     results = _search("cơm tấm")
     assert results, "Không có kết quả nào cho 'cơm tấm'"
     assert results[0]["name"] != "Công viên Lê Văn Tám"
+
+
+# --- "xem phim" (đo 19/09/2026) ----------------------------------------------
+
+
+def test_xem_phim_tra_rap_chieu_phim_chu_khong_phai_bao_tang_va_quan_pho() -> None:
+    """Lỗi đã đo: "xem phim" trả Bảo tàng Thành phố (177 m) và Phở Nhà Mình
+    (174 m) ở hai hạng đầu — tức danh sách POI gần nhất, không liên quan gì tới
+    truy vấn.
+
+    Nguyên nhân là TỪ VỰNG chứ không phải thuật toán: không trường nào của một
+    rạp chứa chữ "phim" (tên là CGV / Lotte Cinema / BHD Star..., thẻ OSM chỉ
+    có "cinema", nhãn cũ là "Giải trí"), nên BM25 rỗng; mà khi BM25 rỗng thì
+    `search.retrieval._gate_by_text_relevance` cố ý nhường cho RRF, và RRF
+    không có tín hiệu nào ngoài khoảng cách với trending.
+
+    Sửa bằng hai đường bổ sung nhau: nhãn riêng "Xem phim" (migration 0015) và
+    trường `search_keywords` sinh lúc index từ `poi_features.CATEGORY_KEYWORDS`.
+    """
+    results = _search("xem phim")
+
+    assert results, "Không có kết quả nào cho 'xem phim'"
+    assert results[0]["categoryLabel"] == "Xem phim"
+    names = {poi["name"] for poi in results}
+    assert "Bảo tàng Thành phố" not in names
+    assert "Phở Nhà Mình" not in names
+
+
+def test_rap_chieu_phim_khop_qua_tu_vung_cua_loai() -> None:
+    """Cách gọi phổ biến nhất trong tiếng Việt, và là cách KHÔNG xuất hiện ở
+    bất kỳ trường hiển thị nào của POI — kể cả nhãn "Xem phim". Khớp được hay
+    không hoàn toàn do `search_keywords`, nên test này hỏng là dấu hiệu chỉ mục
+    chưa được dựng lại (`search-index --recreate`) chứ không phải ranking sai.
+    """
+    results = _search("rạp chiếu phim")
+
+    assert results, "Không có kết quả nào cho 'rạp chiếu phim'"
+    assert results[0]["categoryLabel"] == "Xem phim"

@@ -25,6 +25,7 @@ from .features.serving import attach_region_ctr
 from . import geo_cache
 from .ltr import model as ltr_model
 from .opening_hours import is_open_now
+from .poi_features import categories_for_query
 from .search.retrieval import multi_channel_candidates
 from .spatio_temporal import enrich_candidates
 
@@ -84,7 +85,22 @@ def fetch_candidates(
                     GREATEST(
                         similarity(name, %(query_text)s),
                         similarity(description, %(query_text)s),
-                        similarity(category_label, %(query_text)s)
+                        similarity(category_label, %(query_text)s),
+                        -- Khớp theo TỪ KHOÁ LOẠI (poi_features.
+                        -- categories_for_query): "rạp chiếu phim" không có
+                        -- trigram chung đáng kể với "CGV Vincom Đồng Khởi" hay
+                        -- nhãn "Xem phim", nên ba dòng trên cho điểm gần 0 dù
+                        -- đây đúng là thứ người dùng đang tìm.
+                        --
+                        -- Cho thẳng 1.0 chứ không phải một giá trị trung gian:
+                        -- truy vấn theo loại thì MỌI POI đúng loại liên quan
+                        -- NHƯ NHAU, và thứ tự giữa chúng phải do khoảng cách /
+                        -- rating / popularity quyết định. Đặt 0.5 chỉ tạo ra
+                        -- một thứ hạng giả giữa các POI vốn ngang nhau.
+                        CASE
+                            WHEN category = ANY(CAST(%(keyword_categories)s AS text[]))
+                            THEN 1.0 ELSE 0.0
+                        END
                     )
                 END AS text_score
             FROM pois
@@ -104,8 +120,22 @@ def fetch_candidates(
                 OR name ILIKE '%%' || %(query_text)s || '%%'
                 OR description ILIKE '%%' || %(query_text)s || '%%'
                 OR category_label ILIKE '%%' || %(query_text)s || '%%'
-                OR similarity(name, %(query_text)s) > 0.15
-                OR similarity(category_label, %(query_text)s) > 0.15
+                OR category = ANY(CAST(%(keyword_categories)s AS text[]))
+                -- Trigram là manh mối YẾU NHẤT ở đây, nên chỉ dùng khi truy
+                -- vấn KHÔNG nêu rõ loại địa điểm. Đo được trên database demo:
+                -- similarity('Cà phê', 'phim') = 0.20 (chung cụm "ph"), tức
+                -- truy vấn "phim" kéo cả bốn quán cà phê vào tập ứng viên rồi
+                -- `diversify` đẩy một quán lên trên cả rạp. Khi đã biết người
+                -- dùng hỏi loại nào thì một trùng hợp trigram không còn là
+                -- bằng chứng — cùng tinh thần với `search.retrieval.
+                -- _gate_by_text_relevance` bên đường OpenSearch.
+                OR (
+                    CAST(%(keyword_categories)s AS text[]) IS NULL
+                    AND (
+                        similarity(name, %(query_text)s) > 0.15
+                        OR similarity(category_label, %(query_text)s) > 0.15
+                    )
+                )
             )
         )
         SELECT
@@ -138,6 +168,11 @@ def fetch_candidates(
         "radius": radius,
         "query_text": query_text.strip() if query_text else None,
         "category": category.strip() if category else None,
+        # None chứ không phải []: mảng rỗng chưa có kiểu thì Postgres không suy
+        # ra được element type. Với NULL, `category = ANY(NULL)` trả NULL —
+        # trong WHERE nghĩa là "không khớp", và trong GREATEST thì CASE rơi về
+        # nhánh ELSE, đúng hành vi mong muốn cho truy vấn không nhắm loại nào.
+        "keyword_categories": list(categories_for_query(query_text)) or None,
         "limit_candidates": limit_candidates,
     }
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as connection:

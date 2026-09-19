@@ -111,3 +111,80 @@ def test_fingerprint_changes_with_location() -> None:
     first = dedupe_fingerprint("Cà phê A", "cafe", 10.77, 106.70)
     second = dedupe_fingerprint("Cà phê A", "cafe", 10.78, 106.70)
     assert first != second
+
+
+# --- Từ vựng tiếng Việt theo loại địa điểm (rạp chiếu phim) -------------------
+#
+# Bối cảnh: truy vấn "xem phim" trả về bảo tàng và quán phở (đo 19/09/2026).
+# Nguyên nhân không phải ở thuật toán mà ở TỪ VỰNG: không trường nào của một
+# rạp chứa chữ người Việt dùng để gọi nó.
+
+from app.poi_features import (  # noqa: E402
+    CATEGORY_KEYWORDS,
+    CATEGORY_MAP,
+    categories_for_query,
+    category_keywords,
+    osm_category,
+)
+
+
+def test_rap_chieu_phim_co_nhan_rieng_khong_gop_vao_giai_tri() -> None:
+    """Nhãn là trường BM25 chấm điểm cao (`category_label^2`) và cũng là chip
+    lọc; gộp rạp vào "Giải trí" chung với bar/pub thì mất cả hai."""
+    assert osm_category({"amenity": "cinema"}) == ("cinema", "Xem phim")
+    # Các loại "Giải trí" còn lại giữ nguyên nhãn cũ.
+    assert osm_category({"amenity": "bar"}) == ("bar", "Giải trí")
+    assert osm_category({"leisure": "playground"}) == ("playground", "Giải trí")
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["xem phim", "Xem Phim", "rạp chiếu phim", "rap chieu phim", "coi phim", "phim"],
+)
+def test_moi_cach_goi_rap_deu_dan_ve_cung_mot_loai(query: str) -> None:
+    """Gõ không dấu là trường hợp phổ biến nhất chứ không phải ngoại lệ, nên
+    "rap chieu phim" phải cho cùng kết quả với "rạp chiếu phim"."""
+    assert categories_for_query(query) == ("cinema",)
+
+
+@pytest.mark.parametrize("query", ["cà phê", "bệnh viện", "công viên", "", None])
+def test_truy_van_khong_noi_ve_phim_thi_khong_nham_loai_nao(query: str | None) -> None:
+    assert categories_for_query(query) == ()
+
+
+def test_tu_khoa_mot_am_tiet_khop_theo_ranh_gioi_tu() -> None:
+    """"phim" nằm GIỮA một từ khác không được tính là khớp — đúng loại lỗi mà
+    fuzzy "AUTO" từng gây ra cho "bệnh viện" (xem `search.query.bm25_body`)."""
+    assert categories_for_query("phimosis") == ()
+    assert categories_for_query("xemphim") == ()
+
+
+def test_bang_tu_khoa_chi_chua_loai_co_that() -> None:
+    """Từ khoá gắn theo `category`, nên một mã gõ sai sẽ im lặng không bao giờ
+    khớp POI nào."""
+    known = {category for category, _label in CATEGORY_MAP.values()}
+    assert set(CATEGORY_KEYWORDS) <= known
+
+
+def test_category_keywords_tra_rong_cho_loai_chua_khai_bao() -> None:
+    assert category_keywords("cafe") == ()
+    assert category_keywords(None) == ()
+    assert "rạp chiếu phim" in category_keywords("cinema")
+
+
+def test_tags_cua_poi_khong_bi_nhet_tu_khoa_truy_xuat() -> None:
+    """Từ vựng truy xuất chỉ sống trong chỉ mục (`search.index.build_document`).
+    Nhét vào `tags` thì trang chi tiết hiện ra bảy chip đồng nghĩa của cùng một
+    từ, mà `tags` vốn là token OSM thô hiển thị cho người dùng."""
+    poi = normalize_osm_element(
+        {
+            "type": "node",
+            "id": 555,
+            "lat": 10.7789,
+            "lon": 106.7029,
+            "tags": {"name": "CGV Vincom", "amenity": "cinema"},
+        }
+    )
+    assert poi is not None
+    assert poi["category_label"] == "Xem phim"
+    assert poi["tags"] == ["cinema"]

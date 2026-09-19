@@ -10,5 +10,7 @@
   {"query": "cà phê", "latitude": 10.7326, "longitude": 106.7196, "radius": 3000, "label": "cà phê quận 4"},
   {"query": "nhà hàng", "latitude": 10.7626, "longitude": 106.6819, "radius": 3000, "label": "nhà hàng quận 10"},
   {"query": "trường học gần đây", "latitude": 10.7769, "longitude": 106.6951, "radius": 3000},
-  {"query": "cơm tấm", "latitude": 10.7769, "longitude": 106.6951, "radius": 3000}
+  {"query": "cơm tấm", "latitude": 10.7769, "longitude": 106.6951, "radius": 3000},
+  {"query": "xem phim", "latitude": 10.7769, "longitude": 106.6951, "radius": 3000},
+  {"query": "rạp chiếu phim", "latitude": 10.7769, "longitude": 106.6951, "radius": 3000}
 ]
