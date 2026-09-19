@@ -89,9 +89,41 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
 # filter của analyzer: filter đó áp lên MỌI trường (kể cả tên riêng) nên dễ tạo
 # khớp nhầm, và mỗi lần thêm một từ là một lần phải dựng lại chỉ mục.
 #
-# Mỗi loại thêm vào đây đều đổi kết quả truy xuất của loại đó, nên chỉ thêm khi
-# đã đo được một truy vấn hỏng thật — hiện mới có "cinema".
+# Nguyên tắc chọn từ khoá: chỉ nhận cụm mà người Việt GÕ KHI TÌM loại đó, và
+# tránh âm tiết đơn vốn là một phần của tên riêng. "trường" bị loại vì "Công
+# trường Lam Sơn", "Công trường Quốc Tế" là địa danh thật; "trường học" thì an
+# toàn. Đây đúng là loại lỗi mà fuzzy "AUTO" từng gây ra cho "bệnh viện".
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    # Ăn uống
+    "restaurant": ("nhà hàng", "quán ăn", "ăn uống", "quán cơm", "chỗ ăn", "đồ ăn"),
+    "bakery": ("tiệm bánh", "lò bánh", "bánh ngọt"),
+    "cafe": ("quán cà phê", "cà phê", "cafe", "coffee", "quán nước"),
+    "bar": ("quán bar", "quán nhậu", "pub", "bia hơi"),
+    # Mua sắm
+    "supermarket": ("siêu thị", "đi siêu thị"),
+    "shopping_mall": ("trung tâm thương mại", "trung tâm mua sắm", "mua sắm"),
+    "convenience": ("cửa hàng tiện lợi", "tạp hóa", "tiện lợi"),
+    "bookstore": ("nhà sách", "hiệu sách", "mua sách"),
+    "clothes": ("quần áo", "thời trang", "shop quần áo"),
+    "electronics": ("điện máy", "điện tử", "đồ điện"),
+    "market": ("chợ", "đi chợ", "chợ truyền thống"),
+    # Y tế
+    "hospital": ("bệnh viện", "phòng khám", "khám bệnh", "cấp cứu"),
+    "pharmacy": ("nhà thuốc", "hiệu thuốc", "tiệm thuốc", "thuốc tây", "mua thuốc"),
+    # Giáo dục
+    "school": ("trường học", "trường tiểu học", "trường cấp hai", "trường cấp ba"),
+    "university": ("đại học", "trường đại học", "cao đẳng"),
+    # Dịch vụ
+    "bank": ("ngân hàng", "chi nhánh ngân hàng"),
+    "atm": ("atm", "cây atm", "rút tiền", "máy rút tiền"),
+    # Lưu trú
+    "hotel": ("khách sạn", "nhà nghỉ", "chỗ ở", "lưu trú", "homestay"),
+    # Văn hóa
+    "museum": ("bảo tàng",),
+    "theatre": ("nhà hát", "sân khấu", "xem kịch"),
+    "library": ("thư viện",),
+    "gallery": ("phòng tranh", "triển lãm"),
+    # Giải trí
     "cinema": (
         "rạp chiếu phim",
         "rạp phim",
@@ -101,6 +133,12 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "suất chiếu",
         "phim",
     ),
+    "playground": ("khu vui chơi", "sân chơi", "chỗ cho trẻ chơi"),
+    # Ngoài trời / thể thao
+    "park": ("công viên", "vườn hoa", "chỗ đi dạo"),
+    "gym": ("phòng gym", "phòng tập", "gym", "thể hình", "tập thể dục"),
+    # Địa danh
+    "landmark": ("điểm tham quan", "địa danh", "danh lam", "chỗ tham quan"),
 }
 
 

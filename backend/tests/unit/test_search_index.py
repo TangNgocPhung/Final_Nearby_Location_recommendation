@@ -78,11 +78,19 @@ def test_document_mang_tu_khoa_tieng_viet_suy_tu_category() -> None:
     assert "rạp chiếu phim" in document["search_keywords"]
 
 
-def test_document_cua_loai_chua_khai_bao_co_truong_rong() -> None:
+def test_document_cua_loai_la_co_truong_rong() -> None:
     """Rỗng chứ không thiếu trường: OpenSearch tự suy mapping cho trường lạ, và
     một trường lúc có lúc không là cách chắc chắn nhất để mapping động đó khác
     với mapping đã khai báo."""
-    assert build_document(_row(category="cafe"))["search_keywords"] == []
+    assert build_document(_row(category="loai-khong-ton-tai"))["search_keywords"] == []
+
+
+def test_document_cua_sieu_thi_mang_duoc_chu_sieu_thi() -> None:
+    """Lỗi đo được 19/09/2026: "siêu thị" không ra siêu thị nào. Tên thật là
+    Co.opmart / Bách hóa Xanh, thẻ OSM là "supermarket", nhãn là "Mua sắm" —
+    không chỗ nào có chữ người dùng gõ."""
+    document = build_document(_row(name="Co.opmart Nguyễn Đình Chiểu", category="supermarket"))
+    assert "siêu thị" in document["search_keywords"]
 
 
 def test_mapping_cua_search_keywords_dung_analyzer_tieng_viet() -> None:

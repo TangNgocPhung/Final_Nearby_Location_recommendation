@@ -147,8 +147,41 @@ def test_moi_cach_goi_rap_deu_dan_ve_cung_mot_loai(query: str) -> None:
     assert categories_for_query(query) == ("cinema",)
 
 
-@pytest.mark.parametrize("query", ["cà phê", "bệnh viện", "công viên", "", None])
-def test_truy_van_khong_noi_ve_phim_thi_khong_nham_loai_nao(query: str | None) -> None:
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("cà phê", ("cafe",)),
+        ("bệnh viện", ("hospital",)),
+        ("công viên", ("park",)),
+        ("siêu thị", ("supermarket",)),
+        ("nhà thuốc", ("pharmacy",)),
+        ("khách sạn", ("hotel",)),
+    ],
+)
+def test_moi_loai_deu_co_tu_vung_tieng_viet_cua_no(
+    query: str, expected: tuple[str, ...]
+) -> None:
+    """Đo được trên production 19/09/2026: "siêu thị" trả về ngân hàng và
+    những POI gần nhất, dù `shop=supermarket` có đầy trong dữ liệu — không
+    trường nào của một siêu thị chứa chữ "siêu thị" (tên là Co.opmart, Bách
+    hóa Xanh; thẻ OSM là "supermarket"; nhãn là "Mua sắm").
+
+    Cùng một lỗi với "xem phim", nên phải cùng một cách chữa cho MỌI loại chứ
+    không chỉ loại nào vừa có người báo."""
+    assert categories_for_query(query) == expected
+
+
+@pytest.mark.parametrize("query", ["", None, "nguyễn huệ", "phở", "landmark 81"])
+def test_truy_van_khong_nham_loai_nao_thi_tra_rong(query: str | None) -> None:
+    """Tên riêng KHÔNG được suy thành loại. Vì thế bảng từ khoá cố ý không
+    nhận âm tiết đơn như "trường" ("Công trường Lam Sơn" là địa danh thật)."""
+    assert categories_for_query(query) == ()
+
+
+@pytest.mark.parametrize(
+    "query", ["công trường lam sơn", "công trường quốc tế", "trường sa"]
+)
+def test_dia_danh_chua_chu_truong_khong_bi_hieu_thanh_truong_hoc(query: str) -> None:
     assert categories_for_query(query) == ()
 
 
@@ -166,10 +199,18 @@ def test_bang_tu_khoa_chi_chua_loai_co_that() -> None:
     assert set(CATEGORY_KEYWORDS) <= known
 
 
-def test_category_keywords_tra_rong_cho_loai_chua_khai_bao() -> None:
-    assert category_keywords("cafe") == ()
+def test_category_keywords_tra_rong_cho_loai_khong_ton_tai() -> None:
+    assert category_keywords("khong-co-loai-nay") == ()
     assert category_keywords(None) == ()
     assert "rạp chiếu phim" in category_keywords("cinema")
+    assert "siêu thị" in category_keywords("supermarket")
+
+
+def test_moi_loai_trong_category_map_deu_co_tu_khoa() -> None:
+    """Thiếu một loại là lặp lại đúng lỗi "siêu thị": loại đó tồn tại trong dữ
+    liệu nhưng người dùng gõ tiếng Việt thì không tìm ra."""
+    known = {category for category, _label in CATEGORY_MAP.values()}
+    assert set(CATEGORY_KEYWORDS) == known
 
 
 def test_tags_cua_poi_khong_bi_nhet_tu_khoa_truy_xuat() -> None:
