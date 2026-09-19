@@ -137,6 +137,14 @@ def test_rap_chieu_phim_co_nhan_rieng_khong_gop_vao_giai_tri() -> None:
     assert osm_category({"leisure": "playground"}) == ("playground", "Giải trí")
 
 
+def test_san_bay_nhan_dien_qua_khoa_aeroway() -> None:
+    """`aeroway=aerodrome` không nằm trong bốn khoá amenity/tourism/leisure/
+    shop mà `osm_category` từng duyệt — thiếu khoá này là lý do Tân Sơn Nhất
+    chưa bao giờ được nhập dù đã có mặt trong OSM."""
+    assert osm_category({"aeroway": "aerodrome"}) == ("airport", "Sân bay")
+    assert osm_category({"aeroway": "helipad"}) is None
+
+
 @pytest.mark.parametrize(
     "query",
     ["xem phim", "Xem Phim", "rạp chiếu phim", "rap chieu phim", "coi phim", "phim"],

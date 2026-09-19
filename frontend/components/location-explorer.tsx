@@ -35,6 +35,7 @@ import {
   Moon,
   Navigation,
   PartyPopper,
+  Plane,
   Radio,
   Route,
   Search,
@@ -506,7 +507,7 @@ function meetsMinRating(poi: Poi, minRating: number) {
 // thứ chip thật sự mang — còn mã thì một nhãn "Mua sắm" ứng với cả
 // supermarket, mall, convenience, clothes, electronics...
 //
-// Đủ 14 nhãn mà `poi_features.CATEGORY_MAP` sinh ra. Nhãn lạ (dữ liệu nhập sau
+// Đủ 15 nhãn mà `poi_features.CATEGORY_MAP` sinh ra. Nhãn lạ (dữ liệu nhập sau
 // này thêm loại mới) rơi về `MapPin` — chip vẫn đọc được vì luôn có chữ đi kèm,
 // biểu tượng chỉ để quét nhanh bằng mắt chứ không thay chữ.
 const CATEGORY_CHIP_ICONS: Record<string, LucideIcon> = {
@@ -524,6 +525,7 @@ const CATEGORY_CHIP_ICONS: Record<string, LucideIcon> = {
   'Văn hóa': Landmark,
   'Địa danh': Camera,
   'Xem phim': Film,
+  'Sân bay': Plane,
 };
 
 function categoryChipIcon(label: string): LucideIcon {

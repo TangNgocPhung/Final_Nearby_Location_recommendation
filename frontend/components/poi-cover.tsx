@@ -20,6 +20,7 @@ import {
   MapPin,
   Palette,
   Pill,
+  Plane,
   School,
   Shirt,
   ShoppingBag,
@@ -45,8 +46,9 @@ type CoverStyle = { icon: LucideIcon; surface: string };
 // phụ thuộc biến --tw-gradient-*; nếu vì lý do gì đó lớp đó không sinh ra thì
 // thẻ vẫn là một mảng màu tử tế chứ không phải ô trắng trong buổi bảo vệ.
 //
-// 27 category dưới đây là TOÀN BỘ giá trị có thật trong bảng pois (đã đếm trên
-// DB đang chạy), cộng vài bí danh mà giao diện hay gọi tên khác ('shopping').
+// 28 category dưới đây là TOÀN BỘ giá trị có thật trong bảng pois (đã đếm trên
+// DB đang chạy, cộng 'airport' sau khi thêm bộ lọc `aeroway`), cộng vài bí danh
+// mà giao diện hay gọi tên khác ('shopping').
 const COVER_STYLES: Record<string, CoverStyle> = {
   cafe: {
     icon: Coffee,
@@ -167,6 +169,10 @@ const COVER_STYLES: Record<string, CoverStyle> = {
   office: {
     icon: Building2,
     surface: 'bg-slate-600 bg-linear-to-br from-slate-500 via-slate-700 to-slate-900',
+  },
+  airport: {
+    icon: Plane,
+    surface: 'bg-sky-800 bg-linear-to-br from-sky-600 via-blue-800 to-slate-950',
   },
 };
 

@@ -71,6 +71,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("shop", "bakery"): ("bakery", "Ăn uống"),
     ("shop", "clothes"): ("clothes", "Mua sắm"),
     ("shop", "electronics"): ("electronics", "Mua sắm"),
+    ("aeroway", "aerodrome"): ("airport", "Sân bay"),
 }
 
 # Từ khoá tiếng Việt gắn theo LOẠI địa điểm, dùng riêng cho truy xuất (không
@@ -139,6 +140,8 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "gym": ("phòng gym", "phòng tập", "gym", "thể hình", "tập thể dục"),
     # Địa danh
     "landmark": ("điểm tham quan", "địa danh", "danh lam", "chỗ tham quan"),
+    # Giao thông
+    "airport": ("sân bay", "phi trường", "sân bay quốc tế", "đi máy bay"),
 }
 
 
@@ -358,7 +361,7 @@ def categories_for_query(query_text: str | None) -> tuple[str, ...]:
 
 
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
-    for key in ("amenity", "tourism", "leisure", "shop"):
+    for key in ("amenity", "tourism", "leisure", "shop", "aeroway"):
         value = tags.get(key)
         if value and (key, value) in CATEGORY_MAP:
             return CATEGORY_MAP[(key, value)]
@@ -396,7 +399,7 @@ def normalize_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
     searchable_tags = sorted(
         {
             value
-            for key in ("amenity", "tourism", "leisure", "shop", "cuisine")
+            for key in ("amenity", "tourism", "leisure", "shop", "aeroway", "cuisine")
             for value in str(tags.get(key, "")).split(";")
             if value
         }
