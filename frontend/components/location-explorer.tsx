@@ -11,24 +11,40 @@ import {
   Bell,
   BellRing,
   Bike,
+  Camera,
   CheckCircle2,
   Clock,
+  Coffee,
   Compass,
+  CreditCard,
   DatabaseZap,
+  Dumbbell,
+  Film,
   Flame,
+  GraduationCap,
+  Hotel,
   Info,
+  Landmark,
+  LayoutGrid,
   LocateFixed,
+  type LucideIcon,
   MapPin,
   Moon,
   Navigation,
+  PartyPopper,
   Radio,
   Route,
   Search,
   ShieldCheck,
+  ShoppingBag,
   SlidersHorizontal,
   Sparkles,
   Star,
+  Stethoscope,
+  Store,
   Sun,
+  Trees,
+  UtensilsCrossed,
   X,
 } from 'lucide-react';
 
@@ -467,6 +483,37 @@ const MIN_RATING_OPTIONS = [0, 3, 3.5, 4, 4.5] as const;
 
 function meetsMinRating(poi: Poi, minRating: number) {
   return minRating <= 0 || (poi.rating !== null && poi.rating >= minRating);
+}
+
+// Biểu tượng của từng chip danh mục.
+//
+// Tra theo NHÃN tiếng Việt, không theo mã `category`: `/api/v1/categories` gom
+// POI theo `category_label` (xem `ranking.fetch_categories`), nên nhãn mới là
+// thứ chip thật sự mang — còn mã thì một nhãn "Mua sắm" ứng với cả
+// supermarket, mall, convenience, clothes, electronics...
+//
+// Đủ 14 nhãn mà `poi_features.CATEGORY_MAP` sinh ra. Nhãn lạ (dữ liệu nhập sau
+// này thêm loại mới) rơi về `MapPin` — chip vẫn đọc được vì luôn có chữ đi kèm,
+// biểu tượng chỉ để quét nhanh bằng mắt chứ không thay chữ.
+const CATEGORY_CHIP_ICONS: Record<string, LucideIcon> = {
+  'Ăn uống': UtensilsCrossed,
+  'Cà phê': Coffee,
+  'Mua sắm': ShoppingBag,
+  Chợ: Store,
+  'Công viên': Trees,
+  'Y tế': Stethoscope,
+  'Giáo dục': GraduationCap,
+  'Dịch vụ': CreditCard,
+  'Lưu trú': Hotel,
+  'Giải trí': PartyPopper,
+  'Thể thao': Dumbbell,
+  'Văn hóa': Landmark,
+  'Địa danh': Camera,
+  'Xem phim': Film,
+};
+
+function categoryChipIcon(label: string): LucideIcon {
+  return CATEGORY_CHIP_ICONS[label] ?? MapPin;
 }
 
 function chipClass(active: boolean) {
@@ -2078,22 +2125,31 @@ export function LocationExplorer() {
                       setSelectedCategory(null);
                       void runSearch(query, null);
                     }}
-                    className={chipClass(selectedCategory === null)}
+                    className={`inline-flex items-center gap-1.5 ${chipClass(
+                      selectedCategory === null,
+                    )}`}
                   >
+                    <LayoutGrid className="size-3.5" aria-hidden />
                     Tất cả
                   </button>
-                  {categoryOptions.map((option) => (
-                    <button
-                      key={option.category}
-                      type="button"
-                      onClick={() => toggleCategory(option.category)}
-                      className={chipClass(
-                        selectedCategory === option.category,
-                      )}
-                    >
-                      {option.categoryLabel}
-                    </button>
-                  ))}
+                  {categoryOptions.map((option) => {
+                    // `aria-hidden` vì nhãn ngay bên cạnh đã nói đúng nội dung
+                    // đó rồi; đọc thêm tên icon chỉ làm trình đọc màn hình lặp.
+                    const Icon = categoryChipIcon(option.categoryLabel);
+                    return (
+                      <button
+                        key={option.category}
+                        type="button"
+                        onClick={() => toggleCategory(option.category)}
+                        className={`inline-flex items-center gap-1.5 ${chipClass(
+                          selectedCategory === option.category,
+                        )}`}
+                      >
+                        <Icon className="size-3.5" aria-hidden />
+                        {option.categoryLabel}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
               <p className="text-xs text-muted-foreground" aria-live="polite">
