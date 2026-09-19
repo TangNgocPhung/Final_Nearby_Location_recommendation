@@ -63,12 +63,13 @@ HEAVY_PRECIPITATION_MM = 2.5
 #
 # Bảng này KHÔNG suy ra được từ `CATEGORY_TIME_AFFINITY`: cái kia nói địa điểm
 # hợp buổi nào trong ngày, không nói nó có mái che hay không. Danh sách loại
-# lấy đúng từ `poi_features.CATEGORY_MAP` — toàn bộ 33 loại thật đang có trong
+# lấy đúng từ `poi_features.CATEGORY_MAP` — toàn bộ 38 loại thật đang có trong
 # dữ liệu, không bịa thêm loại nào.
 #
 # "necessity" là nhóm quan trọng nhất phải tách riêng: không ai hoãn đi bệnh
 # viện vì trời mưa, nên hạ điểm bệnh viện lúc mưa là một hành vi sai chứ không
-# phải một tinh chỉnh.
+# phải một tinh chỉnh. Sân bay cùng nhóm: không ai hoãn chuyến bay vì trời mưa
+# ở đầu tìm kiếm, và bản thân nhà ga đã có mái che.
 OUTDOOR_CATEGORIES = frozenset({"park", "playground", "landmark", "market"})
 INDOOR_CATEGORIES = frozenset(
     {
@@ -90,9 +91,14 @@ INDOOR_CATEGORIES = frozenset(
         "hotel",
         "bank",
         "gym",
+        "spa",
+        "event_venue",
+        "hairdresser",
     }
 )
-NECESSITY_CATEGORIES = frozenset({"hospital", "pharmacy", "school", "university", "atm"})
+NECESSITY_CATEGORIES = frozenset(
+    {"hospital", "pharmacy", "school", "university", "atm", "airport", "dentist"}
+)
 
 # Hệ số nhân vào `contextScore`. Cố ý nhẹ: thời tiết là ngữ cảnh, không phải
 # mức độ liên quan — trời mưa không làm một quán cà phê thành kết quả sai cho

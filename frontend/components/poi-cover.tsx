@@ -5,12 +5,14 @@ import {
   Beer,
   BookOpen,
   Building2,
+  Cake,
   Coffee,
   Croissant,
   CreditCard,
   Drama,
   Dumbbell,
   Film,
+  Flower2,
   Fuel,
   GraduationCap,
   Hotel,
@@ -20,11 +22,14 @@ import {
   MapPin,
   Palette,
   Pill,
+  Plane,
+  Scissors,
   School,
   Shirt,
   ShoppingBag,
   ShoppingCart,
   Smartphone,
+  Smile,
   Store,
   Stethoscope,
   ToyBrick,
@@ -45,8 +50,10 @@ type CoverStyle = { icon: LucideIcon; surface: string };
 // phụ thuộc biến --tw-gradient-*; nếu vì lý do gì đó lớp đó không sinh ra thì
 // thẻ vẫn là một mảng màu tử tế chứ không phải ô trắng trong buổi bảo vệ.
 //
-// 27 category dưới đây là TOÀN BỘ giá trị có thật trong bảng pois (đã đếm trên
-// DB đang chạy), cộng vài bí danh mà giao diện hay gọi tên khác ('shopping').
+// 32 category dưới đây là TOÀN BỘ giá trị có thật trong bảng pois (đã đếm trên
+// DB đang chạy, cộng 'airport'/'spa'/'dentist'/'event_venue'/'hairdresser' sau
+// khi mở rộng bộ lọc OSM), cộng vài bí danh mà giao diện hay gọi tên khác
+// ('shopping').
 const COVER_STYLES: Record<string, CoverStyle> = {
   cafe: {
     icon: Coffee,
@@ -128,6 +135,10 @@ const COVER_STYLES: Record<string, CoverStyle> = {
     icon: Smartphone,
     surface: 'bg-zinc-700 bg-linear-to-br from-zinc-500 via-slate-700 to-zinc-900',
   },
+  hairdresser: {
+    icon: Scissors,
+    surface: 'bg-violet-500 bg-linear-to-br from-violet-400 via-purple-500 to-fuchsia-700',
+  },
   hotel: {
     icon: Hotel,
     surface: 'bg-indigo-600 bg-linear-to-br from-indigo-500 via-violet-600 to-slate-900',
@@ -148,6 +159,10 @@ const COVER_STYLES: Record<string, CoverStyle> = {
     icon: Pill,
     surface: 'bg-emerald-600 bg-linear-to-br from-emerald-400 via-teal-600 to-cyan-800',
   },
+  dentist: {
+    icon: Smile,
+    surface: 'bg-cyan-600 bg-linear-to-br from-cyan-400 via-sky-600 to-blue-900',
+  },
   gym: {
     icon: Dumbbell,
     surface: 'bg-slate-700 bg-linear-to-br from-slate-500 via-zinc-700 to-neutral-900',
@@ -167,6 +182,18 @@ const COVER_STYLES: Record<string, CoverStyle> = {
   office: {
     icon: Building2,
     surface: 'bg-slate-600 bg-linear-to-br from-slate-500 via-slate-700 to-slate-900',
+  },
+  airport: {
+    icon: Plane,
+    surface: 'bg-sky-800 bg-linear-to-br from-sky-600 via-blue-800 to-slate-950',
+  },
+  spa: {
+    icon: Flower2,
+    surface: 'bg-rose-500 bg-linear-to-br from-rose-300 via-pink-500 to-fuchsia-700',
+  },
+  event_venue: {
+    icon: Cake,
+    surface: 'bg-fuchsia-700 bg-linear-to-br from-fuchsia-500 via-purple-700 to-indigo-900',
   },
 };
 

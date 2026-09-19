@@ -76,6 +76,9 @@ def test_mua_ha_diem_ngoai_troi_nang_diem_trong_nha() -> None:
     assert weather.weather_factor("cafe", MUA_VUA) == weather.RAIN_INDOOR_FACTOR
     assert weather.weather_factor("shopping_mall", MUA_VUA) == weather.RAIN_INDOOR_FACTOR
     assert weather.weather_factor("cinema", MUA_VUA) == weather.RAIN_INDOOR_FACTOR
+    assert weather.weather_factor("spa", MUA_VUA) == weather.RAIN_INDOOR_FACTOR
+    assert weather.weather_factor("event_venue", MUA_VUA) == weather.RAIN_INDOOR_FACTOR
+    assert weather.weather_factor("hairdresser", MUA_VUA) == weather.RAIN_INDOOR_FACTOR
 
 
 def test_mua_to_manh_tay_hon_mua_vua() -> None:
@@ -85,7 +88,15 @@ def test_mua_to_manh_tay_hon_mua_vua() -> None:
 def test_khong_ai_hoan_di_benh_vien_vi_troi_mua() -> None:
     """Nhóm thiết yếu phải trung tính. Hạ điểm bệnh viện lúc mưa là hành vi SAI,
     không phải một tinh chỉnh nhỏ."""
-    for category in ("hospital", "pharmacy", "school", "university", "atm"):
+    for category in (
+        "hospital",
+        "pharmacy",
+        "school",
+        "university",
+        "atm",
+        "airport",
+        "dentist",
+    ):
         assert weather.weather_factor(category, MUA_TO) == 1.0
 
 

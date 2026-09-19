@@ -137,6 +137,46 @@ def test_rap_chieu_phim_co_nhan_rieng_khong_gop_vao_giai_tri() -> None:
     assert osm_category({"leisure": "playground"}) == ("playground", "Giải trí")
 
 
+def test_san_bay_nhan_dien_qua_khoa_aeroway() -> None:
+    """`aeroway=aerodrome` không nằm trong bốn khoá amenity/tourism/leisure/
+    shop mà `osm_category` từng duyệt — thiếu khoá này là lý do Tân Sơn Nhất
+    chưa bao giờ được nhập dù đã có mặt trong OSM."""
+    assert osm_category({"aeroway": "aerodrome"}) == ("airport", "Sân bay")
+    assert osm_category({"aeroway": "helipad"}) is None
+
+
+def test_spa_nhan_dien_qua_leisure_spa() -> None:
+    """`leisure=spa` từng không nằm trong danh sách giá trị lọc của khoá
+    `leisure` (`poi_import.OSM_FILTERS`), nên không có spa nào được nhập —
+    truy vấn "spa" vì vậy có BM25 rỗng và rơi về ứng viên gần nhất bất kể
+    loại gì, đúng lớp lỗi đã sửa cho sân bay."""
+    assert osm_category({"leisure": "spa"}) == ("spa", "Spa")
+    # Khoá `leisure` đã được `osm_category` duyệt từ trước; các giá trị khác
+    # của nó giữ nguyên hành vi cũ.
+    assert osm_category({"leisure": "park"}) == ("park", "Công viên")
+
+
+def test_nha_khoa_va_tiec_cuoi_nhan_dien_qua_amenity_moi() -> None:
+    """`amenity=dentist` và `amenity=events_venue` từng không nằm trong
+    `poi_import.OSM_FILTERS["amenity"]` — cùng lớp lỗi đã sửa cho spa: BM25
+    rỗng khiến truy vấn "nha khoa"/"tiệc cưới" rơi về ứng viên gần nhất bất
+    kể loại gì."""
+    assert osm_category({"amenity": "dentist"}) == ("dentist", "Nha khoa")
+    assert osm_category({"amenity": "events_venue"}) == (
+        "event_venue",
+        "Tiệc cưới & sự kiện",
+    )
+
+
+def test_cat_toc_nhan_dien_qua_shop_hairdresser() -> None:
+    """`shop=hairdresser` từng không nằm trong danh sách giá trị lọc của
+    khoá `shop` — cùng lớp lỗi đã sửa cho spa/nha khoa/tiệc cưới."""
+    assert osm_category({"shop": "hairdresser"}) == ("hairdresser", "Cắt tóc")
+    # Khoá `shop` đã được `osm_category` duyệt từ trước; các giá trị khác
+    # giữ nguyên hành vi cũ.
+    assert osm_category({"shop": "supermarket"}) == ("supermarket", "Mua sắm")
+
+
 @pytest.mark.parametrize(
     "query",
     ["xem phim", "Xem Phim", "rạp chiếu phim", "rap chieu phim", "coi phim", "phim"],
