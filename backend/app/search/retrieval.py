@@ -11,7 +11,8 @@ from typing import Any
 
 from .. import geo_cache
 from ..config import settings
-from ..poi_features import h3_ring_geometry, h3_ring_ids, text_embedding
+from ..embeddings import semantic_embedding
+from ..poi_features import h3_ring_geometry, h3_ring_ids
 from . import query as query_builder
 from .client import get_client, search_available
 from .enrichment import hydrate_candidates
@@ -206,12 +207,14 @@ def multi_channel_candidates(
             channels["bm25"] = [poi_id for poi_id, _score in bm25_hits]
             bm25_scores = dict(bm25_hits)
             if settings.opensearch_knn_enabled:
-                embedding = text_embedding((clean_query,))
-                if not any(embedding):
-                    # Vector 0 làm OpenSearch trả 400; bỏ kênh này thay vì để
-                    # cả truy vấn rơi về PostGIS. Mức warning để lần sau thấy ngay.
+                embedding = semantic_embedding(clean_query)
+                if embedding is None:
+                    # Ollama không tới được (chưa deploy production, hoặc chết
+                    # tạm) — bỏ kênh vector thay vì để cả truy vấn rơi về
+                    # PostGIS. Mức warning để thấy ngay, không im lặng.
                     logger.warning(
-                        "Truy vấn %r cho embedding toàn 0, bỏ kênh vector lần này", clean_query
+                        "Không lấy được semantic embedding cho truy vấn %r, bỏ kênh vector lần này",
+                        clean_query,
                     )
                     degraded.append("vector")
                 else:

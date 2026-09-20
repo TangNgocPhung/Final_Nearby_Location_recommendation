@@ -11,12 +11,8 @@ import logging
 from typing import Any, Iterable
 
 from ..config import settings
-from ..poi_features import (
-    EMBEDDING_DIMENSION,
-    category_keywords,
-    normalize_text,
-    text_embedding,
-)
+from ..embeddings import EMBEDDING_DIMENSION, semantic_embedding
+from ..poi_features import category_keywords, normalize_text
 
 logger = logging.getLogger("nearby-search")
 
@@ -170,12 +166,18 @@ def ensure_index(client: Any) -> bool:
     return True
 
 
-def _coerce_embedding(row: dict[str, Any]) -> list[float]:
-    embedding = row.get("embedding")
-    if embedding:
-        return [float(value) for value in embedding]
-    # POI cũ thiếu embedding: tái tạo tất định từ tên/mô tả/tags.
-    return text_embedding((row.get("name"), row.get("description"), " ".join(row.get("tags") or [])))
+def _coerce_embedding(row: dict[str, Any]) -> list[float] | None:
+    """Luôn tính LẠI bằng semantic embedding (Ollama/bge-m3, 1024 chiều) — KHÔNG
+    dùng ``row["embedding"]`` từ Postgres: cột đó vẫn là hashing-v2-64 (64
+    chiều), khác không gian biểu diễn, trộn vào cùng trường ``knn_vector`` sẽ
+    làm k-NN so sánh rác. Trả ``None`` khi Ollama không tới được — bên gọi bỏ
+    hẳn field ``embedding`` cho POI đó thay vì ghi một vector rác."""
+    text = " ".join(
+        part
+        for part in (row.get("name"), row.get("description"), " ".join(row.get("tags") or []))
+        if part
+    )
+    return semantic_embedding(text)
 
 
 def build_document(row: dict[str, Any]) -> dict[str, Any]:
@@ -201,7 +203,9 @@ def build_document(row: dict[str, Any]) -> dict[str, Any]:
         "updated_at": row.get("updated_at"),
     }
     if settings.opensearch_knn_enabled:
-        document["embedding"] = _coerce_embedding(row)
+        embedding = _coerce_embedding(row)
+        if embedding is not None:
+            document["embedding"] = embedding
     return document
 
 

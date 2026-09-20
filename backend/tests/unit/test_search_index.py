@@ -1,4 +1,5 @@
-from app.poi_features import EMBEDDING_DIMENSION
+from app.embeddings import EMBEDDING_DIMENSION
+from app.search import index as index_module
 from app.search.index import build_document, index_mappings, index_settings
 
 
@@ -21,13 +22,17 @@ def _row(**overrides):
         "h3_r8": "881a",
         "h3_r9": "891a",
         "updated_at": None,
-        "embedding": [0.1] * EMBEDDING_DIMENSION,
+        # KHÔNG còn "embedding" ở đây: build_document luôn tính lại bằng
+        # semantic_embedding (Ollama), không tin cột Postgres nữa — cột đó vẫn
+        # là hashing-v2-64 (64 chiều), khác không gian biểu diễn với bge-m3
+        # (1024 chiều). Xem docstring `search/index._coerce_embedding`.
     }
     row.update(overrides)
     return row
 
 
-def test_build_document_maps_location_as_geo_point() -> None:
+def test_build_document_maps_location_as_geo_point(monkeypatch) -> None:
+    monkeypatch.setattr(index_module, "semantic_embedding", lambda text: [0.1] * EMBEDDING_DIMENSION)
     document = build_document(_row())
 
     assert document["location"] == {"lat": 10.77, "lon": 106.70}
@@ -35,12 +40,14 @@ def test_build_document_maps_location_as_geo_point() -> None:
     assert document["embedding"] == [0.1] * EMBEDDING_DIMENSION
 
 
-def test_build_document_regenerates_missing_embedding() -> None:
-    document = build_document(_row(embedding=None))
+def test_build_document_omits_embedding_when_ollama_unavailable(monkeypatch) -> None:
+    """Ollama chết/chưa deploy — KHÔNG được ghi vector rác hay giữ lại vector
+    hashing cũ (sai không gian biểu diễn). Bỏ hẳn field, giống quy ước "thiếu
+    dữ liệu = vắng mặt" đã dùng cho rating/giờ mở cửa."""
+    monkeypatch.setattr(index_module, "semantic_embedding", lambda text: None)
+    document = build_document(_row())
 
-    assert len(document["embedding"]) == EMBEDDING_DIMENSION
-    # embedding tái tạo phải là vector đã chuẩn hóa (không toàn 0 với tên có chữ).
-    assert any(value != 0 for value in document["embedding"])
+    assert "embedding" not in document
 
 
 def test_build_document_defaults_price_level_when_missing() -> None:
