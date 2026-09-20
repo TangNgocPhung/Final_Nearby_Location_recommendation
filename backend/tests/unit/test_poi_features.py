@@ -100,6 +100,42 @@ def test_osm_element_is_mapped_to_canonical_shape() -> None:
     assert poi["amenities"]["internet_access"] == "wlan"
 
 
+def test_osm_element_invalid_country_tag_falls_back_to_vn() -> None:
+    """Đo được thật (2026-09-20): tag `addr:country` do người dùng OSM tự gõ,
+    một giá trị dài (vd "Vietnam" thay vì "VN") làm crash CẢ LƯỢT IMPORT ngay
+    ở câu INSERT đầu tiên gặp phải nó (cột `country_code` là CHAR(2)). Sai
+    định dạng phải rơi về "VN", không được truyền thẳng ra ngoài."""
+    poi = normalize_osm_element(
+        {
+            "type": "node",
+            "id": 124,
+            "lat": 10.7757,
+            "lon": 106.7009,
+            "tags": {
+                "name": "Bãi xe Thử Nghiệm",
+                "amenity": "parking",
+                "addr:country": "Vietnam",
+            },
+        }
+    )
+    assert poi is not None
+    assert poi["country_code"] == "VN"
+
+
+def test_osm_element_valid_country_tag_kept_uppercased() -> None:
+    poi = normalize_osm_element(
+        {
+            "type": "node",
+            "id": 125,
+            "lat": 10.7757,
+            "lon": 106.7009,
+            "tags": {"name": "Test", "amenity": "cafe", "addr:country": "vn"},
+        }
+    )
+    assert poi is not None
+    assert poi["country_code"] == "VN"
+
+
 def test_bbox_and_overpass_query_are_bounded() -> None:
     bbox = parse_bbox("10.70,106.60,10.90,106.82")
     query = build_overpass_query(bbox)

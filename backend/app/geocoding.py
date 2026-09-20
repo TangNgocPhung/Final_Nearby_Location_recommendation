@@ -11,6 +11,23 @@ LOCATION_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Các cụm chỉ vị trí hiện tại (đại từ chỉ định "đây"/"này", không phải tên địa
+# danh thật) — đo được thật (2026-09-20): "parking gần đây" tách subject=
+# "parking", location="đây", rồi "đây" bị fuzzy-match nhầm thành tên POI
+# "TH-Anh Đây" cách xa 64km, khiến toàn bộ kết quả tìm kiếm bị lệch tâm sang
+# vị trí sai thay vì dùng device location. Các cụm này KHÔNG được đưa vào
+# geocode — coi như không có locationText, giữ nguyên tâm tìm kiếm gốc.
+DEICTIC_LOCATION_TERMS = {
+    "đây",
+    "đây gần",
+    "chỗ này",
+    "khu này",
+    "khu vực này",
+    "vị trí này",
+    "vị trí hiện tại",
+    "đây gần đó",
+}
+
 
 def normalize_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFC", value).strip().lower().split())
@@ -21,7 +38,14 @@ def split_subject_and_location(text: str) -> tuple[str, str | None]:
     match = LOCATION_PATTERN.match(normalized)
     if not match:
         return normalized, None
-    return match.group("subject").strip(), match.group("location").strip()
+    subject = match.group("subject").strip()
+    location = match.group("location").strip()
+    if location in DEICTIC_LOCATION_TERMS:
+        # "gần đây" = "nearby" (vị trí hiện tại), không phải tên địa danh cần
+        # geocode — giữ subject đã tách ("parking"), bỏ phần "gần đây" vì nó
+        # không mang nghĩa tìm kiếm gì thêm cho BM25.
+        return subject, None
+    return subject, location
 
 
 def parse_location(

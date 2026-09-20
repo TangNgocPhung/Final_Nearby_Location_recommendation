@@ -234,7 +234,14 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "airport": ("sân bay", "phi trường", "sân bay quốc tế", "đi máy bay"),
     "bus_station": ("bến xe", "bến xe khách", "xe khách", "bến xe buýt"),
     "train_station": ("ga tàu", "nhà ga", "ga xe lửa", "tàu hỏa", "ga metro", "metro"),
-    "parking": ("bãi xe", "bãi đỗ xe", "bãi giữ xe", "chỗ đậu xe", "gửi xe"),
+    # "parking" (tiếng Anh) giữ nguyên trong danh sách — đo được thật
+    # (2026-09-20): truy vấn "parking gần đây" trả 0 kết quả bãi đỗ xe dù đã
+    # có 50 POI category=parking thật trong chỉ mục, vì từ này không khớp
+    # BM25 với bất kỳ từ khoá tiếng Việt nào ở trên. "Parking" là từ mượn rất
+    # phổ biến trong khẩu ngữ TP.HCM (nhất là trên các app tương tự), không
+    # phải lỗi gõ — cùng lớp lỗi với "siêu thị"/"xem phim" đã vá ở các
+    # migration 0015/0016.
+    "parking": ("bãi xe", "bãi đỗ xe", "bãi giữ xe", "chỗ đậu xe", "gửi xe", "parking"),
     # Xăng dầu và dịch vụ xe
     "fuel": ("cây xăng", "trạm xăng", "đổ xăng", "xăng dầu", "bơm xăng"),
     "charging_station": ("trạm sạc", "sạc xe điện", "trụ sạc", "sạc pin xe"),
@@ -557,6 +564,13 @@ def _amenities(tags: dict[str, str]) -> dict[str, bool | str]:
     return {key: tags[key] for key in keys if key in tags}
 
 
+def _normalize_country_code(raw: str | None) -> str:
+    """Chuẩn hoá tag OSM ``addr:country`` — chỉ nhận đúng 2 chữ cái (ISO
+    3166-1 alpha-2), sai định dạng thì về ``"VN"``. Xem lý do ở nơi gọi."""
+    value = (raw or "").strip().upper()
+    return value if len(value) == 2 and value.isalpha() else "VN"
+
+
 def normalize_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
     tags = element.get("tags") or {}
     name = tags.get("name") or tags.get("name:vi")
@@ -601,7 +615,13 @@ def normalize_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
         "brand": tags.get("brand") or tags.get("operator"),
         "district": district,
         "city": tags.get("addr:city") or "Hồ Chí Minh",
-        "country_code": (tags.get("addr:country") or "VN").upper(),
+        # Cột `country_code` là CHAR(2) — tag OSM `addr:country` do người dùng
+        # tự gõ, không kiểm soát được định dạng. Đo được thật (2026-09-20):
+        # một tag lỗi (vd "Vietnam" thay vì "VN") làm crash CẢ LƯỢT IMPORT ở
+        # ngay câu INSERT đầu tiên gặp phải nó. Chỉ nhận giá trị ĐÚNG 2 chữ
+        # cái, sai định dạng thì rơi về "VN" — ứng dụng chỉ phục vụ TP.HCM,
+        # mặc định này luôn đúng hơn là để một tag bẩn làm hỏng cả import.
+        "country_code": _normalize_country_code(tags.get("addr:country")),
         "source": "openstreetmap",
         "source_id": source_id,
         "h3_r7": cells["r7"],
