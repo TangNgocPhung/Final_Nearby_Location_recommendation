@@ -8,8 +8,12 @@ WORKDIR /app
 # libgomp1: runtime OpenMP ma LightGBM lien ket dong. Anh python:slim khong co
 # san, va thieu no thi `import lightgbm` chet voi "libgomp.so.1: cannot open
 # shared object file" — loi xay ra luc NAP MO HINH chu khong phai luc build.
+#
+# libsndfile1: `soundfile` (phu thuoc cua vieneu, Phase 16.2) can thu vien he
+# thong nay de doc/ghi WAV — thieu no thi `import soundfile` loi ngay luc
+# import, khong phai luc goi TTS.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get install -y --no-install-recommends libgomp1 libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

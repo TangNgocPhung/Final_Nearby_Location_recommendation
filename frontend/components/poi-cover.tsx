@@ -327,8 +327,11 @@ export function PoiCover({
   const Icon = style.icon;
 
   return (
-    <div
-      role="img"
+    // Không có file ảnh thật để đổi sang thẻ <img> — đây là ảnh bìa SINH BẰNG
+    // CSS (icon + gradient), không có `src`. role="img" là đúng ngữ nghĩa ở
+    // đây, rule prefer-tag-over-role không phân biệt được trường hợp này.
+    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
+    <div role="img"
       aria-label={`Ảnh bìa sinh sẵn cho ${name}`}
       className={cn(
         'relative isolate flex size-full items-center justify-center overflow-hidden',

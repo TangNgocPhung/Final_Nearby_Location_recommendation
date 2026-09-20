@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -9,8 +9,13 @@ export const metadata: Metadata = {
   // chỉ hoạt động trong secure context, và manifest là thứ biến trang thành một
   // ứng dụng cài được thay vì một tab bình thường.
   manifest: '/manifest.json',
-  themeColor: '#0f8a62',
   icons: { icon: '/icon-192.png', apple: '/icon-192.png' },
+};
+
+// `themeColor` chuyển ra khỏi `metadata` theo API mới — nhét trong `metadata`
+// bị đánh dấu deprecated (typescript/no-deprecated trong .oxlintrc.json).
+export const viewport: Viewport = {
+  themeColor: '#0f8a62',
 };
 
 // Chạy đồng bộ trước khi React hydrate: đặt sẵn class '.dark' theo lựa chọn đã

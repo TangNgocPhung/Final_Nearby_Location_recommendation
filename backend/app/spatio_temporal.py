@@ -173,6 +173,38 @@ def windowed_popularity(
             }
 
 
+# Dưới ngưỡng này (tổng sự kiện 3 cửa sổ cộng lại) thì KHÔNG gắn nhãn "Vắng" —
+# đó là thiếu dữ liệu, không phải bằng chứng POI thật sự vắng. Xem
+# `_busyness_estimate`.
+MIN_EVENTS_FOR_BUSYNESS_ESTIMATE = 3
+
+
+def _busyness_estimate(windows: dict[str, int], recency_score: float) -> dict[str, Any]:
+    """Ước tính mức độ đông/vắng từ tương tác gần đây của chính Nearby.
+
+    KHÔNG PHẢI dữ liệu real-time thật kiểu Google Popular Times — Nearby không
+    có nguồn đó, chỉ có log tương tác của người dùng ứng dụng (`ingestion_
+    events`). Gọi thẳng là "đang đông 85%" thì sai — trả về ``estimated=False``
+    khi dữ liệu quá ít, và bên gọi (chatbot/UI) phải nói rõ đây là ƯỚC TÍNH.
+
+    ``recency_score`` chuẩn hoá theo MAX trong CÙNG một lượt tìm kiếm (xem
+    ``enrich_candidates``), không phải so với độ đông tuyệt đối toàn thành
+    phố — POI đông nhất trong 50 kết quả luôn được gắn "Đông" dù tuyệt đối nó
+    chỉ có vài lượt tương tác. Đây là so sánh TƯƠNG ĐỐI trong tập kết quả,
+    không phải phép đo tuyệt đối.
+    """
+    total_events = windows["w15"] + windows["w1h"] + windows["w24h"]
+    if total_events < MIN_EVENTS_FOR_BUSYNESS_ESTIMATE:
+        return {"estimated": False, "level": None, "score": None}
+    if recency_score >= 0.66:
+        level = "Đông"
+    elif recency_score >= 0.33:
+        level = "Khá đông"
+    else:
+        level = "Vắng"
+    return {"estimated": True, "level": level, "score": recency_score}
+
+
 def _context_score(open_now: bool | None, closes_in: int | None, time_match: float | None) -> float:
     # Thành phần giờ mở (giữ trung tính 0.5 khi chưa rõ để không phạt oan).
     if open_now is True:
@@ -252,6 +284,7 @@ def enrich_candidates(
         candidate["popularityWindows"] = windows
         raw = raw_recency.get(candidate["id"], 0.0)
         candidate["recencyScore"] = round(raw / max_recency, 6) if max_recency else 0.0
+        candidate["busyness"] = _busyness_estimate(windows, candidate["recencyScore"])
 
         base_context = _context_score(
             status["openNow"], status["closesInMinutes"], time_match

@@ -134,6 +134,28 @@ class Settings(BaseSettings):
     # Để rỗng thì KHÔNG mất tính năng: directions.py tự lùi về đồ thị ô tô và
     # đánh dấu `approximate: true` — đúng hành vi trước khi có hồ sơ này.
     osrm_motorbike_url: str = ""
+    # Semantic embedding qua Ollama (bge-m3), thay hashing trick cho kênh
+    # Vector (Phase 13). Rỗng = TẮT: chưa deploy Ollama ở production, kênh
+    # Vector tự bỏ qua thay vì lỗi cứng — xem app/embeddings.py.
+    #
+    # host.docker.internal: Ollama chạy trên máy host (Windows/Mac), không
+    # trong container nào của docker-compose — backend phải gọi ra ngoài qua
+    # tên đặc biệt này của Docker Desktop, "localhost" bên trong container sẽ
+    # trỏ vào chính container đó chứ không phải máy host.
+    ollama_url: str = ""
+    ollama_embedding_model: str = "bge-m3"
+    # Model chat cho chatbot AI (Phase 14) — cùng Ollama local, khác endpoint
+    # (/api/chat thay vì /api/embed). Chỉ dùng để hiểu ý định người dùng và
+    # diễn giải kết quả bằng lời; KHÔNG bao giờ tự quyết định POI — xem
+    # app/chat.py.
+    ollama_chat_model: str = "llama3.2:3b"
+    # AI thuyết minh POI đọc thành giọng nói (Phase 16.2) — VieNeu-TTS, chạy
+    # CPU thuần, model tải tự động từ Hugging Face ở lần gọi đầu (xem
+    # app/tts.py). Tắt được để không tải model nặng ở môi trường không cần
+    # tính năng này (vd một bản demo dựng nhanh, hoặc VPS còn hạn chế tài
+    # nguyên) — tắt thì endpoint audio trả "tạm không dùng được", frontend tự
+    # rơi về speechSynthesis, không hỏng cả tính năng thuyết minh.
+    tts_enabled: bool = True
     # Weather & Traffic Density Injection (Spatio-Temporal Enricher).
     #
     # Tắt được vì hai lý do thực tế: đo độ trễ sạch (thời tiết là một lần gọi

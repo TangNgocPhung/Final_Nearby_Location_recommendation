@@ -110,6 +110,57 @@ _SIMILAR_QUERY = """
     LIMIT %(limit)s
 """
 
+_KNOWLEDGE_QUERY = """
+    SELECT content_type AS "contentType", intro, specialty,
+           historical_context AS "historicalContext",
+           historical_events AS "historicalEvents",
+           interesting_facts AS "interestingFacts",
+           source, verified
+    FROM poi_knowledge
+    WHERE poi_id = %(poi_id)s
+"""
+
+_KNOWLEDGE_BATCH_QUERY = """
+    SELECT poi_id::text AS "poiId", content_type AS "contentType", intro,
+           specialty, historical_context AS "historicalContext",
+           historical_events AS "historicalEvents",
+           interesting_facts AS "interestingFacts",
+           source, verified
+    FROM poi_knowledge
+    WHERE poi_id = ANY(%(poi_ids)s::uuid[])
+"""
+
+
+def fetch_knowledge_map(
+    poi_ids: list[str], database_url: str | None = None
+) -> dict[str, dict[str, Any]]:
+    """`knowledge` cho NHIỀU POI cùng lúc — dùng ở chatbot (xem `app/chat.py`),
+    nơi cần tra cứu cho cả danh sách kết quả tìm kiếm trong một lượt, khác
+    `fetch_detail` vốn chỉ phục vụ trang chi tiết MỘT POI.
+
+    Trả về ``{}`` (không phải lỗi) khi không POI nào trong danh sách có
+    knowledge — đúng ngữ nghĩa "chưa biên soạn", giống `fetch_detail`.
+    """
+    if not poi_ids:
+        return {}
+    with psycopg.connect(database_url or DATABASE_URL, row_factory=dict_row) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(_KNOWLEDGE_BATCH_QUERY, {"poi_ids": poi_ids})
+            rows = cursor.fetchall()
+    return {
+        row["poiId"]: {
+            "contentType": row["contentType"],
+            "intro": row["intro"],
+            "specialty": row["specialty"],
+            "historicalContext": row["historicalContext"],
+            "historicalEvents": row["historicalEvents"] or [],
+            "interestingFacts": row["interestingFacts"] or [],
+            "verified": row["verified"],
+        }
+        for row in rows
+    }
+
+
 _REVIEWS_QUERY = """
     SELECT id::text AS id, author_name AS "authorName", rating, title, body,
            language, source, helpful_count AS "helpfulCount", created_at
@@ -317,6 +368,9 @@ def fetch_detail(
 
             review_summary, reviews = _review_block(cursor, poi_id)
 
+            cursor.execute(_KNOWLEDGE_QUERY, {"poi_id": poi_id})
+            knowledge_row = cursor.fetchone()
+
     timezone_name = row["timezone"] or DEFAULT_TIMEZONE
     schedule = normalize_opening_hours(row["openingHours"])
 
@@ -367,6 +421,25 @@ def fetch_detail(
             }
         )
 
+    # `None` khi POI này chưa được biên soạn — khác hẳn một object rỗng, để
+    # frontend biết CHẮC là "chưa có nội dung" chứ không phải "có nhưng trống".
+    knowledge = None
+    if knowledge_row is not None:
+        knowledge = {
+            "contentType": knowledge_row["contentType"],
+            "intro": knowledge_row["intro"],
+            "specialty": knowledge_row["specialty"],
+            "historicalContext": knowledge_row["historicalContext"],
+            # JSONB -> psycopg tự giải mã thành list[dict], mỗi phần tử
+            # {title?, description, source, verified} — xem migration 0022.
+            "historicalEvents": knowledge_row["historicalEvents"] or [],
+            "interestingFacts": knowledge_row["interestingFacts"] or [],
+            # `verified=false` PHẢI lộ ra API: frontend/chatbot cần biết để hiển
+            # thị đúng mức tin cậy, không được ngầm coi mọi nội dung là đã
+            # kiểm chứng chỉ vì nó tồn tại trong DB.
+            "verified": knowledge_row["verified"],
+        }
+
     return {
         "id": row["id"],
         "name": row["name"],
@@ -404,6 +477,7 @@ def fetch_detail(
         "reviewSummary": review_summary,
         "reviews": reviews,
         "similar": similar,
+        "knowledge": knowledge,
         "provenance": {
             "source": row["source"],
             "sourceId": row["sourceId"] or None,

@@ -72,6 +72,40 @@ def test_enrich_candidates_attaches_context(monkeypatch):
     assert 0.0 <= a["contextScore"] <= 1.0
 
 
+def test_busyness_estimate_needs_minimum_data():
+    thin = {"w15": 0, "w1h": 1, "w24h": 1}  # tổng 2 < ngưỡng 3
+    assert st._busyness_estimate(thin, recency_score=0.9) == {
+        "estimated": False,
+        "level": None,
+        "score": None,
+    }
+
+
+def test_busyness_estimate_levels_by_relative_recency():
+    enough = {"w15": 2, "w1h": 2, "w24h": 2}  # tổng 6 >= ngưỡng
+    assert st._busyness_estimate(enough, recency_score=0.9)["level"] == "Đông"
+    assert st._busyness_estimate(enough, recency_score=0.5)["level"] == "Khá đông"
+    assert st._busyness_estimate(enough, recency_score=0.1)["level"] == "Vắng"
+    result = st._busyness_estimate(enough, recency_score=0.9)
+    assert result["estimated"] is True
+    assert result["score"] == 0.9
+
+
+def test_enrich_candidates_attaches_busyness(monkeypatch):
+    monkeypatch.setattr(
+        st, "windowed_popularity",
+        lambda ids, database_url=None: {"a": {"w15": 4, "w1h": 6, "w24h": 10}},
+    )
+    out = st.enrich_candidates(
+        [_candidate("a", "cafe", 500), _candidate("b", "cafe", 1500)],
+        at=at(2026, 9, 7, 9),
+    )
+    a, b = out[0], out[1]
+    assert a["busyness"] == {"estimated": True, "level": "Đông", "score": 1.0}
+    # "b" không có sự kiện nào -> thiếu dữ liệu, KHÔNG được gắn nhãn "Vắng"
+    assert b["busyness"] == {"estimated": False, "level": None, "score": None}
+
+
 def test_enrich_survives_db_error(monkeypatch):
     import psycopg
 
@@ -83,3 +117,4 @@ def test_enrich_survives_db_error(monkeypatch):
 
     assert out[0]["recencyScore"] == 0.0  # không có popularity nhưng vẫn enrich được
     assert out[0]["contextScore"] > 0
+    assert out[0]["busyness"]["estimated"] is False  # DB lỗi -> không giả vờ có số liệu

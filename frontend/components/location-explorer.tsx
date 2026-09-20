@@ -78,6 +78,7 @@ import {
 } from 'lucide-react';
 
 import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
+import { ChatWidget } from '@/components/chat-widget';
 import { useProximityNotifications } from '@/hooks/use-proximity';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
 import {
@@ -638,6 +639,17 @@ export function LocationExplorer() {
     ranks: Map<string, number>;
   } | null>(null);
   const [position, setPosition] = useState(DEFAULT_POSITION);
+  // POI trong vùng bản đồ đang nhìn — nạp lại mỗi khi kéo/zoom xong (moveend).
+  // Tách khỏi `pois`: danh sách kết quả bên trái vẫn là của lần tìm kiếm, còn
+  // các chấm trên bản đồ là hợp của cả hai — không có nó thì kéo bản đồ ra
+  // khỏi vùng tìm kiếm là trống trơn dù DB có hàng chục nghìn POI.
+  //
+  // Khai báo TRƯỚC effect [position] bên dưới (dùng setAreaPois) — thứ tự
+  // ngược lại từng khiến React Compiler báo lỗi Immutability vì phân tích
+  // tĩnh không suy được setAreaPois đã tồn tại khi effect thực sự chạy (dù
+  // đúng lúc chạy thời gian thực do effect luôn chạy sau khi component đã
+  // dựng xong toàn bộ).
+  const [areaPois, setAreaPois] = useState<Poi[]>([]);
   // Bản sao cho các closure sống lâu (handler moveend của bản đồ, đăng ký một
   // lần lúc mount): đọc thẳng `position` ở đó là đóng băng vị trí mặc định.
   const positionRef = useRef<Position>(DEFAULT_POSITION);
@@ -648,6 +660,10 @@ export function LocationExplorer() {
   // khoảng cách của các POI đã nạp theo vùng cũng phải tính lại — không thì
   // thẻ vẫn khoe con số đo từ vị trí cũ cho tới lần kéo bản đồ kế tiếp.
   useEffect(() => {
+    // Đồng bộ derived state (distanceMeters) theo `position` — bên ngoài
+    // React (GPS), không tính lại được ngay trong render vì areaPois đến từ
+    // một nguồn khác (nạp theo vùng bản đồ).
+    // oxlint-disable-next-line react/react-compiler
     setAreaPois((current) =>
       current.map((poi) => ({
         ...poi,
@@ -685,11 +701,6 @@ export function LocationExplorer() {
   const [pois, setPois] = useState<Poi[]>(() =>
     enrichSamplePois(DEFAULT_POSITION, '', 3_000, null),
   );
-  // POI trong vùng bản đồ đang nhìn — nạp lại mỗi khi kéo/zoom xong (moveend).
-  // Tách khỏi `pois`: danh sách kết quả bên trái vẫn là của lần tìm kiếm, còn
-  // các chấm trên bản đồ là hợp của cả hai — không có nó thì kéo bản đồ ra
-  // khỏi vùng tìm kiếm là trống trơn dù DB có hàng chục nghìn POI.
-  const [areaPois, setAreaPois] = useState<Poi[]>([]);
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>('poi-001');
   // POI đang mở trong panel chi tiết. Cố tình TÁCH khỏi selectedPoiId: chọn một
   // POI (bấm thẻ trong danh sách, bấm marker) là thao tác nhẹ và xảy ra liên
@@ -750,6 +761,8 @@ export function LocationExplorer() {
     const debugParam = new URLSearchParams(window.location.search).get(
       'debug',
     );
+    // Đọc URLSearchParams — API trình duyệt, chỉ có sau mount.
+    // oxlint-disable-next-line react/react-compiler
     if (debugParam === '1' || debugParam === 'true') setShowDebugPanel(true);
   }, []);
 
@@ -802,6 +815,9 @@ export function LocationExplorer() {
   }, [telemetryState.sessionId]);
 
   useEffect(() => {
+    // Fetch rồi setState — đúng mẫu effect chính đáng theo tài liệu React
+    // (mục "Update external systems with the latest state from React").
+    // oxlint-disable-next-line react/react-compiler
     void reloadSavedPlaces();
   }, [reloadSavedPlaces]);
 
@@ -946,6 +962,12 @@ export function LocationExplorer() {
     () => visiblePois.find((item) => item.id === selectedPoiId) ?? null,
     [visiblePois, selectedPoiId],
   );
+  // Giá trị nguyên thuỷ tách riêng để effect lấy tuyến đường bên dưới KHÔNG
+  // bao giờ đóng gói tham chiếu tới `selectedPoi`/`visiblePois` — xem lý do
+  // (179 request/lượt xem, đo được thật) ngay tại effect đó.
+  const selectedPoiLatitude = selectedPoi?.latitude ?? null;
+  const selectedPoiLongitude = selectedPoi?.longitude ?? null;
+  const selectedPoiName = selectedPoi?.name ?? null;
 
   // Lấy tuyến đường mỗi khi đổi POI đang chọn hoặc đổi vị trí người dùng.
   //
@@ -957,8 +979,19 @@ export function LocationExplorer() {
     // visiblePois chứ không chỉ pois: POI nạp theo vùng bản đồ (areaPois) cũng
     // chọn được từ marker, và thẻ của nó cũng phải có tuyến nội bộ — tra trong
     // mỗi kết quả tìm kiếm thì các POI đó vĩnh viễn không có đường đi.
-    const poi = selectedPoi;
-    if (!poi) {
+    //
+    // CHỈ đọc các biến nguyên thuỷ đã tách sẵn (selectedPoiId/Latitude/…) —
+    // KHÔNG đọc `selectedPoi` (object) ở đây, dù object đó có đủ thông tin.
+    // Đây là điểm mấu chốt để effect không phải liệt kê `selectedPoi` vào
+    // deps, xem giải thích đầy đủ ở deps bên dưới.
+    if (
+      !selectedPoiId ||
+      selectedPoiLatitude === null ||
+      selectedPoiLongitude === null ||
+      selectedPoiName === null
+    ) {
+      // Reset có chủ đích khi bỏ chọn POI.
+      // oxlint-disable-next-line react/react-compiler
       setRoute(null);
       setRouteStatus('idle');
       return;
@@ -973,15 +1006,15 @@ export function LocationExplorer() {
           from_lng: String(position.longitude),
           mode: transportMode,
         });
-        if (UUID_PATTERN.test(poi.id)) {
-          params.set('to_poi_id', poi.id);
+        if (UUID_PATTERN.test(selectedPoiId)) {
+          params.set('to_poi_id', selectedPoiId);
         } else {
           // POI mẫu chưa tồn tại trong Postgres nên không có UUID. Gửi cặp toạ
           // độ của chính dữ liệu mẫu để backend vẫn tính OSRM và giữ người dùng
           // ở trong website.
-          params.set('to_lat', String(poi.latitude));
-          params.set('to_lng', String(poi.longitude));
-          params.set('to_name', poi.name);
+          params.set('to_lat', String(selectedPoiLatitude));
+          params.set('to_lng', String(selectedPoiLongitude));
+          params.set('to_name', selectedPoiName);
         }
         const response = await fetch(
           `${API_BASE_URL}/api/v1/directions?${params}`,
@@ -1001,8 +1034,8 @@ export function LocationExplorer() {
           // Với POI mẫu backend trả id tổng quát vì nó chỉ nhận toạ độ. State
           // phía giao diện phải giữ id thật của thẻ để startNavigation ghép đúng
           // tuyến với địa điểm đang chọn.
-          poiId: poi.id,
-          poiName: poi.name,
+          poiId: selectedPoiId,
+          poiName: selectedPoiName,
           geometry: data.route.geometry,
           distanceMeters: data.route.distanceMeters,
           durationMinutes: data.route.durationMinutes,
@@ -1032,12 +1065,11 @@ export function LocationExplorer() {
     //
     // Toạ độ và id là thứ thực sự quyết định tuyến đường; định danh của mảng
     // chứa chúng thì không.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    selectedPoi?.id,
-    selectedPoi?.latitude,
-    selectedPoi?.longitude,
-    selectedPoi?.name,
+    selectedPoiId,
+    selectedPoiLatitude,
+    selectedPoiLongitude,
+    selectedPoiName,
     position.latitude,
     position.longitude,
     transportMode,
@@ -1271,6 +1303,8 @@ export function LocationExplorer() {
   useEffect(() => {
     const shared = new URLSearchParams(window.location.search).get('poi');
     if (!shared || !UUID_PATTERN.test(shared)) return;
+    // Đọc URLSearchParams — API trình duyệt, chỉ có sau mount.
+    // oxlint-disable-next-line react/react-compiler
     setDetailPoiId(shared);
     flyToOnDetailRef.current = shared;
     telemetry.capture({
@@ -1278,10 +1312,11 @@ export function LocationExplorer() {
       poi_id: shared,
       metadata: { source: 'detail-panel' },
     });
-    // Mảng rỗng là CỐ Ý dù bên trong dùng telemetry: nó là useMemo([]) nên
-    // không bao giờ đổi, còn cho nó vào deps thì mỗi lần đổi là thêm một
-    // poi_click giả cho cùng một lần mở link.
-  }, []);
+    // `telemetry` vào deps không đổi hành vi: nó là useMemo(..., []) nên
+    // reference không bao giờ đổi giữa các lần render, effect vẫn chỉ chạy
+    // đúng một lần lúc mount như trước — chỉ khai đúng cho react-hooks thay vì
+    // bỏ deps rồi disable rule (bị chính react-compiler chặn ở nơi khác).
+  }, [telemetry]);
 
   // Nút Lùi của trình duyệt. Thiếu popstate thì pushState ở trên biến nút Lùi
   // thành cái bẫy: URL lùi về nhưng panel vẫn mở, bấm tiếp là rời hẳn trang.
@@ -1409,6 +1444,8 @@ export function LocationExplorer() {
   // một phản hồi chậm về sau có thể đè lên gợi ý của từ khóa mới hơn.
   useEffect(() => {
     const trimmed = query.trim();
+    // Reset có chủ đích khi đổi từ khoá tìm kiếm.
+    // oxlint-disable-next-line react/react-compiler
     setActiveSuggestionIndex(-1);
     if (trimmed.length < 2) {
       setSuggestions([]);
@@ -1993,7 +2030,7 @@ export function LocationExplorer() {
     void runSearch(query, next);
   }
 
-  function useCurrentLocation() {
+  function requestCurrentLocation() {
     if (!navigator.geolocation) {
       setStatus('Trình duyệt không hỗ trợ định vị');
       return;
@@ -2045,19 +2082,30 @@ export function LocationExplorer() {
       { enableHighAccuracy: true, timeout: 8_000 },
     );
   }
+  // `requestCurrentLocation` đọc `query`/`selectedCategory`/`runSearch` — cả
+  // ba đổi tham chiếu mỗi render, nên hàm cũng vậy. Giữ bản MỚI NHẤT qua ref
+  // (cập nhật trong effect, không phải ngay thân component — cùng lý do với
+  // use-proximity.ts) để effect tự-định-vị lúc mount ở dưới gọi được đúng bản
+  // mới nhất mà không phải liệt kê nó (hay runSearch/query/selectedCategory)
+  // vào deps — tránh việc useCallback đòi liệt kê chính xác toàn bộ closure
+  // của runSearch, một hàm dài, dễ sót một biến và tạo stale closure còn tệ
+  // hơn cảnh báo lint.
+  const requestCurrentLocationRef = useRef(requestCurrentLocation);
+  useEffect(() => {
+    requestCurrentLocationRef.current = requestCurrentLocation;
+  });
 
   // Tự hỏi vị trí NGAY KHI MỞ TRANG thay vì đứng ở Quận 1 chờ người dùng bấm
   // "Vị trí của tôi". Trình duyệt tự lo phần đồng ý: lần đầu nó hiện hộp xin
   // quyền, đã cho phép từ trước thì vào thẳng, đã chặn thì rơi vào nhánh lỗi
-  // của useCurrentLocation và bản đồ đứng yên ở mặc định — không hỏi lại, không
+  // của requestCurrentLocation và bản đồ đứng yên ở mặc định — không hỏi lại, không
   // vòng lặp. Ref chặn StrictMode chạy effect hai lần: hai getCurrentPosition
   // song song là hai lượt runSearch giẫm nhau.
   const autoLocatedRef = useRef(false);
   useEffect(() => {
     if (autoLocatedRef.current) return;
     autoLocatedRef.current = true;
-    useCurrentLocation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    requestCurrentLocationRef.current();
   }, []);
 
   // Ping mới chỉ được gửi khi đã đủ xa lần trước HOẶC đã đủ lâu. Không có bộ
@@ -2271,7 +2319,7 @@ export function LocationExplorer() {
                 <Moon className="size-4" />
               )}
             </Button>
-            <Button variant="outline" size="sm" onClick={useCurrentLocation}>
+            <Button variant="outline" size="sm" onClick={requestCurrentLocation}>
               <LocateFixed data-icon="inline-start" />
               Vị trí của tôi
             </Button>
@@ -2473,10 +2521,15 @@ export function LocationExplorer() {
                   aria-label="Lọc theo đánh giá tối thiểu"
                 >
                   {MIN_RATING_OPTIONS.map((value) => (
-                    <button
+                    // <input type="radio"> sẽ phá layout chip (icon sao, bo
+                    // tròn, không có <label> đi kèm) — role="radio" trên
+                    // <button> là mẫu ARIA hợp lệ khi cần dáng chip nhưng vẫn
+                    // giữ đúng ngữ nghĩa radio group (đã có role="radiogroup"
+                    // + aria-checked ở trên/dưới).
+                    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
+                    <button role="radio"
                       key={value}
                       type="button"
-                      role="radio"
                       aria-checked={minRating === value}
                       onClick={() => setMinRating(value)}
                       className={`inline-flex items-center gap-1 ${chipClass(minRating === value)}`}
@@ -3272,6 +3325,14 @@ export function LocationExplorer() {
           )}
         </section>
       </section>
+      {telemetryState.sessionId && (
+        <ChatWidget
+          apiBaseUrl={API_BASE_URL}
+          sessionId={telemetryState.sessionId}
+          position={position}
+          onViewPoi={(poiId) => openDetail(poiId, 'chat')}
+        />
+      )}
     </main>
   );
 }

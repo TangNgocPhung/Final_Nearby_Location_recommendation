@@ -32,6 +32,28 @@ x-backend-environment: &backend-environment
   # scripts/build_osrm_motorbike.sh. Rỗng thì directions.py tự lùi về đồ thị ô
   # tô và đánh dấu `approximate: true` (hành vi trước Phase 12.8).
   OSRM_MOTORBIKE_URL: ${OSRM_MOTORBIKE_URL:-http://osrm-motorbike:5000}
+  # Semantic embedding qua Ollama (bge-m3), Phase 13 — chạy trên MÁY HOST, không
+  # trong compose. "host.docker.internal" là tên đặc biệt của Docker Desktop để
+  # container gọi ra máy host; không hoạt động trên Docker Engine Linux thuần
+  # (cần --add-host=host.docker.internal:host-gateway) nhưng máy dev ở đây là
+  # Docker Desktop Windows nên dùng thẳng được. Rỗng thì kênh Vector tự tắt.
+  OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+  OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3}
+  # Model chat cho chatbot AI (Phase 14) — cùng Ollama host, /api/chat thay vì
+  # /api/embed. llama3.2:3b: đủ nhỏ để chạy nhanh trên máy dev, đã pull sẵn.
+  OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2:3b}
+  # VieNeu-TTS (Phase 16.2) tải model ONNX nhiều file qua huggingface_hub, có
+  # dùng "external data" (trọng số lớn tách khỏi file .onnx chính). Cache mặc
+  # định của huggingface_hub dùng symlink trỏ vào blobs/<hash khác nhau> cho
+  # từng file — ONNX Runtime bản mới (từ khoảng 3/2026) CHẶN việc này, coi là
+  # "external data path escapes model directory" (chống symlink traversal).
+  # Đo được thật (2026-09-20): container Linux hỗ trợ symlink nên dính lỗi
+  # này, trong khi máy Windows dev lại KHÔNG hỗ trợ symlink nên tự động sao
+  # chép file thật và chạy được — hai môi trường khác hành vi mặc định.
+  # HF_HUB_DISABLE_SYMLINKS=1 ép huggingface_hub sao chép file thật thay vì
+  # symlink, để mọi file của một model nằm cùng thư mục — đúng cái ONNX
+  # Runtime yêu cầu.
+  HF_HUB_DISABLE_SYMLINKS: "1"
 
 services:
   database:
@@ -197,6 +219,9 @@ services:
       <<: *backend-environment
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - nearby-hf-cache:/root/.cache/huggingface
+      - nearby-tts-cache:/app/tts_cache
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -372,3 +397,12 @@ volumes:
   nearby-redis-data:
   nearby-opensearch-data:
   nearby-neo4j-data:
+  # Cache model Hugging Face của VieNeu-TTS (Phase 16.2, app/tts.py). KHÔNG
+  # có volume riêng thì mỗi lần `docker compose build backend` (rất thường
+  # xuyên lúc phát triển) container mới sẽ tải lại toàn bộ model — hàng trăm
+  # MB mỗi lần, chỉ vì image bị tạo lại chứ dữ liệu model không hề đổi.
+  nearby-hf-cache:
+  # Cache audio thuyết minh ĐÃ SINH theo (poi_id, language) — Phase 16.3, xem
+  # app/tts.py (get_cached/store). Không có volume riêng thì cache mất trắng
+  # mỗi lần rebuild, phải sinh lại từ đầu (~2 phút/POI) dù nội dung không đổi.
+  nearby-tts-cache:

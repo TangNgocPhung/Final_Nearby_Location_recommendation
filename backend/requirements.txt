@@ -12,3 +12,6 @@ neo4j>=5.24,<6
 # rơi về công thức tuyến tính chứ không lỗi — xem app/ltr/model.py.
 lightgbm>=4.5,<5
 numpy>=1.26,<3
+# AI thuyết minh POI đọc giọng nói (Phase 16.2) — TTS tiếng Việt chạy CPU
+# thuần, xem app/tts.py. Kéo theo onnxruntime/librosa/soundfile/huggingface_hub.
+vieneu

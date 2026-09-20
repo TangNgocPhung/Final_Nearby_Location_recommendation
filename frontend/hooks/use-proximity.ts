@@ -60,7 +60,13 @@ export function useProximityNotifications({
   const [lastNotification, setLastNotification] = useState<ProximityNotification | null>(null);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
   const callbackRef = useRef(onNotification);
-  callbackRef.current = onNotification;
+  // Ghi ref trong effect, không phải ngay thân component: ghi trực tiếp lúc
+  // render là mutate một giá trị ngoài React trong pha render — an toàn tình
+  // cờ với runtime hiện tại nhưng không đúng luật của React (đặc biệt dưới
+  // Concurrent Mode, nơi một lần render có thể bị bỏ nhưng effect thì không).
+  useEffect(() => {
+    callbackRef.current = onNotification;
+  }, [onNotification]);
 
   /** Đăng ký Service Worker và xin quyền. Gọi từ một cú bấm của người dùng. */
   const requestPermission = useCallback(async () => {
@@ -104,6 +110,8 @@ export function useProximityNotifications({
 
   useEffect(() => {
     if (!enabled || !sessionId) {
+      // Reset có chủ đích khi tắt tính năng hoặc chưa có phiên.
+      // oxlint-disable-next-line react/react-compiler
       setConnected(false);
       return;
     }

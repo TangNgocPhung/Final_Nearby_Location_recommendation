@@ -80,6 +80,18 @@ class SearchRequest(BaseModel):
     ranker: Literal["linear", "ltr"] = "linear"
 
 
+class ChatRequest(BaseModel):
+    """Một lượt chat. `session_id` bắt buộc (không random như SearchRequest)
+    vì lịch sử hội thoại được lưu theo đúng key này — thiếu nó thì mỗi lượt
+    là một cuộc hội thoại mới, chatbot mất hoàn toàn ngữ cảnh nhiều lượt."""
+
+    session_id: UUID
+    message: str = Field(min_length=1, max_length=500)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius: int = Field(default=3_000, ge=100, le=50_000)
+
+
 class ReviewRequest(BaseModel):
     """Đánh giá 1-5 sao thật — explicit feedback, khác ClientEvent event_type
     'review' (tín hiệu nhẹ trong ingestion_events, dùng để tính category

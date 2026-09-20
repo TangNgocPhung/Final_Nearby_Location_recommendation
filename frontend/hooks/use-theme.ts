@@ -32,6 +32,9 @@ export function useTheme() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    // Đọc localStorage/matchMedia — API trình duyệt, không tồn tại lúc SSR —
+    // nên PHẢI đọc sau mount trong effect, không thể tính trong lúc render.
+    // oxlint-disable-next-line react/react-compiler
     setTheme(readStoredTheme() ?? systemTheme());
     setMounted(true);
   }, []);

@@ -82,6 +82,9 @@ export function usePoiDetail(
   // nó chỉ lộ ra khi mạng chậm nên rất khó lần ra.
   useEffect(() => {
     if (!poiId || !UUID_PATTERN.test(poiId)) {
+      // Reset có chủ đích khi id không hợp lệ — theo dõi một giá trị đến từ
+      // bên ngoài React (props), cùng lý do effect này tồn tại; xem JSDoc trên.
+      // oxlint-disable-next-line react/react-compiler
       setDetail(null);
       setDetailLoading(false);
       setError(null);
@@ -139,6 +142,8 @@ export function usePoiDetail(
   // nện Wikimedia một lần cho cùng một POI — đúng kiểu lưu lượng ăn HTTP 429.
   useEffect(() => {
     if (!poiId || !UUID_PATTERN.test(poiId)) {
+      // Reset có chủ đích khi id không hợp lệ — cùng lý do với effect chi tiết ở trên.
+      // oxlint-disable-next-line react/react-compiler
       setPhotos(null);
       setPhotosLoading(false);
       return;

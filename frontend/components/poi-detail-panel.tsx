@@ -22,18 +22,27 @@ import {
   ExternalLink,
   Footprints,
   Globe,
+  Lightbulb,
   LoaderCircle,
   MapPin,
   MessageSquareText,
+  Mic,
   Navigation,
+  Pause,
   Phone,
+  Play,
   Route,
+  ScrollText,
+  Sparkles,
   Star,
+  Stethoscope,
   Tag,
   X,
 } from 'lucide-react';
 
 import { PoiCover } from '@/components/poi-cover';
+import { Button } from '@/components/ui/button';
+import { type NarrationLanguage, usePoiNarration } from '@/hooks/use-poi-narration';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -55,10 +64,11 @@ export type PoiOpeningHours = {
   raw?: string | null;
   /** Ba giá trị backend thật sự gửi: 'parsed', 'missing' (OSM KHÔNG khai giờ —
    *  2.505/3.010 POI) và 'unsupported' (có khai nhưng bộ đọc chịu thua — 25
-   *  POI). Hai cái sau khác hẳn nhau, đừng gộp. Không liệt kê 'missing' vào
-   *  union bên dưới vì `| string` nuốt hết literal, thêm vào chỉ tổ đẻ thêm một
-   *  lỗi typescript(no-redundant-type-constituents). */
-  parseStatus?: 'parsed' | 'unsupported' | string | null;
+   *  POI). Hai cái sau khác hẳn nhau, đừng gộp. Kiểu chỉ còn `string`: liệt kê
+   *  bất kỳ literal nào cạnh `string` cũng bị TypeScript coi là thừa (nó đã
+   *  gộp literal vào `string` khi suy luận), nên tài liệu hoá giá trị ở đây
+   *  thay vì trong kiểu. */
+  parseStatus?: string | null;
   periods?: { days: number[]; opens: string; closes: string }[];
   alwaysOpen?: boolean;
 };
@@ -127,6 +137,40 @@ export type PoiProvenance = {
   embeddingModel: string | null;
 };
 
+/** Một claim có nguồn trích dẫn cụ thể — xem migration 0022_poi_knowledge_verified.
+ *  `verified` luôn `true` trong dữ liệu hiện tại: claim nào không tìm ra nguồn
+ *  bị loại khỏi mảng ngay từ lúc biên soạn thay vì giữ lại với `verified: false`
+ *  (ít nhưng kiểm chứng được hơn nhiều nhưng mù mờ). Field vẫn giữ ở đây để
+ *  tương lai có claim chưa kiểm chứng thì UI đã sẵn chỗ xử lý. */
+export type PoiKnowledgeItem = {
+  title: string | null;
+  description: string;
+  source: string;
+  verified: boolean;
+};
+
+/** Biên soạn tay (qua trợ lý AI), KHÔNG phải dữ liệu OSM — `verified` phân
+ *  biệt nội dung đã đối chiếu nguồn thật với nội dung mới chỉ tổng hợp từ
+ *  kiến thức nền. `null` (không phải object rỗng) khi POI này chưa được biên
+ *  soạn — xem `app/poi_detail.py`. */
+export type PoiKnowledge = {
+  contentType:
+    | 'historical'
+    | 'cultural'
+    | 'medical'
+    | 'nature'
+    | 'food'
+    | 'education'
+    | 'entertainment'
+    | 'architectural';
+  intro: string | null;
+  specialty: string | null;
+  historicalContext: string | null;
+  historicalEvents: PoiKnowledgeItem[];
+  interestingFacts: PoiKnowledgeItem[];
+  verified: boolean;
+};
+
 export type PoiDetail = {
   id: string;
   name: string;
@@ -162,6 +206,7 @@ export type PoiDetail = {
   reviewSummary: PoiReviewSummary;
   reviews: PoiReview[];
   similar: PoiSimilar[];
+  knowledge: PoiKnowledge | null;
   provenance: PoiProvenance;
 };
 
@@ -235,6 +280,27 @@ function shortHost(raw: string): string {
   }
 }
 
+/** Một dòng "sự kiện lịch sử" hoặc "bạn có biết" — luôn kèm nguồn trích dẫn
+ *  bấm được, để người xem tự kiểm tra lại thay vì phải tin suông. */
+function KnowledgeItem({ item }: { item: PoiKnowledgeItem }) {
+  return (
+    <li className="text-sm text-muted-foreground">
+      {item.title && <span className="font-medium text-foreground">{item.title}: </span>}
+      {item.description}{' '}
+      {item.source && (
+        <a
+          href={normalizeWebsite(item.source)}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-xs whitespace-nowrap text-primary hover:underline"
+        >
+          [nguồn: {shortHost(item.source)}]
+        </a>
+      )}
+    </li>
+  );
+}
+
 function formatDate(iso: string, timezone: string): string {
   try {
     // Ghim timeZone: thành phần này vẫn được kết xuất một lần ở máy chủ rồi mới
@@ -250,6 +316,51 @@ function formatDate(iso: string, timezone: string): string {
     return iso;
   }
 }
+
+// Chuỗi hiển thị cho khối "AI Thuyết minh", theo `NarrationLanguage`. Chỉ ảnh
+// hưởng NHÃN GIAO DIỆN — nội dung thuyết minh thật (narration.text) luôn đến
+// thẳng từ backend, đã được sinh bằng đúng ngôn ngữ này (xem
+// `chat._NARRATION_SYSTEM_PROMPTS`), không dịch ở phía frontend.
+const NARRATION_STRINGS: Record<
+  NarrationLanguage,
+  {
+    flag: string;
+    label: string;
+    heading: string;
+    listen: string;
+    pause: string;
+    resume: string;
+    loading: string;
+    unavailable: string;
+    error: string;
+    unverified: string;
+  }
+> = {
+  vi: {
+    flag: '🇻🇳',
+    label: 'Tiếng Việt',
+    heading: 'AI THUYẾT MINH',
+    listen: 'Nghe thuyết minh',
+    pause: 'Tạm dừng',
+    resume: 'Tiếp tục',
+    loading: 'Đang tạo thuyết minh…',
+    unavailable: 'Chưa có thuyết minh cho địa điểm này.',
+    error: 'Không tạo được thuyết minh, bạn thử lại sau nhé.',
+    unverified: 'Nội dung chưa được kiểm chứng đầy đủ.',
+  },
+  en: {
+    flag: '🇬🇧',
+    label: 'English',
+    heading: 'AI NARRATION',
+    listen: 'Listen',
+    pause: 'Pause',
+    resume: 'Resume',
+    loading: 'Generating narration…',
+    unavailable: 'No narration available for this place yet.',
+    error: "Couldn't generate a narration, please try again later.",
+    unverified: 'This content has not been fully verified.',
+  },
+};
 
 const RATING_SOURCE_LABELS: Record<string, string> = {
   seed: 'dữ liệu mẫu nhập sẵn (seed)',
@@ -300,6 +411,13 @@ function toAmenityChips(
   const chips: AmenityChip[] = [];
   for (const [key, rawValue] of Object.entries(amenities)) {
     if (rawValue == null) continue;
+    // `amenities` gõ `Record<string, unknown>` vì backend chuyển thẳng JSONB
+    // OSM tags — thực tế chỉ string/number/boolean, nhưng ép kiểu không đúng
+    // (object/array lạ) sẽ dùng String() và ra "[object Object]" một cách im
+    // lặng. Bỏ qua thay vì hiện chuỗi rác.
+    if (typeof rawValue !== 'string' && typeof rawValue !== 'number' && typeof rawValue !== 'boolean') {
+      continue;
+    }
     const value = String(rawValue);
     const label = AMENITY_LABELS[key] ?? humanizeToken(key);
     if (value === 'yes') {
@@ -563,6 +681,8 @@ export function PoiDetailPanel(props: {
     onReviewSubmitted,
   } = props;
 
+  const [narrationLanguage, setNarrationLanguage] = useState<NarrationLanguage>('vi');
+  const narration = usePoiNarration(apiBaseUrl, detail?.id ?? null, narrationLanguage);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [hoursOpen, setHoursOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>(
@@ -579,7 +699,7 @@ export function PoiDetailPanel(props: {
   >('idle');
   const [reviewMessage, setReviewMessage] = useState('');
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lightboxRef = useRef<HTMLDivElement>(null);
+  const lightboxRef = useRef<HTMLDialogElement>(null);
 
   // Ảnh Commons thỉnh thoảng trả 404 (file bị đổi tên/xoá sau khi thẻ OSM được
   // ghi). Để nguyên thì trình duyệt vẽ icon ảnh vỡ ngay giữa thẻ chi tiết. Lọc
@@ -614,6 +734,8 @@ export function PoiDetailPanel(props: {
   // lightbox còn mở với chỉ số ảnh của POI cũ, và bảng giờ vẫn bung của quán
   // trước — nhìn như dữ liệu bị trộn lẫn.
   useEffect(() => {
+    // Reset có chủ đích khi đổi POI — xem lý do ở comment trên.
+    // oxlint-disable-next-line react/react-compiler
     setLightboxIndex(null);
     setHoursOpen(false);
     setCopyState('idle');
@@ -1348,6 +1470,165 @@ export function PoiDetailPanel(props: {
 
           <Separator />
 
+          {/* d2. GÓC KIẾN THỨC — chỉ hiện khi POI này đã được biên soạn
+              (`knowledge !== null`); mục nào rỗng thì ẩn mục đó, không hiện
+              khối trống cho mọi POI (bệnh viện không có "góc lịch sử", quán
+              cà phê không có "chuyên môn"). */}
+          {detail.knowledge && (
+            <>
+              <section className="space-y-4 px-4 py-4">
+                {/* Nút thuyết minh: KHÔNG tự gọi khi mở panel, chỉ gọi khi
+                    bấm — endpoint /narration gọi Ollama, có thể mất hàng
+                    chục giây. Giọng đọc phát bằng speechSynthesis của chính
+                    trình duyệt, đọc nguyên văn text đã nhận (không tự soạn
+                    lại ở phía client) — xem `hooks/use-poi-narration.ts`. */}
+                <div className="rounded-lg border border-border bg-muted/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <Mic className="size-4" />
+                      {NARRATION_STRINGS[narrationLanguage].heading}
+                    </p>
+                    {/* Chỉ đổi NGÔN NGỮ narration — không đụng gì tới
+                        poi_knowledge (vẫn một bản gốc tiếng Việt duy nhất),
+                        chatbot, hay search. Đổi ngôn ngữ giữa lúc đang đọc thì
+                        dừng hẳn giọng cũ (xử lý trong hook, theo `language`). */}
+                    <div className="flex gap-1">
+                      {(['vi', 'en'] as const).map((lang) => (
+                        <button
+                          key={lang}
+                          type="button"
+                          onClick={() => setNarrationLanguage(lang)}
+                          aria-pressed={narrationLanguage === lang}
+                          className={cn(
+                            'rounded-full px-2 py-0.5 text-xs font-medium transition-colors',
+                            narrationLanguage === lang
+                              ? 'bg-primary text-primary-foreground'
+                              : 'bg-background text-muted-foreground hover:text-foreground',
+                          )}
+                        >
+                          {NARRATION_STRINGS[lang].flag} {NARRATION_STRINGS[lang].label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {narration.text && (
+                    <p className="mt-2 text-sm text-muted-foreground italic">
+                      &ldquo;{narration.text}&rdquo;
+                    </p>
+                  )}
+                  {narration.text && narration.verified === false && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {NARRATION_STRINGS[narrationLanguage].unverified}
+                    </p>
+                  )}
+                  {narration.status === 'unavailable' && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {NARRATION_STRINGS[narrationLanguage].unavailable}
+                    </p>
+                  )}
+                  {narration.status === 'error' && (
+                    <p className="mt-2 text-xs text-destructive">
+                      {NARRATION_STRINGS[narrationLanguage].error}
+                    </p>
+                  )}
+                  {narration.voiceWarning && (
+                    <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                      {narration.voiceWarning}
+                    </p>
+                  )}
+                  {narration.status !== 'unavailable' && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-2 bg-background"
+                      onClick={() => void narration.toggle()}
+                      disabled={narration.status === 'loading'}
+                    >
+                      {narration.status === 'loading' ? (
+                        <>
+                          <LoaderCircle className="size-4 animate-spin" />
+                          {NARRATION_STRINGS[narrationLanguage].loading}
+                        </>
+                      ) : narration.speechState === 'speaking' ? (
+                        <>
+                          <Pause className="size-4" />
+                          {NARRATION_STRINGS[narrationLanguage].pause}
+                        </>
+                      ) : narration.speechState === 'paused' ? (
+                        <>
+                          <Play className="size-4" />
+                          {NARRATION_STRINGS[narrationLanguage].resume}
+                        </>
+                      ) : (
+                        <>
+                          <Play className="size-4" />
+                          {NARRATION_STRINGS[narrationLanguage].listen}
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
+                {detail.knowledge.intro && (
+                  <div>
+                    <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <Lightbulb className="size-4" />
+                      GIỚI THIỆU
+                    </h3>
+                    <p className="mt-1 text-sm">{detail.knowledge.intro}</p>
+                  </div>
+                )}
+                {detail.knowledge.specialty && (
+                  <div>
+                    <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <Stethoscope className="size-4" />
+                      CHUYÊN MÔN
+                    </h3>
+                    <p className="mt-1 text-sm">{detail.knowledge.specialty}</p>
+                  </div>
+                )}
+                {(detail.knowledge.historicalContext ||
+                  detail.knowledge.historicalEvents.length > 0) && (
+                  <div>
+                    <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <ScrollText className="size-4" />
+                      GÓC LỊCH SỬ
+                    </h3>
+                    {detail.knowledge.historicalContext && (
+                      <p className="mt-1 text-sm">{detail.knowledge.historicalContext}</p>
+                    )}
+                    {detail.knowledge.historicalEvents.length > 0 && (
+                      <ul className="mt-2 space-y-2">
+                        {detail.knowledge.historicalEvents.map((event) => (
+                          <KnowledgeItem key={event.source + event.description} item={event} />
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {detail.knowledge.interestingFacts.length > 0 && (
+                  <div>
+                    <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                      <Sparkles className="size-4" />
+                      BẠN CÓ BIẾT?
+                    </h3>
+                    <ul className="mt-2 space-y-2">
+                      {detail.knowledge.interestingFacts.map((fact) => (
+                        <KnowledgeItem key={fact.source + fact.description} item={fact} />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {!detail.knowledge.verified && (
+                  <p className="text-xs text-muted-foreground italic">
+                    Nội dung tổng hợp, chưa được kiểm chứng đầy đủ.
+                  </p>
+                )}
+              </section>
+              <Separator />
+            </>
+          )}
+
           {/* e. ĐÁNH GIÁ -------------------------------------------------- */}
           <section className="px-4 py-4">
             <h3 className="text-base font-semibold">Đánh giá</h3>
@@ -1723,13 +2004,13 @@ export function PoiDetailPanel(props: {
 
       {/* Lightbox ------------------------------------------------------ */}
       {lightboxAt !== null && photoList[lightboxAt] && (
-        <div
+        <dialog
           ref={lightboxRef}
+          open
           tabIndex={-1}
-          role="dialog"
           aria-modal="true"
           aria-label={`Ảnh của ${detail.name}`}
-          className="fixed inset-0 z-[70] flex flex-col items-center justify-center bg-black/90 p-4 outline-none"
+          className="fixed inset-0 z-[70] m-0 flex max-h-none max-w-none flex-col items-center justify-center bg-black/90 p-4 outline-none"
         >
           {/* Nền bấm-để-đóng phải là <button> thật, không phải onClick đặt trên
               chính lớp phủ: div mang handler chuột mà không có handler bàn phím
@@ -1807,7 +2088,7 @@ export function PoiDetailPanel(props: {
               </p>
             </div>
           </div>
-        </div>
+        </dialog>
       )}
     </>
   );

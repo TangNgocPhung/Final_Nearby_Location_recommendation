@@ -2,6 +2,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import psycopg
@@ -9,13 +10,14 @@ from fastapi import FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import directions, geofence, photos, poi_detail, reviews, saved_places
+from . import chat, directions, geofence, photos, poi_detail, reviews, saved_places, tts
 from .ranking_snapshots import record_snapshot
 from .config import settings
 from .geocoding import parse_location, reverse_geocode
 from .ingestion import ingestion_status, persist_events, publish_events
 from .ltr import model as ltr_model
 from .models import (
+    ChatRequest,
     EventBatch,
     GeofenceRequest,
     GeoParseRequest,
@@ -55,7 +57,17 @@ app.add_middleware(
     # bước preflight và nút "bỏ nhắc" hỏng lặng lẽ, chỉ thấy lỗi trong console.
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-Process-Time-Ms", "X-RateLimit-Limit"],
+    # X-Narration-*: /narration/audio (Phase 16.2) trả text đã đọc kèm audio
+    # qua header — không expose thì frontend gọi được audio nhưng
+    # `response.headers.get(...)` luôn ra `null`, lặng lẽ mất phụ đề.
+    expose_headers=[
+        "X-Request-ID",
+        "X-Process-Time-Ms",
+        "X-RateLimit-Limit",
+        "X-Narration-Text",
+        "X-Narration-Verified",
+        "X-Narration-Cache",
+    ],
 )
 
 rate_windows: dict[str, deque[float]] = defaultdict(deque)
@@ -255,6 +267,81 @@ def contextual_search(payload: SearchRequest, request: Request) -> dict[str, Any
     }
 
 
+@app.post("/api/v1/chat")
+def chat_turn(payload: ChatRequest, request: Request) -> dict[str, Any]:
+    """Một lượt chatbot: LLM trích ý định -> pipeline search THẬT -> LLM diễn
+    giải. LLM không bao giờ tự chọn POI — xem docstring `app/chat.py`.
+
+    Không cá nhân hoá (category_boost/graph_boost) như `/api/v1/search`:
+    phạm vi Phase 14 là chứng minh luồng intent->search->explain chạy đúng,
+    cá nhân hoá chatbot để lại cho lượt sau khi luồng cơ bản đã ổn định.
+    """
+    session_id = str(payload.session_id)
+
+    # Khớp tên POI THẬT trước, không qua LLM — xem docstring `chat.find_named_poi`.
+    # Khớp được thì bỏ qua hẳn extract_search_intent (ít một lượt gọi Ollama,
+    # và không còn phụ thuộc việc model có "hiểu" tên địa danh hay không).
+    named_poi = chat.find_named_poi(payload.message, payload.latitude, payload.longitude)
+    if named_poi is not None:
+        reply = chat.explain_results(session_id, payload.message, [named_poi])
+        return {
+            "reply": reply,
+            "needsClarification": False,
+            "searchParams": {
+                "query": payload.message,
+                "category": named_poi.get("category"),
+                "radius": payload.radius,
+            },
+            "retrievalBackend": "poi-name-match",
+            "results": [named_poi],
+        }
+
+    intent = chat.extract_search_intent(session_id, payload.message)
+
+    if intent["needs_clarification"] or not intent["search_query"]:
+        question = intent["clarifying_question"] or "Bạn có thể nói rõ hơn bạn đang muốn tìm gì không?"
+        chat.record_clarification(session_id, payload.message, question)
+        return {
+            "reply": question,
+            "needsClarification": True,
+            "searchParams": None,
+            "results": [],
+        }
+
+    radius = intent["radius_m"] or payload.radius
+    geo_telemetry: dict[str, Any] = {}
+    # `category` KHÔNG truyền vào rank_pois_detailed: đo được thật (2026-09-20)
+    # bộ lọc category làm kênh geo/h3 rỗng và cả pipeline rơi về PostGIS 0 kết
+    # quả cho những category vẫn tìm ra POI tốt qua BM25/Vector thuần câu chữ
+    # (vd "cafe") — bug có sẵn trong pipeline search, ngoài phạm vi chatbot.
+    # Để nguyên câu hỏi tự nhiên cho BM25/Vector tự hiểu, như search box vẫn
+    # làm; `category` chỉ còn dùng để hiển thị/debug trong `searchParams`.
+    results, retrieval_backend = rank_pois_detailed(
+        payload.latitude,
+        payload.longitude,
+        radius,
+        intent["search_query"],
+        None,
+        20,
+        telemetry=geo_telemetry,
+    )
+    for index, poi in enumerate(results):
+        poi["rank"] = index
+
+    reply = chat.explain_results(session_id, payload.message, results)
+    return {
+        "reply": reply,
+        "needsClarification": False,
+        "searchParams": {
+            "query": intent["search_query"],
+            "category": intent["category"],
+            "radius": radius,
+        },
+        "retrievalBackend": retrieval_backend,
+        "results": results,
+    }
+
+
 def is_postgres_uuid(value: str) -> bool:
     """Chốt chặt hơn `geofence.is_uuid` cho hai endpoint đẩy thẳng chuỗi vào cột ``uuid``.
 
@@ -383,6 +470,99 @@ def get_poi_photos(
 
     return photos.fetch_and_store(
         poi_id, context["latitude"], context["longitude"], context["tags"], limit
+    )
+
+
+@app.get("/api/v1/pois/{poi_id}/narration")
+def get_poi_narration(
+    poi_id: str,
+    language: str = Query(default=chat.DEFAULT_NARRATION_LANGUAGE),
+) -> Any:
+    """AI thuyết minh CHỦ ĐỘNG cho một POI — người dùng chỉ cần chọn địa
+    điểm, không cần gõ câu hỏi như chat. Xem docstring `chat.generate_poi_narration`.
+
+    Tách khỏi endpoint chi tiết (cùng lý do với `/photos`): gọi Ollama mất
+    tới hàng chục giây, gộp vào sẽ làm cả trang chi tiết phải chờ. Giao diện
+    chỉ gọi khi người dùng bấm "Nghe thuyết minh", không gọi tự động.
+
+    ``available: false`` khi POI chưa có `poi_knowledge` — KHÔNG phải lỗi,
+    chỉ là chưa biên soạn; giao diện ẩn hẳn nút thuyết minh trong trường hợp
+    này thay vì hiện nút rồi báo lỗi.
+
+    ``language`` sai giá trị (không phải "vi"/"en") thì rơi về "vi" thay vì
+    400 — cùng nguyên tắc "không nghiêm khắc quá mức với dữ liệu suy đoán
+    được" đã dùng ở nơi khác; tự sửa về mặc định an toàn hơn là chặn cả
+    request chỉ vì một query param sai.
+    """
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    return chat.generate_poi_narration(poi_id, language=language)
+
+
+@app.get("/api/v1/pois/{poi_id}/narration/audio")
+def get_poi_narration_audio(
+    poi_id: str,
+    language: str = Query(default=chat.DEFAULT_NARRATION_LANGUAGE),
+) -> Any:
+    """Thuyết minh đọc thành GIỌNG NÓI THẬT (VieNeu-TTS, xem `app/tts.py`) —
+    thay cho `speechSynthesis` của trình duyệt vốn phụ thuộc máy người xem có
+    cài giọng tiếng Việt hay không.
+
+    Sinh văn bản (LLM) và tổng hợp giọng nói CÙNG một request, KHÔNG tách hai
+    endpoint riêng: tách ra sẽ phải gọi LLM hai lần cho hai request khác
+    nhau (một cho hiển thị chữ, một cho đọc), tốn gấp đôi thời gian VÀ có thể
+    ra hai đoạn văn hơi khác nhau — audio đọc một câu, chữ hiển thị một câu
+    khác. Văn bản đã đọc trả kèm qua header `X-Narration-Text` (URL-encoded
+    vì header HTTP không mang được UTF-8 thô) để giao diện hiển thị ĐÚNG
+    những gì đang phát, không lệch.
+
+    404 khi POI chưa có `poi_knowledge` (giống endpoint text). 503 khi có
+    narration nhưng TTS lỗi/ngôn ngữ chưa có giọng (vd "en" — VieNeu-TTS chỉ
+    có giọng tiếng Việt) — frontend tự rơi về `speechSynthesis` trong
+    trường hợp này, không phải lỗi cứng.
+
+    Có CACHE (Phase 16.3, ``app/tts.get_cached``/``store``) theo (poi_id,
+    language) — nội dung 14 POI có `poi_knowledge` không đổi giữa các lần
+    hỏi, nên không có lý do sinh lại LLM+TTS (tổng ~2 phút, đo được thật) mỗi
+    lần người dùng bấm nghe CÙNG một POI. Lần đầu vẫn chậm như bình thường;
+    từ lần thứ hai trở đi gần như tức thì.
+    """
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+
+    cached = tts.get_cached(poi_id, language)
+    if cached is not None:
+        return Response(
+            content=cached["audio"],
+            media_type="audio/wav",
+            headers={
+                "X-Narration-Text": quote(cached["narration"]),
+                "X-Narration-Verified": "true" if cached["verified"] else "false",
+                "X-Narration-Cache": "hit",
+            },
+        )
+
+    result = chat.generate_poi_narration(poi_id, language=language)
+    if not result["available"] or not result["narration"]:
+        return JSONResponse(status_code=404, content={"detail": "Chưa có thuyết minh cho địa điểm này"})
+
+    audio_bytes = tts.synthesize(result["narration"], language)
+    if audio_bytes is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Chưa tạo được giọng đọc cho ngôn ngữ này"},
+        )
+
+    tts.store(poi_id, language, result["narration"], result["verified"], audio_bytes)
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/wav",
+        headers={
+            "X-Narration-Text": quote(result["narration"]),
+            "X-Narration-Verified": "true" if result["verified"] else "false",
+            "X-Narration-Cache": "miss",
+        },
     )
 
 
