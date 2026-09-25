@@ -101,6 +101,7 @@ import { Input } from '@/components/ui/input';
 import { useTheme } from '@/hooks/use-theme';
 import { useAutoTranslate } from '@/hooks/use-auto-translate';
 import { getTelemetry, type TelemetryState } from '@/lib/telemetry';
+import type { AssistantOverlay } from '@/lib/assistant';
 
 type Poi = {
   id: string;
@@ -618,6 +619,23 @@ export function LocationExplorer() {
   // Khung "Tìm chỗ gửi xe" chỉ hiện khi người dùng cần — để mặc định thì cột
   // trái quá rối. Mở bằng nút gọn ở cột trái hoặc nút "Gửi xe" ở panel chi tiết.
   const [parkingOpen, setParkingOpen] = useState(false);
+  // Lớp vẽ tạm của trợ lý (tuyến tour, người trong nhóm hẹn, quán gợi ý) — xem
+  // components/chat-widget.tsx. Tách khỏi 'route' để chỉ đường và tour không
+  // xoá lẫn nhau.
+  const [assistantOverlay, setAssistantOverlay] = useState<AssistantOverlay | null>(null);
+  const assistantMarkersRef = useRef<Marker[]>([]);
+  const assistantOverlayKeyRef = useRef<string>('');
+  // "Chạm lên bản đồ để chọn vị trí" (hẹn nhóm). Ref để handler click của
+  // MapLibre — đăng ký MỘT lần lúc khởi tạo — luôn đọc giá trị mới nhất.
+  const mapPickRef = useRef<((latitude: number, longitude: number) => void) | null>(null);
+  const [mapPicking, setMapPicking] = useState(false);
+  const requestMapPick = useCallback(
+    (callback: ((latitude: number, longitude: number) => void) | null) => {
+      mapPickRef.current = callback;
+      setMapPicking(callback !== null);
+    },
+    [],
+  );
   const { theme, toggleTheme } = useTheme();
   const about = useAboutDialog();
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -1704,7 +1722,21 @@ export function LocationExplorer() {
         },
       });
 
+      // Chế độ chọn vị trí: cú chạm này thuộc về trợ lý, không phải chọn POI.
+      // Xoá ref ở tick SAU: handler theo lớp ('clusters', 'unclustered-point')
+      // chạy trong cùng lượt sự kiện và phải còn thấy ref để tự bỏ qua.
+      map.on('click', (event) => {
+        const pick = mapPickRef.current;
+        if (!pick) return;
+        pick(event.lngLat.lat, event.lngLat.lng);
+        setTimeout(() => {
+          if (mapPickRef.current === pick) mapPickRef.current = null;
+          setMapPicking(false);
+        }, 0);
+      });
+
       map.on('click', 'clusters', (event) => {
+        if (mapPickRef.current) return;
         const features = map.queryRenderedFeatures(event.point, {
           layers: ['clusters'],
         });
@@ -1726,6 +1758,7 @@ export function LocationExplorer() {
       });
 
       map.on('click', 'unclustered-point', (event) => {
+        if (mapPickRef.current) return;
         const feature = event.features?.[0];
         const poiId = feature?.properties?.id as string | undefined;
         const poi = poisRef.current.find((item) => item.id === poiId);
@@ -1843,6 +1876,80 @@ export function LocationExplorer() {
       corner.style.right = '';
     };
   }, [detailPoiId]);
+
+  // Vẽ lớp của trợ lý: một đường nét đứt (tuyến tour) + marker đánh số. So
+  // khoá nội dung để không fitBounds lại mỗi lần component con dựng object mới
+  // với cùng dữ liệu (ví dụ lúc người dùng đang gõ tên bạn bè).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    const key = assistantOverlay ? JSON.stringify(assistantOverlay) : '';
+    if (key === assistantOverlayKeyRef.current) return;
+    assistantOverlayKeyRef.current = key;
+
+    for (const marker of assistantMarkersRef.current) marker.remove();
+    assistantMarkersRef.current = [];
+
+    if (!map.getSource('assistant-line')) {
+      map.addSource('assistant-line', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.addLayer({
+        id: 'assistant-line-casing',
+        type: 'line',
+        source: 'assistant-line',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 },
+      });
+      map.addLayer({
+        id: 'assistant-line',
+        type: 'line',
+        source: 'assistant-line',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#7c3aed', 'line-width': 4, 'line-dasharray': [1.4, 1] },
+      });
+    }
+    (map.getSource('assistant-line') as GeoJSONSource).setData(
+      assistantOverlay?.line
+        ? { type: 'Feature', geometry: assistantOverlay.line, properties: {} }
+        : { type: 'FeatureCollection', features: [] },
+    );
+    if (!assistantOverlay) return;
+
+    const TONE_COLORS = { stop: '#7c3aed', person: '#0284c7', result: '#f97316' } as const;
+    const bounds = new maplibregl.LngLatBounds();
+    for (const point of assistantOverlay.points) {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className =
+        'grid size-7 place-items-center rounded-full border-2 border-white text-[11px] font-bold text-white shadow-md';
+      dot.style.background = TONE_COLORS[point.tone];
+      dot.textContent = point.label;
+      dot.title = point.title;
+      dot.setAttribute('aria-label', point.title);
+      const poiId = point.poiId;
+      if (poiId) {
+        dot.addEventListener('click', (event) => {
+          event.stopPropagation();
+          openDetailRef.current(poiId, 'assistant');
+        });
+      }
+      assistantMarkersRef.current.push(
+        new maplibregl.Marker({ element: dot }).setLngLat([point.longitude, point.latitude]).addTo(map),
+      );
+      bounds.extend([point.longitude, point.latitude]);
+    }
+    for (const coordinate of assistantOverlay.line?.coordinates ?? []) bounds.extend(coordinate);
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration: 600 });
+    }
+  }, [assistantOverlay]);
+
+  useEffect(() => {
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = mapPicking ? 'crosshair' : '';
+  }, [mapPicking]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -3411,8 +3518,26 @@ export function LocationExplorer() {
           apiBaseUrl={API_BASE_URL}
           sessionId={telemetryState.sessionId}
           position={position}
+          language={uiLanguage.language}
           onViewPoi={(poiId) => openDetail(poiId, 'chat')}
+          onFocusLocation={(latitude, longitude) =>
+            mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 17, essential: true })
+          }
+          onMapOverlay={setAssistantOverlay}
+          onPickOnMap={requestMapPick}
         />
+      )}
+      {mapPicking && (
+        <div className="fixed left-1/2 top-24 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full bg-slate-900/90 px-4 py-2 text-sm font-medium text-white shadow-lg">
+          Chạm lên bản đồ để đặt vị trí
+          <button
+            type="button"
+            onClick={() => requestMapPick(null)}
+            className="rounded-full bg-white/15 px-2.5 py-0.5 text-xs hover:bg-white/25"
+          >
+            Huỷ
+          </button>
+        </div>
       )}
     </main>
   );

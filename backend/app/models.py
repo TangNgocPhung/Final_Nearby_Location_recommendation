@@ -65,6 +65,28 @@ class GeoParseRequest(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
 
 
+class TourRequest(BaseModel):
+    """Hướng dẫn viên AI — xem `app/assistant.plan_tour`."""
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    minutes: int = Field(default=90, ge=30, le=240)
+
+
+class MeetupParticipant(BaseModel):
+    label: str = Field(default="", max_length=60)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class MeetupRequest(BaseModel):
+    """Điểm hẹn công bằng — xem `app/assistant.plan_meetup`."""
+
+    participants: list[MeetupParticipant] = Field(min_length=2, max_length=6)
+    category: Literal["cafe", "food", "bar"] = "cafe"
+    need_parking: bool = False
+
+
 class SearchRequest(BaseModel):
     query: str = Field(default="", max_length=160)
     latitude: float = Field(ge=-90, le=90)

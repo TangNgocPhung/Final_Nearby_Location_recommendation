@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import (
+    assistant,
     chat,
     directions,
     geofence,
@@ -36,9 +37,11 @@ from .models import (
     EventBatch,
     GeofenceRequest,
     GeoParseRequest,
+    MeetupRequest,
     ParkingReportRequest,
     ReviewRequest,
     SavedPlaceRequest,
+    TourRequest,
     SearchRequest,
     TranslateRequest,
 )
@@ -497,6 +500,32 @@ def get_poi_photos(
 
     return photos.fetch_and_store(
         poi_id, context["latitude"], context["longitude"], context["tags"], limit
+    )
+
+
+@app.get("/api/v1/assistant/suggestions")
+def get_assistant_suggestions(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+) -> dict[str, Any]:
+    """Chip gợi ý cho khung chatbot theo vị trí + thời điểm: lễ sắp tới (âm
+    lịch), mưa, giờ ăn, tour thuyết minh, hẹn nhóm. Xem `app/assistant.py`."""
+    return assistant.suggestions(lat, lng)
+
+
+@app.post("/api/v1/assistant/tour")
+def post_assistant_tour(payload: TourRequest) -> dict[str, Any]:
+    """Hướng dẫn viên AI: tour đi bộ qua các địa điểm có bài thuyết minh."""
+    return assistant.plan_tour(payload.latitude, payload.longitude, payload.minutes)
+
+
+@app.post("/api/v1/assistant/meetup")
+def post_assistant_meetup(payload: MeetupRequest) -> dict[str, Any]:
+    """Điểm hẹn công bằng: quán mà người đi xa nhất cũng không quá xa."""
+    return assistant.plan_meetup(
+        [item.model_dump() for item in payload.participants],
+        payload.category,
+        payload.need_parking,
     )
 
 

@@ -267,3 +267,74 @@ def weather_factor(category: str | None, weather: dict[str, Any] | None) -> floa
     if key in INDOOR_CATEGORIES:
         return HEAVY_RAIN_INDOOR_FACTOR if heavy else RAIN_INDOOR_FACTOR
     return 1.0
+
+
+# --- Dự báo mưa vài giờ tới (gợi ý của trợ lý, app/assistant.py) ---------------
+
+FORECAST_HOURS = 6
+# Xác suất mưa từ mức này trở lên mới đáng thành một gợi ý "sắp mưa". Thấp hơn
+# thì ở TP.HCM mùa mưa gần như giờ nào cũng "có thể mưa" — gợi ý thành nhiễu.
+FORECAST_RAIN_PROBABILITY = 60
+
+
+def rain_forecast(latitude: float, longitude: float) -> dict[str, Any] | None:
+    """Giờ ĐẦU TIÊN trong ``FORECAST_HOURS`` giờ tới có khả năng mưa cao.
+
+    Trả ``{"time": "HH:MM" giờ VN, "probability": %, "precipitationMm"}``, hoặc
+    ``{"time": None}`` khi dự báo không có giờ nào đủ ngưỡng. ``None`` = không
+    lấy được dự báo (khác hẳn "sẽ không mưa"). Cache Redis theo ô H3 + giờ, cùng
+    khoá gốc với thời tiết hiện tại.
+    """
+    key = cache_key(latitude, longitude) + ":forecast"
+    try:
+        client: Any | None = redis.Redis.from_url(
+            settings.redis_url, decode_responses=True, socket_timeout=1.5
+        )
+        cached = client.get(key) if client is not None else None
+        if cached:
+            return json.loads(cached)
+    except (redis.RedisError, OSError, ValueError, json.JSONDecodeError):
+        client = None
+
+    query = urllib.parse.urlencode(
+        {
+            "latitude": f"{latitude:.4f}",
+            "longitude": f"{longitude:.4f}",
+            "hourly": "precipitation_probability,precipitation",
+            "forecast_hours": FORECAST_HOURS,
+            # Giờ trả về đọc thẳng cho người dùng nên lấy giờ Việt Nam luôn.
+            "timezone": "Asia/Ho_Chi_Minh",
+        }
+    )
+    try:
+        with urllib.request.urlopen(
+            f"{OPEN_METEO_URL}?{query}", timeout=REQUEST_TIMEOUT_SECONDS * 2
+        ) as response:
+            payload = json.load(response)
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as error:
+        logger.debug("Không lấy được dự báo mưa: %s", error)
+        return None
+
+    hourly = payload.get("hourly") if isinstance(payload, dict) else None
+    if not isinstance(hourly, dict):
+        return None
+    result: dict[str, Any] = {"time": None}
+    for time_text, probability, amount in zip(
+        hourly.get("time") or [],
+        hourly.get("precipitation_probability") or [],
+        hourly.get("precipitation") or [],
+    ):
+        if probability is not None and probability >= FORECAST_RAIN_PROBABILITY:
+            result = {
+                "time": str(time_text)[11:16],
+                "probability": int(probability),
+                "precipitationMm": float(amount or 0.0),
+            }
+            break
+
+    if client is not None:
+        try:
+            client.setex(key, CACHE_TTL_SECONDS, json.dumps(result))
+        except (redis.RedisError, OSError, TypeError):
+            pass
+    return result

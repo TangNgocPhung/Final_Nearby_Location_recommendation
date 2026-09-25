@@ -278,6 +278,107 @@ def route(
     return result
 
 
+def _base_url(mode: str) -> tuple[str, str, bool] | None:
+    """``(base_url, api_profile, approximate)`` của một hồ sơ, theo cùng luật lùi
+    về đồ thị thay thế như ``_fetch_route``."""
+    config = MODES.get(mode)
+    if config is None:
+        return None
+    base_url = getattr(settings, config["osrm_url_attr"], "") or ""
+    approximate = config["approximate"]
+    if not base_url:
+        fallback_attr = config.get("fallback_url_attr")
+        base_url = getattr(settings, fallback_attr, "") or "" if fallback_attr else ""
+        if not base_url:
+            return None
+        approximate = True
+    return base_url.rstrip("/"), config["api_profile"], approximate
+
+
+def _osrm_get(url: str, mode: str) -> dict[str, Any] | None:
+    try:
+        with urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            payload = json.load(response)
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as error:
+        logger.warning("Không gọi được OSRM (%s): %s", mode, error)
+        return None
+    if payload.get("code") != "Ok":
+        logger.debug("OSRM trả mã %s (%s)", payload.get("code"), mode)
+        return None
+    return payload
+
+
+def route_via(points: list[tuple[float, float]], mode: str = "foot") -> dict[str, Any] | None:
+    """Tuyến đi qua LẦN LƯỢT nhiều điểm ``(lat, lng)`` — dùng cho tour đi bộ.
+
+    Trả cùng dạng với ``route`` cộng thêm ``legs``: quãng đường/thời gian của
+    từng chặng giữa hai điểm liên tiếp. Không cache: tour được dựng theo yêu cầu
+    và hiếm khi lặp lại đúng chuỗi điểm.
+    """
+    if len(points) < 2:
+        return None
+    resolved = _base_url(mode)
+    if resolved is None:
+        return None
+    base_url, profile, approximate = resolved
+    coords = ";".join(f"{lng:.6f},{lat:.6f}" for lat, lng in points)
+    query = urllib.parse.urlencode(
+        {"overview": "full", "geometries": "geojson", "steps": "false"}
+    )
+    payload = _osrm_get(f"{base_url}/route/v1/{profile}/{coords}?{query}", mode)
+    if payload is None:
+        return None
+    shaped = _shape_response(payload, mode, approximate)
+    if shaped is None:
+        return None
+    shaped["legs"] = [
+        {
+            "distanceMeters": round(float(leg.get("distance") or 0.0), 1),
+            "durationSeconds": round(float(leg.get("duration") or 0.0), 1),
+        }
+        for leg in (payload["routes"][0].get("legs") or [])
+    ]
+    return shaped
+
+
+def duration_table(
+    sources: list[tuple[float, float]],
+    destinations: list[tuple[float, float]],
+    mode: str = "motorbike",
+) -> dict[str, Any] | None:
+    """Ma trận thời gian đi THẬT (giây) từ mỗi nguồn tới mỗi đích — OSRM /table.
+
+    ``durations[i][j]`` là ``None`` khi cặp đó không nối được bằng đường bộ.
+    Một lần gọi thay cho ``len(sources) × len(destinations)`` lần gọi /route.
+    """
+    if not sources or not destinations:
+        return None
+    resolved = _base_url(mode)
+    if resolved is None:
+        return None
+    base_url, profile, approximate = resolved
+    points = list(sources) + list(destinations)
+    coords = ";".join(f"{lng:.6f},{lat:.6f}" for lat, lng in points)
+    query = urllib.parse.urlencode(
+        {
+            "sources": ";".join(str(i) for i in range(len(sources))),
+            "destinations": ";".join(
+                str(i) for i in range(len(sources), len(points))
+            ),
+            "annotations": "duration,distance",
+        }
+    )
+    payload = _osrm_get(f"{base_url}/table/v1/{profile}/{coords}?{query}", mode)
+    if payload is None:
+        return None
+    return {
+        "durations": payload.get("durations") or [],
+        "distances": payload.get("distances") or [],
+        "approximate": approximate,
+        "mode": mode,
+    }
+
+
 def available(mode: str = DEFAULT_MODE) -> bool:
     """OSRM của ``mode`` có đang phục vụ không. Dùng cho /health và để giao
     diện ẩn từng nút phương tiện riêng — "car" sống không có nghĩa "foot"
