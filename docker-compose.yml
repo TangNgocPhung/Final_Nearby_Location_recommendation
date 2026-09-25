@@ -19,6 +19,11 @@ x-backend-environment: &backend-environment
   # hạn mức RATE_LIMIT_PER_MINUTE. Dev = 1 (chỉ nginx), prod = 2 (Caddy+nginx).
   TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
   ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set}
+  # Ảnh đường phố 360° (app/streetview.py). Giá trị nằm trong `.env` ở gốc repo
+  # (đã .gitignore), nên compose phải chạy với CẢ HAI file env:
+  #   docker compose --env-file config/development.env --env-file .env ...
+  MAPILLARY_CLIENT_TOKEN: ${MAPILLARY_CLIENT_TOKEN:-}
+  MAPILLARY_TILE_DIR: /app/mapillary_cache
   OVERPASS_URL: ${OVERPASS_URL:-https://overpass-api.de/api/interpreter}
   OSM_BBOX: ${OSM_BBOX:-10.70,106.60,10.90,106.82}
   OSM_MAX_POIS: ${OSM_MAX_POIS:-3000}
@@ -42,6 +47,9 @@ x-backend-environment: &backend-environment
   # Model chat cho chatbot AI (Phase 14) — cùng Ollama host, /api/chat thay vì
   # /api/embed. llama3.2:3b: đủ nhỏ để chạy nhanh trên máy dev, đã pull sẵn.
   OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2:3b}
+  # Thuyết minh POI + dịch giao diện 134 ngôn ngữ (app/translate.py) — cần
+  # model đa ngôn ngữ. qwen3.5:9b hết RAM trên máy dev 15 GB, dùng bản 4b.
+  OLLAMA_NARRATION_MODEL: ${OLLAMA_NARRATION_MODEL:-qwen3.5:4b}
   # VieNeu-TTS (Phase 16.2) tải model ONNX nhiều file qua huggingface_hub, có
   # dùng "external data" (trọng số lớn tách khỏi file .onnx chính). Cache mặc
   # định của huggingface_hub dùng symlink trỏ vào blobs/<hash khác nhau> cho
@@ -222,6 +230,11 @@ services:
     volumes:
       - nearby-hf-cache:/root/.cache/huggingface
       - nearby-tts-cache:/app/tts_cache
+      # Bản dịch giao diện theo ngôn ngữ (app/translate.py) — dịch lại trên
+      # CPU mất vài phút mỗi ngôn ngữ, không để mất mỗi lần build lại image.
+      - nearby-i18n-cache:/app/i18n_cache
+      # Tile phủ ảnh Mapillary (app/streetview.py) — ~10 MB/tile, tải ~5 giây.
+      - nearby-mapillary-cache:/app/mapillary_cache
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -406,3 +419,5 @@ volumes:
   # app/tts.py (get_cached/store). Không có volume riêng thì cache mất trắng
   # mỗi lần rebuild, phải sinh lại từ đầu (~2 phút/POI) dù nội dung không đổi.
   nearby-tts-cache:
+  nearby-i18n-cache:
+  nearby-mapillary-cache:

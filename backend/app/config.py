@@ -149,6 +149,17 @@ class Settings(BaseSettings):
     # diễn giải kết quả bằng lời; KHÔNG bao giờ tự quyết định POI — xem
     # app/chat.py.
     ollama_chat_model: str = "llama3.2:3b"
+    # Model riêng cho thuyết minh POI và dịch giao diện (app/translate.py) —
+    # cần đa ngôn ngữ (134 ngôn ngữ, xem app/languages.py), việc mà
+    # llama3.2:3b làm kém. Để trống thì dùng chung `ollama_chat_model`.
+    # qwen3.5:9b không nạp nổi trên máy dev 15 GB (hết RAM, đo 2026-09-25),
+    # nên docker-compose đặt qwen3.5:4b.
+    ollama_narration_model: str = ""
+    ollama_narration_num_ctx: int = 4096
+    # Dịch/thuyết minh một ngôn ngữ ít tài nguyên (Khmer, Thái...) trên CPU có
+    # thể quá 90s mặc định của chatbot — vẫn phải dưới proxy_read_timeout của
+    # gateway (150s), không thì nginx trả 504 trước.
+    ollama_narration_timeout_seconds: float = 140.0
     # AI thuyết minh POI đọc thành giọng nói (Phase 16.2) — VieNeu-TTS, chạy
     # CPU thuần, model tải tự động từ Hugging Face ở lần gọi đầu (xem
     # app/tts.py). Tắt được để không tải model nặng ở môi trường không cần
@@ -156,6 +167,12 @@ class Settings(BaseSettings):
     # nguyên) — tắt thì endpoint audio trả "tạm không dùng được", frontend tự
     # rơi về speechSynthesis, không hỏng cả tính năng thuyết minh.
     tts_enabled: bool = True
+    # Tạo sẵn thuyết minh (chữ + giọng đọc) cho mọi POI có `poi_knowledge`
+    # ngay khi backend khởi động, trong một thread nền (xem
+    # app/narration.py). Nhờ vậy người dùng mở panel là thấy chữ, bấm nghe là
+    # phát luôn, không phải chờ LLM + TTS (~2 phút/POI trên CPU). POI đã có
+    # cache thì bỏ qua, nên các lần khởi động sau gần như không tốn gì.
+    narration_prewarm: bool = True
     # Weather & Traffic Density Injection (Spatio-Temporal Enricher).
     #
     # Tắt được vì hai lý do thực tế: đo độ trễ sạch (thời tiết là một lần gọi
@@ -203,6 +220,14 @@ class Settings(BaseSettings):
     # Bao lâu thì dò lại một POI. Áp cho CẢ kết quả rỗng: Commons liên tục có
     # ảnh mới nên "hôm nay không có" không phải kết luận vĩnh viễn.
     photo_cache_days: int = 30
+    # Ảnh đường phố 360° (`app/streetview.py`). Client token của Mapillary —
+    # loại token dành cho trình duyệt, nên được trả thẳng xuống giao diện. Để
+    # rỗng thì endpoint trả `status='unavailable'` và giao diện ẩn khung 360°.
+    mapillary_client_token: str = ""
+    mapillary_timeout_seconds: float = 6.0
+    # Nơi cache tile phủ ảnh (~10 MB/tile). Rỗng thì dùng thư mục tạm của hệ
+    # thống — chạy được, nhưng mất cache mỗi lần tạo lại container.
+    mapillary_tile_dir: str = ""
     osm_bbox: str = "10.70,106.60,10.90,106.82"
     osm_max_pois: int = 3_000
     allowed_origins: str = (

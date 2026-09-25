@@ -314,6 +314,51 @@ là độ phủ ảnh `area` thấp hơn số ảnh Commons thật sự có quan
 đổi có chủ ý — mất một phần độ phủ để không phải giải thích một vi phạm giấy
 phép trước hội đồng — chứ không phải bỏ sót.
 
+### 4.6 Ảnh đường phố 360° — Mapillary (bổ sung 2026-09-25)
+
+Nhãn "Ảnh khu vực" trung thực nhưng không trả lời câu người dùng thật sự hỏi:
+*"chỗ đó trông thế nào?"*. Ví dụ thật: tiệm giày Kiến Thành (764 Nguyễn Trãi)
+nhận ảnh bìa là **Hội quán Tuệ Thành** — một POI khác cách 186 m. Lý do: file
+Commons được gắn toạ độ chỗ người chụp đứng (cách tiệm giày 17 m), không phải
+toạ độ vật được chụp.
+
+**Nguồn:** Mapillary. Ảnh chụp từ xe chạy dọc đường, giấy phép CC BY-SA 4.0.
+Client token miễn phí, không cần tài khoản thanh toán. Ở nội thành TP.HCM phủ
+gần kín: quanh khách sạn Trung Mai (785 Nguyễn Trãi) có 193 ảnh trong bán kính
+~60 m, trong đó 21 ảnh 360°.
+
+**Endpoint** `GET /api/v1/pois/{poi_id}/streetview` ([`app/streetview.py`](../../backend/app/streetview.py))
+trả hai ảnh, chọn theo hai tiêu chí khác nhau:
+
+| Ảnh | Tiêu chí |
+|---|---|
+| `pano` (360°) | Gần nhất. Hướng không quan trọng vì xoay được; giao diện mở viewer quay sẵn về phía địa điểm (`bearingToPoi`). |
+| `facing` (ảnh thường) | Máy quay **nhìn về phía** địa điểm (lệch ≤ 35°, cách 3–40 m). Ảnh gần nhất mà quay lưng lại quán là vô dụng. |
+
+Xếp hạng: ảnh `quality_score` < 0,3 (nhoè/tối) xếp sau mọi ảnh đạt; trong cùng
+nhóm, điểm = khoảng cách + 2 m cho mỗi năm tuổi của ảnh. Hai quy tắc này đều từ
+số đo thật ở Trung Mai. Không có chúng thì ảnh bìa là ảnh đêm 21:42 nhoè
+(quality 0,06), rồi đến ảnh năm 2014. Có chúng thì ảnh bìa là ảnh chiều tháng
+8/2025, thấy rõ biển "TRUNG MAI HOTEL".
+
+**Vì sao đọc vector tile thay vì search API.** `GET /images?bbox=` của
+Mapillary trả kết quả **không ổn định**: cùng một bbox gọi liên tiếp được 0,
+113, rồi 193 ảnh; chia bbox làm bốn thì tổng lên 596. Tile phủ ảnh (z14, lớp
+`image`) thì đầy đủ và tất định: ~10 MB, ~166 nghìn điểm, parse 0,4 giây bằng
+protobuf. Tile được cache trên đĩa 7 ngày (volume `nearby-mapillary-cache`).
+Sau đó chỉ hỏi chi tiết (hướng đã hiệu chỉnh, thumbnail) cho ≤ 32 ứng viên qua
+`image_ids`, loại truy vấn trả kết quả ổn định. Lần đầu ở một khu vực mất
+~5–8 giây vì phải tải tile; các lần sau ~0,05 giây.
+
+**Giao diện:** POI không có ảnh `place` thì ảnh bìa là ảnh đường phố, ghi rõ
+"Ảnh đường phố · chụp tháng M/YYYY · cách N m". Ảnh khu vực của Commons lùi
+xuống thành một dải nhỏ có nhãn riêng. Bấm "Xoay 360°" thì mới nạp MapillaryJS
+(kèm three.js), để phần lớn lượt mở panel không phải tải thư viện này.
+
+**Hạn chế:** đây vẫn là ảnh đường phố do người khác chụp, không phải ảnh quán
+cung cấp. Mặt tiền có thể bị xe che, và ảnh có thể đã vài năm tuổi — nên ngày
+chụp luôn được hiển thị.
+
 ---
 
 ## 5. Hạn chế còn lại và hướng mở rộng

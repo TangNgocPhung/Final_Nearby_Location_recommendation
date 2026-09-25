@@ -30,7 +30,7 @@ OSM_FILTERS = {
         "school|university|college|kindergarten|library|"
         "bank|atm|post_office|police|townhall|marketplace|"
         "cinema|theatre|events_venue|"
-        "fuel|charging_station|car_wash|parking|bus_station|"
+        "fuel|charging_station|car_wash|parking|motorcycle_parking|bus_station|"
         "place_of_worship"
     ),
     "tourism": (
@@ -72,6 +72,11 @@ def build_overpass_query(bbox: tuple[float, float, float, float]) -> str:
     selectors = "\n".join(
         f'  nwr["name"]["{key}"~"^({values})$"]({bounds});'
         for key, values in OSM_FILTERS.items()
+    )
+    # Bãi xe/trạm sạc lấy cả khi KHÔNG có tên — xem `_UNNAMED_FALLBACK_NAMES`
+    # trong poi_features.py.
+    selectors += (
+        f'\n  nwr["amenity"~"^(parking|motorcycle_parking|charging_station)$"]({bounds});'
     )
     return f"[out:json][timeout:180];\n(\n{selectors}\n);\nout center tags;"
 
@@ -137,6 +142,10 @@ def _find_existing(cursor: psycopg.Cursor[Any], poi: dict[str, Any]) -> tuple[st
     exact = cursor.fetchone()
     if exact:
         return exact["canonical_poi_id"], False
+    if poi.get("generated_name"):
+        # Hai bãi "Bãi giữ xe máy" cách nhau 50 m là hai bãi khác nhau — gộp
+        # theo tên tự sinh sẽ xoá mất một bãi thật.
+        return None, False
 
     cursor.execute(
         """

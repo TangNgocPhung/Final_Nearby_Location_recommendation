@@ -29,6 +29,7 @@ from psycopg.rows import dict_row
 
 from . import geo_cache
 from .config import settings
+from .languages import ENGLISH_NAMES, LANGUAGE_CODES
 from .poi_detail import fetch_knowledge_map
 from .poi_features import CATEGORY_KEYWORDS, normalize_text
 
@@ -133,7 +134,14 @@ nhớ ra. Quy tắc TUYỆT ĐỐI, vi phạm là lỗi nghiêm trọng nhất c
 # lại đúng tập fact đó bằng ngôn ngữ đích, dịch trực tiếp từ dữ liệu gốc —
 # không dịch qua một bước narration tiếng Việt trung gian (tránh cộng dồn sai
 # lệch qua hai lượt sinh văn bản).
-NARRATION_LANGUAGES = ("vi", "en")
+#
+# Từ 2026-09-25: mọi ngôn ngữ trong `app/languages.py` (134 ngôn ngữ). "vi" có
+# prompt riêng; mọi ngôn ngữ khác dùng chung prompt tiếng Anh, chỉ thay tên
+# ngôn ngữ đích. Chỉ `PREWARM_NARRATION_LANGUAGES` được tạo sẵn lúc khởi động
+# (xem `app/narration.py`) — tạo sẵn cả 134 ngôn ngữ trên CPU mất nhiều giờ,
+# nên các ngôn ngữ còn lại sinh ở lần chọn đầu tiên rồi cache.
+NARRATION_LANGUAGES = LANGUAGE_CODES
+PREWARM_NARRATION_LANGUAGES = ("vi", "en")
 DEFAULT_NARRATION_LANGUAGE = "vi"
 
 _NARRATION_SYSTEM_PROMPTS: dict[str, str] = {
@@ -156,9 +164,9 @@ Quy tắc TUYỆT ĐỐI, vi phạm là lỗi nghiêm trọng nhất:
   do hệ thống hiển thị riêng dựa trên field "verified", không phải việc của
   bạn để tự quyết định viết ra hay không.
 """,
-    "en": """You are an AI tour guide for a nearby-places app called Nearby.
+    "other": """You are an AI tour guide for a nearby-places app called Nearby.
 You will receive data about ONE place (name, category, and a "knowledge" block that has already been fact-checked — written in Vietnamese).
-Task: write a natural, engaging narration IN ENGLISH, about 30-60 seconds to read aloud (4-8 sentences), by faithfully translating/paraphrasing the meaning of the Vietnamese "knowledge" data.
+Task: write a natural, engaging narration IN {language}, about 30-60 seconds to read aloud (4-8 sentences), by faithfully translating/paraphrasing the meaning of the Vietnamese "knowledge" data.
 
 ABSOLUTE rules, breaking them is the most serious failure of this whole task:
 - ONLY rephrase content that is present in "knowledge". You must NEVER add any
@@ -171,9 +179,18 @@ ABSOLUTE rules, breaking them is the most serious failure of this whole task:
   bullet points, no numbering.
 - Do NOT add any sentence about whether the information is "verified" or
   not — that is decided and displayed by the system separately, not your job.
-- Respond ONLY in English, even though the source data is in Vietnamese.
+- Respond ONLY in {language}, even though the source data is in Vietnamese.
 """,
 }
+
+
+
+
+def _narration_system_prompt(language: str) -> str:
+    if language == "vi":
+        return _NARRATION_SYSTEM_PROMPTS["vi"]
+    # `.replace` thay vì `.format`: prompt có dấu ngoặc nhọn/nháy tuỳ ý.
+    return _NARRATION_SYSTEM_PROMPTS["other"].replace("{language}", ENGLISH_NAMES[language])
 
 
 _POI_MINIMAL_QUERY = """
@@ -214,7 +231,7 @@ def generate_poi_narration(poi_id: str, language: str = DEFAULT_NARRATION_LANGUA
 
     narration = _ollama_chat(
         [
-            {"role": "system", "content": _NARRATION_SYSTEM_PROMPTS[language]},
+            {"role": "system", "content": _narration_system_prompt(language)},
             {
                 "role": "user",
                 "content": json.dumps(
@@ -227,8 +244,15 @@ def generate_poi_narration(poi_id: str, language: str = DEFAULT_NARRATION_LANGUA
                 ),
             },
         ],
-        max_tokens=260,
+        # Chữ Khmer/Thái/Ấn... tốn nhiều token hơn hẳn cho cùng một câu —
+        # 260 token (đủ cho vi/en) cắt cụt đoạn văn giữa chừng.
+        max_tokens=260 if language in ("vi", "en") else 700,
+        model=settings.ollama_narration_model or None,
+        think=False,
+        num_ctx=settings.ollama_narration_num_ctx,
+        timeout=settings.ollama_narration_timeout_seconds,
     )
+    fallback = False
     if narration is None and language == "vi":
         # Ollama chết: vẫn trả nội dung THẬT thay vì báo lỗi trắng — ghép
         # thẳng các trường đã có sẵn trong knowledge, không qua LLM diễn đạt.
@@ -242,12 +266,16 @@ def generate_poi_narration(poi_id: str, language: str = DEFAULT_NARRATION_LANGUA
         parts = [knowledge.get("intro"), knowledge.get("historicalContext")]
         parts += [fact["description"] for fact in knowledge.get("interestingFacts") or []]
         narration = " ".join(part for part in parts if part) or None
+        fallback = narration is not None
 
     return {
         "available": narration is not None,
         "narration": narration,
         "verified": knowledge.get("verified"),
         "language": language,
+        # True khi text là bản ghép thô do Ollama không trả lời — bên cache
+        # (`app/narration.py`) KHÔNG lưu bản này, để lần sau còn thử lại LLM.
+        "fallback": fallback,
     }
 
 
@@ -356,7 +384,14 @@ def _append_history(session_id: str, user_message: str, assistant_reply: str) ->
 
 
 def _ollama_chat(
-    messages: list[dict[str, str]], *, deterministic: bool = False, max_tokens: int | None = None
+    messages: list[dict[str, str]],
+    *,
+    deterministic: bool = False,
+    max_tokens: int | None = None,
+    model: str | None = None,
+    think: bool | None = None,
+    num_ctx: int | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> str | None:
     """Gọi Ollama /api/chat. Trả ``None`` nếu Ollama không tới được/lỗi — bên
     gọi phải coi đó là "chatbot tạm không dùng được", không phải lỗi cứng.
@@ -366,11 +401,18 @@ def _ollama_chat(
     trên llama3.2:3b, trả về chuỗi rác dù prompt yêu cầu JSON qua system prompt
     vẫn ra JSON hợp lệ, có dấu, ổn định. Bên gọi JSON tự trích bằng
     ``_extract_json_object``.
+
+    ``model``/``think``/``num_ctx`` dùng cho thuyết minh và dịch (Qwen3.5, xem
+    ``settings.ollama_narration_model``): Qwen3.5 là model có "thinking" —
+    không tắt thì nó sinh cả đoạn suy luận trước câu trả lời, chậm gấp nhiều
+    lần trên CPU. ``num_ctx`` phải đặt rõ: context mặc định của Qwen3.5 rất
+    lớn, Ollama cấp phát KV cache theo đó và hết RAM ngay lúc nạp model (đo
+    được thật 2026-09-25 trên máy dev 15 GB).
     """
     if not settings.ollama_url:
         return None
     body: dict[str, Any] = {
-        "model": settings.ollama_chat_model,
+        "model": model or settings.ollama_chat_model,
         "messages": messages,
         "stream": False,
     }
@@ -384,15 +426,19 @@ def _ollama_chat(
         # Chặn model rambling sinh quá dài — trên CPU ~7-8 token/giây, câu trả
         # lời dài kéo cả request vượt REQUEST_TIMEOUT_SECONDS.
         options["num_predict"] = max_tokens
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
     if options:
         body["options"] = options
+    if think is not None:
+        body["think"] = think
     payload = json.dumps(body).encode("utf-8")
     url = f"{settings.ollama_url.rstrip('/')}/api/chat"
     request = urllib.request.Request(
         url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             data: dict[str, Any] = json.load(response)
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as error:
         logger.warning("Gọi Ollama chat thất bại: %s", error)

@@ -15,3 +15,6 @@ numpy>=1.26,<3
 # AI thuyết minh POI đọc giọng nói (Phase 16.2) — TTS tiếng Việt chạy CPU
 # thuần, xem app/tts.py. Kéo theo onnxruntime/librosa/soundfile/huggingface_hub.
 vieneu
+# Giải mã vector tile phủ ảnh của Mapillary (app/streetview.py). Vốn đã có sẵn
+# qua onnxruntime, ghi rõ ở đây để không mất khi bỏ gói TTS.
+protobuf>=5,<8

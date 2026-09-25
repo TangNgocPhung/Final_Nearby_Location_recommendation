@@ -110,6 +110,28 @@ _SIMILAR_QUERY = """
     LIMIT %(limit)s
 """
 
+# Phần lớn bãi xe / trạm sạc trên OSM không có thẻ addr:* (đo 2026-09-25: chỉ
+# 4/25 trạm sạc và 15/788 bãi xe có địa chỉ). Mượn địa chỉ của địa điểm có địa
+# chỉ GẦN NHẤT trong bán kính nhỏ và trả RIÊNG thành `nearbyAddress` — không ghi
+# đè `address`, để giao diện nói rõ đây là "gần ...", không phải số nhà thật.
+NEARBY_ADDRESS_RADIUS_METERS = 100
+
+_NEARBY_ADDRESS_QUERY = """
+    SELECT
+        q.address, q.name,
+        ST_Distance(q.location, p.location) AS "distanceMeters"
+    FROM pois p
+    JOIN LATERAL (
+        SELECT address, name, location FROM pois
+        WHERE id <> p.id
+          AND COALESCE(address, '') <> ''
+          AND ST_DWithin(location, p.location, %(radius)s)
+        ORDER BY location <-> p.location
+        LIMIT 1
+    ) q ON TRUE
+    WHERE p.id = %(poi_id)s
+"""
+
 _KNOWLEDGE_QUERY = """
     SELECT content_type AS "contentType", intro, specialty,
            historical_context AS "historicalContext",
@@ -371,6 +393,20 @@ def fetch_detail(
             cursor.execute(_KNOWLEDGE_QUERY, {"poi_id": poi_id})
             knowledge_row = cursor.fetchone()
 
+            nearby_address = None
+            if not (row["address"] or "").strip():
+                cursor.execute(
+                    _NEARBY_ADDRESS_QUERY,
+                    {"poi_id": poi_id, "radius": NEARBY_ADDRESS_RADIUS_METERS},
+                )
+                nearby_row = cursor.fetchone()
+                if nearby_row:
+                    nearby_address = {
+                        "address": nearby_row["address"],
+                        "name": nearby_row["name"],
+                        "distanceMeters": round(nearby_row["distanceMeters"]),
+                    }
+
     timezone_name = row["timezone"] or DEFAULT_TIMEZONE
     schedule = normalize_opening_hours(row["openingHours"])
 
@@ -447,6 +483,7 @@ def fetch_detail(
         "category": row["category"],
         "categoryLabel": row["categoryLabel"],
         "address": row["address"],
+        "nearbyAddress": nearby_address,
         "district": row["district"],
         "city": row["city"],
         "countryCode": row["countryCode"],

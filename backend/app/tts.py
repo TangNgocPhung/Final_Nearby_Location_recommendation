@@ -72,6 +72,42 @@ def get_cached(poi_id: str, language: str) -> dict[str, Any] | None:
     return {"narration": meta.get("narration"), "verified": meta.get("verified"), "audio": audio_bytes}
 
 
+def get_cached_text(poi_id: str, language: str) -> dict[str, Any] | None:
+    """Chỉ đọc PHẦN CHỮ đã cache (file .json), không cần có audio — dùng cho
+    endpoint `/narration` (hiện chữ ngay khi mở panel) và cho ngôn ngữ chưa
+    có giọng đọc (vd "en"), nơi chỉ có chữ chứ không bao giờ có file .wav."""
+    _, meta_path = _cache_paths(poi_id, language)
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning("Đọc cache chữ thuyết minh hỏng (%s/%s): %s", poi_id, language, error)
+        return None
+    if not meta.get("narration"):
+        return None
+    return {"narration": meta["narration"], "verified": meta.get("verified")}
+
+
+def has_audio(poi_id: str, language: str) -> bool:
+    audio_path, _ = _cache_paths(poi_id, language)
+    return audio_path.exists()
+
+
+def store_text(poi_id: str, language: str, narration: str, verified: bool | None) -> None:
+    """Ghi riêng phần chữ — audio (nếu có) ghi sau bằng `store`. Cùng nguyên
+    tắc với `store`: lỗi ghi chỉ log, không raise."""
+    _, meta_path = _cache_paths(poi_id, language)
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(
+            json.dumps({"narration": narration, "verified": verified}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        logger.warning("Ghi cache chữ thuyết minh thất bại (%s/%s): %s", poi_id, language, error)
+
+
 def store(poi_id: str, language: str, narration: str, verified: bool | None, audio: bytes) -> None:
     """Ghi cache. Lỗi ghi (đĩa đầy, không có quyền, ...) chỉ log — KHÔNG raise,
     vì response cho lượt NÀY đã có đủ dữ liệu để trả về rồi, ghi cache thất
@@ -80,7 +116,12 @@ def store(poi_id: str, language: str, narration: str, verified: bool | None, aud
     audio_path, meta_path = _cache_paths(poi_id, language)
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        audio_path.write_bytes(audio)
+        # Ghi ra file tạm rồi đổi tên: phần chữ (.json) có thể đã nằm sẵn từ
+        # trước (`store_text`), nên `get_cached` không được thấy một file .wav
+        # mới ghi dở.
+        tmp_audio = audio_path.with_suffix(".wav.tmp")
+        tmp_audio.write_bytes(audio)
+        os.replace(tmp_audio, audio_path)
         meta_path.write_text(
             json.dumps({"narration": narration, "verified": verified}, ensure_ascii=False),
             encoding="utf-8",

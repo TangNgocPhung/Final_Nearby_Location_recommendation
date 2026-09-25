@@ -14,6 +14,7 @@ import {
   Bike,
   Car,
   Check,
+  CircleParking,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -42,7 +43,10 @@ import {
 
 import { PoiCover } from '@/components/poi-cover';
 import { Button } from '@/components/ui/button';
-import { type NarrationLanguage, usePoiNarration } from '@/hooks/use-poi-narration';
+import type { UiLanguage } from '@/hooks/use-auto-translate';
+import { usePoiNarration } from '@/hooks/use-poi-narration';
+import { ParkingInfo } from '@/components/parking-info';
+import { StreetView, useStreetViews } from '@/components/street-view';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -178,6 +182,13 @@ export type PoiDetail = {
   category: string;
   categoryLabel: string;
   address: string;
+  /** Chỉ có khi `address` rỗng: địa chỉ của địa điểm gần nhất (≤ 100 m) —
+   * hiển thị dạng "Gần …", KHÔNG phải số nhà của chính nơi này. */
+  nearbyAddress?: {
+    address: string;
+    name: string;
+    distanceMeters: number;
+  } | null;
   district: string | null;
   city: string;
   countryCode: string;
@@ -317,49 +328,20 @@ function formatDate(iso: string, timezone: string): string {
   }
 }
 
-// Chuỗi hiển thị cho khối "AI Thuyết minh", theo `NarrationLanguage`. Chỉ ảnh
-// hưởng NHÃN GIAO DIỆN — nội dung thuyết minh thật (narration.text) luôn đến
-// thẳng từ backend, đã được sinh bằng đúng ngôn ngữ này (xem
-// `chat._NARRATION_SYSTEM_PROMPTS`), không dịch ở phía frontend.
-const NARRATION_STRINGS: Record<
-  NarrationLanguage,
-  {
-    flag: string;
-    label: string;
-    heading: string;
-    listen: string;
-    pause: string;
-    resume: string;
-    loading: string;
-    unavailable: string;
-    error: string;
-    unverified: string;
-  }
-> = {
-  vi: {
-    flag: '🇻🇳',
-    label: 'Tiếng Việt',
-    heading: 'AI THUYẾT MINH',
-    listen: 'Nghe thuyết minh',
-    pause: 'Tạm dừng',
-    resume: 'Tiếp tục',
-    loading: 'Đang tạo thuyết minh…',
-    unavailable: 'Chưa có thuyết minh cho địa điểm này.',
-    error: 'Không tạo được thuyết minh, bạn thử lại sau nhé.',
-    unverified: 'Nội dung chưa được kiểm chứng đầy đủ.',
-  },
-  en: {
-    flag: '🇬🇧',
-    label: 'English',
-    heading: 'AI NARRATION',
-    listen: 'Listen',
-    pause: 'Pause',
-    resume: 'Resume',
-    loading: 'Generating narration…',
-    unavailable: 'No narration available for this place yet.',
-    error: "Couldn't generate a narration, please try again later.",
-    unverified: 'This content has not been fully verified.',
-  },
+// Nhãn của khối "AI Thuyết minh". Chỉ viết tiếng Việt: ngôn ngữ khác do bộ
+// dịch giao diện (hooks/use-auto-translate.ts) dịch tại chỗ như mọi chữ khác.
+// Nội dung thuyết minh thật (narration.text) thì đến thẳng từ backend, đã ở
+// đúng ngôn ngữ được chọn, và được đánh dấu translate="no".
+const NARRATION_STRINGS = {
+  heading: 'AI THUYẾT MINH',
+  language: 'Ngôn ngữ thuyết minh',
+  listen: 'Nghe thuyết minh',
+  pause: 'Tạm dừng',
+  resume: 'Tiếp tục',
+  loading: 'Đang tạo thuyết minh…',
+  unavailable: 'Chưa có thuyết minh cho địa điểm này.',
+  error: 'Không tạo được thuyết minh, bạn thử lại sau nhé.',
+  unverified: 'Nội dung chưa được kiểm chứng đầy đủ.',
 };
 
 const RATING_SOURCE_LABELS: Record<string, string> = {
@@ -655,10 +637,15 @@ export function PoiDetailPanel(props: {
   routeSummary: PoiRouteSummary | null;
   isGeofenced: boolean;
   apiBaseUrl: string;
+  /** ngôn ngữ giao diện — thuyết minh mặc định đọc bằng ngôn ngữ này */
+  uiLanguage: string;
+  languages: UiLanguage[];
   sessionId: string;
   onClose: () => void;
   onDirections: () => void;
   onToggleGeofence: () => void;
+  /** tìm chỗ gửi xe quanh địa điểm này (xem components/parking-finder.tsx) */
+  onFindParking: () => void;
   onSelectSimilar: (poiId: string) => void;
   onReviewSubmitted: (summary: {
     ratingMean: number | null;
@@ -673,16 +660,27 @@ export function PoiDetailPanel(props: {
     routeSummary,
     isGeofenced,
     apiBaseUrl,
+    uiLanguage,
+    languages,
     sessionId,
     onClose,
     onDirections,
     onToggleGeofence,
+    onFindParking,
     onSelectSimilar,
     onReviewSubmitted,
   } = props;
 
-  const [narrationLanguage, setNarrationLanguage] = useState<NarrationLanguage>('vi');
-  const narration = usePoiNarration(apiBaseUrl, detail?.id ?? null, narrationLanguage);
+  // Mặc định theo ngôn ngữ giao diện; người dùng chọn riêng thì giữ lựa chọn
+  // đó cho tới khi đóng panel (panel được mount lại theo từng POI).
+  const [narrationOverride, setNarrationOverride] = useState<string | null>(null);
+  const narrationLanguage = narrationOverride ?? uiLanguage;
+  // Chỉ POI có `knowledge` mới có thuyết minh — POI khác không gọi API.
+  const narration = usePoiNarration(
+    apiBaseUrl,
+    detail?.knowledge ? detail.id : null,
+    narrationLanguage,
+  );
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [hoursOpen, setHoursOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>(
@@ -710,6 +708,10 @@ export function PoiDetailPanel(props: {
     [photos, brokenIds],
   );
   const poiId = detail?.id ?? null;
+  const { views: streetViews, loading: streetLoading } = useStreetViews(
+    apiBaseUrl,
+    poiId,
+  );
 
   // Ảnh trong lightbox có thể 404 ngay lúc người dùng đang xem: markBroken co
   // photoList lại còn lightboxIndex thì không, nên lightbox tự biến mất khỏi màn
@@ -1050,6 +1052,18 @@ export function PoiDetailPanel(props: {
 
   const cover = photoList[0] ?? null;
   const photosPending = loading && !photos;
+  // Ảnh bìa là ảnh ĐƯỜNG PHỐ (Mapillary, nhìn về phía quán) khi không có ảnh nào
+  // của chính địa điểm. Ảnh "khu vực" của Commons đứng ở chỗ đó dù có nhãn vẫn
+  // trông như ảnh của quán — trong khi thường là chùa bên cạnh hay một con
+  // đường khác. Ảnh khu vực vẫn còn, lùi xuống thành một dải nhỏ bên dưới.
+  const hasPlacePhoto = photoList.some((photo) => photo.confidence === 'place');
+  const streetReady =
+    streetViews?.status === 'ready' &&
+    (streetViews.pano != null || streetViews.facing != null);
+  const streetHero = !hasPlacePhoto && streetReady;
+  // Chờ cả câu trả lời Mapillary trước khi vẽ ảnh bìa, để ảnh khu vực không
+  // hiện một nhịp rồi bị thay.
+  const heroPending = photosPending || (!hasPlacePhoto && streetLoading);
   const today = detail.weekHours?.find((day) => day.isToday) ?? null;
   const amenityChips = toAmenityChips(detail.amenities);
   const histogram = detail.reviewSummary?.histogram ?? {};
@@ -1089,8 +1103,10 @@ export function PoiDetailPanel(props: {
         <>
           {/* a. ẢNH ------------------------------------------------------ */}
           <div className="relative">
-            {photosPending ? (
+            {heroPending ? (
               <Skeleton className="aspect-[16/10] w-full rounded-none" />
+            ) : streetHero && streetViews ? (
+              <StreetView views={streetViews} poiName={detail.name} />
             ) : cover ? (
               <button
                 type="button"
@@ -1141,9 +1157,15 @@ export function PoiDetailPanel(props: {
             )}
           </div>
 
-          {cover && (
+          {cover && !heroPending && (
             <div className="space-y-2 px-4 pt-3">
-              {photoList.length > 1 && (
+              {streetHero && (
+                <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                  Ảnh quanh khu vực · Wikimedia Commons · không phải ảnh của địa
+                  điểm này
+                </p>
+              )}
+              {(photoList.length > 1 || streetHero) && (
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {photoList.map((photo, index) => (
                     <button
@@ -1172,7 +1194,16 @@ export function PoiDetailPanel(props: {
                   ))}
                 </div>
               )}
-              <PhotoCaption photo={cover} />
+              {/* Chú thích của ảnh bìa — khi ảnh bìa là ảnh đường phố thì nó đã
+                  có chú thích riêng, ảnh khu vực xem chú thích trong lightbox. */}
+              {!streetHero && <PhotoCaption photo={cover} />}
+            </div>
+          )}
+
+          {/* Có ảnh CỦA địa điểm làm ảnh bìa thì ảnh đường phố lùi xuống đây. */}
+          {!streetHero && streetReady && streetViews && !heroPending && (
+            <div className="pt-3">
+              <StreetView views={streetViews} poiName={detail.name} />
             </div>
           )}
 
@@ -1255,6 +1286,14 @@ export function PoiDetailPanel(props: {
               active={isGeofenced}
               onClick={onToggleGeofence}
             />
+            {detail.category !== 'parking' && detail.category !== 'charging_station' && (
+              <ActionButton
+                icon={CircleParking}
+                label="Gửi xe"
+                ariaLabel={`Tìm chỗ gửi xe gần ${detail.name}`}
+                onClick={onFindParking}
+              />
+            )}
             {detail.phone && (
               <ActionButton
                 icon={Phone}
@@ -1293,12 +1332,125 @@ export function PoiDetailPanel(props: {
             </span>
           </div>
 
+          {/* c2. AI THUYẾT MINH — đặt ngay dưới hàng nút để mở POI là thấy
+              luôn. Chữ tự tải khi mở panel (backend đã tạo sẵn + cache), audio
+              tải trước nên bấm nghe là phát ngay — xem
+              `hooks/use-poi-narration.ts` và `backend/app/narration.py`. */}
+          {detail.knowledge && (
+            <div className="px-4 pt-3">
+              <div className="rounded-lg border border-border bg-muted/40 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                    <Mic className="size-4" />
+                    {NARRATION_STRINGS.heading}
+                  </p>
+                  {/* Chỉ đổi NGÔN NGỮ narration — không đụng gì tới
+                      poi_knowledge (vẫn một bản gốc tiếng Việt duy nhất),
+                      chatbot, hay search. Đổi ngôn ngữ giữa lúc đang đọc thì
+                      dừng hẳn giọng cũ (xử lý trong hook, theo `language`). */}
+                  <select
+                    translate="no"
+                    value={narrationLanguage}
+                    onChange={(event) => setNarrationOverride(event.target.value)}
+                    aria-label={NARRATION_STRINGS.language}
+                    className="h-7 max-w-[10rem] rounded-full border border-border bg-background px-2 text-xs font-medium"
+                  >
+                    {languages.map((item) => (
+                      <option key={item.code} value={item.code}>
+                        {item.nativeName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {narration.text && (
+                  <p className="mt-2 text-sm text-muted-foreground italic" translate="no">
+                    &ldquo;{narration.text}&rdquo;
+                  </p>
+                )}
+                {narration.text && narration.verified === false && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {NARRATION_STRINGS.unverified}
+                  </p>
+                )}
+                {narration.status === 'unavailable' && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {NARRATION_STRINGS.unavailable}
+                  </p>
+                )}
+                {narration.status === 'error' && (
+                  <p className="mt-2 text-xs text-destructive">
+                    {NARRATION_STRINGS.error}
+                  </p>
+                )}
+                {narration.voiceWarning && (
+                  <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                    {narration.voiceWarning}
+                  </p>
+                )}
+                {narration.status !== 'unavailable' && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="mt-2 bg-background"
+                    onClick={() => void narration.toggle()}
+                    disabled={narration.status === 'loading'}
+                  >
+                    {narration.status === 'loading' ? (
+                      <>
+                        <LoaderCircle className="size-4 animate-spin" />
+                        {NARRATION_STRINGS.loading}
+                      </>
+                    ) : narration.speechState === 'speaking' ? (
+                      <>
+                        <Pause className="size-4" />
+                        {NARRATION_STRINGS.pause}
+                      </>
+                    ) : narration.speechState === 'paused' ? (
+                      <>
+                        <Play className="size-4" />
+                        {NARRATION_STRINGS.resume}
+                      </>
+                    ) : (
+                      <>
+                        <Play className="size-4" />
+                        {NARRATION_STRINGS.listen}
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* c3. THÔNG TIN GỬI XE — chỉ cho bãi xe / trạm sạc: giá theo loại
+              xe kèm mức tin cậy, giờ mở cửa, cổng sạc, form báo giá. */}
+          {(detail.category === 'parking' || detail.category === 'charging_station') && (
+            <>
+              <Separator className="mt-3" />
+              <ParkingInfo apiBaseUrl={apiBaseUrl} poiId={detail.id} sessionId={sessionId} />
+            </>
+          )}
+
           <Separator className="mt-3" />
 
           {/* d. CÁC HÀNG THÔNG TIN ---------------------------------------- */}
           <div className="divide-y divide-border">
             <InfoRow icon={MapPin}>
-              <p>{detail.address || 'Chưa có địa chỉ'}</p>
+              {detail.address ? (
+                <p>{detail.address}</p>
+              ) : detail.nearbyAddress ? (
+                <>
+                  <p>Gần {detail.nearbyAddress.address}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Ước lượng — cạnh {detail.nearbyAddress.name} (
+                    {detail.nearbyAddress.distanceMeters} m), nguồn dữ liệu chưa
+                    có số nhà
+                  </p>
+                </>
+              ) : (
+                <p>Chưa có địa chỉ</p>
+              )}
               <p className="text-xs text-muted-foreground">
                 {[detail.district, detail.city].filter(Boolean).join(' · ')}
               </p>
@@ -1477,98 +1629,6 @@ export function PoiDetailPanel(props: {
           {detail.knowledge && (
             <>
               <section className="space-y-4 px-4 py-4">
-                {/* Nút thuyết minh: KHÔNG tự gọi khi mở panel, chỉ gọi khi
-                    bấm — endpoint /narration gọi Ollama, có thể mất hàng
-                    chục giây. Giọng đọc phát bằng speechSynthesis của chính
-                    trình duyệt, đọc nguyên văn text đã nhận (không tự soạn
-                    lại ở phía client) — xem `hooks/use-poi-narration.ts`. */}
-                <div className="rounded-lg border border-border bg-muted/40 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
-                      <Mic className="size-4" />
-                      {NARRATION_STRINGS[narrationLanguage].heading}
-                    </p>
-                    {/* Chỉ đổi NGÔN NGỮ narration — không đụng gì tới
-                        poi_knowledge (vẫn một bản gốc tiếng Việt duy nhất),
-                        chatbot, hay search. Đổi ngôn ngữ giữa lúc đang đọc thì
-                        dừng hẳn giọng cũ (xử lý trong hook, theo `language`). */}
-                    <div className="flex gap-1">
-                      {(['vi', 'en'] as const).map((lang) => (
-                        <button
-                          key={lang}
-                          type="button"
-                          onClick={() => setNarrationLanguage(lang)}
-                          aria-pressed={narrationLanguage === lang}
-                          className={cn(
-                            'rounded-full px-2 py-0.5 text-xs font-medium transition-colors',
-                            narrationLanguage === lang
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-background text-muted-foreground hover:text-foreground',
-                          )}
-                        >
-                          {NARRATION_STRINGS[lang].flag} {NARRATION_STRINGS[lang].label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  {narration.text && (
-                    <p className="mt-2 text-sm text-muted-foreground italic">
-                      &ldquo;{narration.text}&rdquo;
-                    </p>
-                  )}
-                  {narration.text && narration.verified === false && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {NARRATION_STRINGS[narrationLanguage].unverified}
-                    </p>
-                  )}
-                  {narration.status === 'unavailable' && (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {NARRATION_STRINGS[narrationLanguage].unavailable}
-                    </p>
-                  )}
-                  {narration.status === 'error' && (
-                    <p className="mt-2 text-xs text-destructive">
-                      {NARRATION_STRINGS[narrationLanguage].error}
-                    </p>
-                  )}
-                  {narration.voiceWarning && (
-                    <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                      {narration.voiceWarning}
-                    </p>
-                  )}
-                  {narration.status !== 'unavailable' && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="mt-2 bg-background"
-                      onClick={() => void narration.toggle()}
-                      disabled={narration.status === 'loading'}
-                    >
-                      {narration.status === 'loading' ? (
-                        <>
-                          <LoaderCircle className="size-4 animate-spin" />
-                          {NARRATION_STRINGS[narrationLanguage].loading}
-                        </>
-                      ) : narration.speechState === 'speaking' ? (
-                        <>
-                          <Pause className="size-4" />
-                          {NARRATION_STRINGS[narrationLanguage].pause}
-                        </>
-                      ) : narration.speechState === 'paused' ? (
-                        <>
-                          <Play className="size-4" />
-                          {NARRATION_STRINGS[narrationLanguage].resume}
-                        </>
-                      ) : (
-                        <>
-                          <Play className="size-4" />
-                          {NARRATION_STRINGS[narrationLanguage].listen}
-                        </>
-                      )}
-                    </Button>
-                  )}
-                </div>
                 {detail.knowledge.intro && (
                   <div>
                     <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">

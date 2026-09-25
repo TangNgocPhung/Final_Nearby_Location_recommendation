@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export type NarrationLanguage = 'vi' | 'en';
+/** Mã BCP-47 trong danh sách 134 ngôn ngữ của backend (`app/languages.py`). */
+export type NarrationLanguage = string;
 
 type NarrationResponse = {
   available: boolean;
@@ -13,15 +14,13 @@ type NarrationResponse = {
 type NarrationStatus = 'idle' | 'loading' | 'ready' | 'unavailable' | 'error';
 type SpeechState = 'idle' | 'speaking' | 'paused';
 
-// speechSynthesis nhận BCP-47 ("vi-VN"), còn backend/API dùng mã ngắn
-// ("vi") — hai quy ước khác nhau nên giữ bảng tra riêng, không suy ra bằng
-// string concat (mai thêm "ja" thì "ja-VN" sẽ sai).
-const SPEECH_LANG: Record<NarrationLanguage, string> = { vi: 'vi-VN', en: 'en-US' };
+// speechSynthesis nhận BCP-47. Mã của backend đã là BCP-47 ("fr", "zh-CN"),
+// chỉ vi/en được gắn vùng cụ thể để trình duyệt chọn đúng giọng hay dùng nhất.
+const SPEECH_LANG: Record<string, string> = { vi: 'vi-VN', en: 'en-US' };
 
-const VOICE_WARNING: Record<NarrationLanguage, string> = {
-  vi: 'Thiết bị của bạn chưa có giọng đọc tiếng Việt — đang đọc bằng giọng mặc định.',
-  en: 'Your device has no English voice installed — reading with the default voice instead.',
-};
+// Viết tiếng Việt — bộ dịch giao diện tự dịch sang ngôn ngữ đang chọn.
+const VOICE_WARNING =
+  'Thiết bị của bạn chưa có giọng đọc cho ngôn ngữ này — đang đọc bằng giọng mặc định.';
 
 /**
  * "Nghe thuyết minh" cho panel chi tiết POI, hỗ trợ đa ngôn ngữ (vi/en).
@@ -40,6 +39,12 @@ const VOICE_WARNING: Record<NarrationLanguage, string> = {
  *
  * Văn bản hiển thị LUÔN LÀ văn bản đã nhận từ backend, dù đi theo nhánh nào
  * — hook này không tự soạn hay sửa nội dung, chỉ phát âm nguyên văn.
+ *
+ * Mở POI là TỰ tải chữ thuyết minh (backend đã tạo sẵn và cache, xem
+ * `backend/app/narration.py`) và tải trước audio nếu đã có trong cache
+ * (`cached_only=1` — không kích hoạt LLM+TTS cho POI chỉ lướt qua), nên bấm
+ * "Nghe thuyết minh" là phát ngay. Truyền `poiId = null` cho POI không có
+ * `knowledge` để không gọi API thừa.
  */
 export function usePoiNarration(
   apiBaseUrl: string,
@@ -58,6 +63,13 @@ export function usePoiNarration(
   // speechSynthesis).
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  // Audio đã tải trước lúc mở panel — `toggle()` phát thẳng cái này, không
+  // phải chờ mạng.
+  const prefetchedRef = useRef<{
+    url: string;
+    text: string | null;
+    verified: boolean | null;
+  } | null>(null);
 
   const stopAll = useCallback(() => {
     if (audioRef.current) {
@@ -67,6 +79,10 @@ export function usePoiNarration(
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
+    }
+    if (prefetchedRef.current) {
+      URL.revokeObjectURL(prefetchedRef.current.url);
+      prefetchedRef.current = null;
     }
     try {
       window.speechSynthesis?.cancel();
@@ -90,6 +106,55 @@ export function usePoiNarration(
     setVoiceWarning(null);
     stopAll();
   }, [poiId, language, stopAll]);
+
+  // Mở POI → tải chữ ngay (từ cache, gần như tức thì), rồi tải trước audio
+  // nếu backend đã có sẵn. Đổi POI/ngôn ngữ giữa chừng thì huỷ cả hai.
+  useEffect(() => {
+    if (!poiId) return;
+    const controller = new AbortController();
+    const query = `language=${language}`;
+    const base = `${apiBaseUrl}/api/v1/pois/${poiId}/narration`;
+
+    // oxlint-disable-next-line react/react-compiler
+    setStatus('loading');
+    void (async () => {
+      try {
+        const response = await fetch(`${base}?${query}`, { signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = (await response.json()) as NarrationResponse;
+        if (!data.available || !data.narration) {
+          setStatus('unavailable');
+          return;
+        }
+        setText(data.narration);
+        setVerified(data.verified);
+        setStatus('ready');
+      } catch {
+        // Lỗi mạng/huỷ: để nút bấm tự thử lại, không báo lỗi khi chưa bấm gì.
+        if (!controller.signal.aborted) setStatus('idle');
+        return;
+      }
+
+      try {
+        const response = await fetch(`${base}/audio?${query}&cached_only=1`, {
+          signal: controller.signal,
+        });
+        if (response.status !== 200) return; // 204: chưa có cache — tải khi bấm
+        const headerVerified = response.headers.get('X-Narration-Verified');
+        const headerText = response.headers.get('X-Narration-Text');
+        const blob = await response.blob();
+        if (controller.signal.aborted) return;
+        prefetchedRef.current = {
+          url: URL.createObjectURL(blob),
+          text: headerText ? decodeURIComponent(headerText) : null,
+          verified: headerVerified === null ? null : headerVerified === 'true',
+        };
+      } catch {
+        // Tải trước thất bại không sao — bấm nghe sẽ tải lại như thường.
+      }
+    })();
+    return () => controller.abort();
+  }, [apiBaseUrl, poiId, language]);
 
   // Huỷ giọng đọc khi rời hẳn trang.
   useEffect(() => stopAll, [stopAll]);
@@ -118,15 +183,17 @@ export function usePoiNarration(
         setStatus('error');
         return;
       }
-      const speechLang = SPEECH_LANG[language];
+      const speechLang = SPEECH_LANG[language] ?? language;
       const voices = window.speechSynthesis.getVoices();
-      const matchingVoice = voices.find((voice) =>
-        voice.lang?.toLowerCase().startsWith(language),
-      );
+      const wanted = speechLang.toLowerCase();
+      const base = wanted.split('-')[0];
+      const matchingVoice =
+        voices.find((voice) => voice.lang?.toLowerCase().replace('_', '-') === wanted) ??
+        voices.find((voice) => voice.lang?.toLowerCase().startsWith(base));
       // `voices.length === 0` nghĩa là danh sách giọng CHƯA nạp xong, không
       // phải "không có giọng phù hợp" — chỉ cảnh báo khi đã có danh sách
       // thật mà không tìm thấy. KHÔNG fallback sang giọng ngôn ngữ khác.
-      setVoiceWarning(voices.length > 0 && !matchingVoice ? VOICE_WARNING[language] : null);
+      setVoiceWarning(voices.length > 0 && !matchingVoice ? VOICE_WARNING : null);
 
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(content);
@@ -140,6 +207,31 @@ export function usePoiNarration(
       setSpeechState('speaking');
     },
     [language],
+  );
+
+  const startAudio = useCallback(
+    async (url: string, audioText: string | null, audioVerified: boolean | null) => {
+      if (audioText) setText(audioText);
+      setVerified(audioVerified);
+      audioUrlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onplay = () => setSpeechState('speaking');
+      audio.onpause = () => {
+        // `ended` cũng bắn `pause` ngay trước nó — chỉ coi là "tạm dừng" khi
+        // CHƯA phát hết, tránh nút hiện "Tiếp tục" cho một đoạn đã đọc xong.
+        if (!audio.ended) setSpeechState('paused');
+      };
+      // Đọc xong vẫn giữ audio (tua về đầu) — bấm nghe lần nữa phát ngay,
+      // không tải lại.
+      audio.onended = () => {
+        audio.currentTime = 0;
+        setSpeechState('idle');
+      };
+      setStatus('ready');
+      await audio.play();
+    },
+    [],
   );
 
   /** Trả `true` nếu đã XỬ LÝ XONG lượt này (phát thành công, hoặc xác định
@@ -159,28 +251,17 @@ export function usePoiNarration(
 
       const headerText = response.headers.get('X-Narration-Text');
       const headerVerified = response.headers.get('X-Narration-Verified');
-      if (headerText) setText(decodeURIComponent(headerText));
-      setVerified(headerVerified === null ? null : headerVerified === 'true');
-
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      audioUrlRef.current = url;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onplay = () => setSpeechState('speaking');
-      audio.onpause = () => {
-        // `ended` cũng bắn `pause` ngay trước nó — chỉ coi là "tạm dừng" khi
-        // CHƯA phát hết, tránh nút hiện "Tiếp tục" cho một đoạn đã đọc xong.
-        if (!audio.ended) setSpeechState('paused');
-      };
-      audio.onended = () => setSpeechState('idle');
-      setStatus('ready');
-      await audio.play();
+      await startAudio(
+        URL.createObjectURL(blob),
+        headerText ? decodeURIComponent(headerText) : null,
+        headerVerified === null ? null : headerVerified === 'true',
+      );
       return true;
     } catch {
       return false;
     }
-  }, [apiBaseUrl, poiId, language]);
+  }, [apiBaseUrl, poiId, language, startAudio]);
 
   const toggle = useCallback(async () => {
     // Đang phát/tạm dừng bằng audio THẬT.
@@ -189,10 +270,9 @@ export function usePoiNarration(
         audioRef.current.pause();
         return;
       }
-      if (speechState === 'paused') {
-        void audioRef.current.play();
-        return;
-      }
+      // 'paused' hoặc đã đọc xong ('idle') — phát tiếp/phát lại cùng audio.
+      void audioRef.current.play();
+      return;
     }
     // Đang phát/tạm dừng bằng speechSynthesis (nhánh dự phòng).
     if (!audioRef.current && speechState === 'speaking') {
@@ -206,7 +286,19 @@ export function usePoiNarration(
       return;
     }
 
-    // Lượt phát đầu tiên: thử audio thật trước.
+    // Lượt phát đầu tiên: audio đã tải trước thì phát ngay.
+    const prefetched = prefetchedRef.current;
+    if (prefetched) {
+      prefetchedRef.current = null;
+      try {
+        await startAudio(prefetched.url, prefetched.text, prefetched.verified);
+        return;
+      } catch {
+        // play() bị chặn/lỗi giải mã — rơi xuống tải lại bên dưới.
+      }
+    }
+
+    // Chưa có audio sẵn: thử audio thật (backend sinh nếu chưa có cache).
     setStatus('loading');
     const handled = await playRealAudio();
     if (handled) return;
@@ -218,7 +310,7 @@ export function usePoiNarration(
     } else {
       setStatus('unavailable');
     }
-  }, [speechState, text, playRealAudio, fetchNarrationText, speakWithBrowserVoice]);
+  }, [speechState, text, playRealAudio, startAudio, fetchNarrationText, speakWithBrowserVoice]);
 
   return { status, text, verified, speechState, voiceWarning, toggle };
 }

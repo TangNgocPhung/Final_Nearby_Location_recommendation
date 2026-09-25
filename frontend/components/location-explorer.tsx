@@ -43,7 +43,9 @@ import {
   Hotel,
   Info,
   Landmark,
+  Languages,
   LayoutGrid,
+  LoaderCircle,
   LocateFixed,
   type LucideIcon,
   Mailbox,
@@ -79,6 +81,7 @@ import {
 
 import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
 import { ChatWidget } from '@/components/chat-widget';
+import { ParkingFinder, type ParkingRequest } from '@/components/parking-finder';
 import { useProximityNotifications } from '@/hooks/use-proximity';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
 import {
@@ -96,6 +99,7 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { useTheme } from '@/hooks/use-theme';
+import { useAutoTranslate } from '@/hooks/use-auto-translate';
 import { getTelemetry, type TelemetryState } from '@/lib/telemetry';
 
 type Poi = {
@@ -606,6 +610,11 @@ function chipClass(active: boolean) {
 
 export function LocationExplorer() {
   const telemetry = useMemo(() => getTelemetry(API_BASE_URL), []);
+  // Ngôn ngữ giao diện (134 ngôn ngữ) — dịch cả trang tại chỗ, xem
+  // hooks/use-auto-translate.ts. Thuyết minh trong panel mặc định theo nó.
+  const uiLanguage = useAutoTranslate(API_BASE_URL);
+  // Nút "Gửi xe" ở panel chi tiết đẩy yêu cầu sang ParkingFinder.
+  const [parkingRequest, setParkingRequest] = useState<ParkingRequest | null>(null);
   const { theme, toggleTheme } = useTheme();
   const about = useAboutDialog();
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -1264,6 +1273,10 @@ export function LocationExplorer() {
   useEffect(() => {
     openDetailRef.current = openDetail;
   }, [openDetail]);
+  const openParkingDetail = useCallback(
+    (poiId: string) => openDetail(poiId, 'parking'),
+    [openDetail],
+  );
 
   const closeDetail = useCallback(() => {
     setDetailPoiId(null);
@@ -2298,6 +2311,30 @@ export function LocationExplorer() {
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="hidden sm:inline">TP. Hồ Chí Minh</span>
+            {/* translate="no": tên ngôn ngữ đã là tên bản ngữ, không dịch. */}
+            <label className="flex items-center gap-1" translate="no">
+              <Languages className="size-4" aria-hidden />
+              <span className="sr-only">Ngôn ngữ / Language</span>
+              <select
+                value={uiLanguage.language}
+                onChange={(event) => uiLanguage.setLanguage(event.target.value)}
+                className="h-8 max-w-[9.5rem] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                aria-label="Ngôn ngữ / Language"
+              >
+                {uiLanguage.languages.map((item) => (
+                  <option key={item.code} value={item.code}>
+                    {item.nativeName}
+                    {item.nativeName !== item.name ? ` · ${item.name}` : ''}
+                  </option>
+                ))}
+              </select>
+              {uiLanguage.progress && (
+                <output className="flex items-center gap-1 tabular-nums">
+                  <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+                  {uiLanguage.progress.done}/{uiLanguage.progress.total}
+                </output>
+              )}
+            </label>
             <Button
               variant="outline"
               size="sm"
@@ -2339,7 +2376,7 @@ export function LocationExplorer() {
       <AboutDialog open={about.open} onOpenChange={about.onOpenChange} />
 
       <section className="mx-auto grid max-w-[1500px] gap-4 p-4 lg:h-[calc(100vh-65px)] lg:grid-cols-[430px_minmax(0,1fr)] lg:p-5">
-        <aside className="flex min-h-0 flex-col gap-4">
+        <aside className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto">
           <Card className="shrink-0 border-0 shadow-[0_12px_40px_rgb(14_68_48/8%)] ring-emerald-950/10 lg:max-h-[50%] lg:overflow-y-auto">
             <CardHeader className="px-5 pt-5 pb-3">
               <div className="flex items-center justify-between gap-3">
@@ -2660,8 +2697,20 @@ export function LocationExplorer() {
               </div>
             </CardContent>
           </Card>
+          <ParkingFinder
+            apiBaseUrl={API_BASE_URL}
+            mapRef={mapRef}
+            userPosition={position}
+            selectedPlace={
+              poiDetail
+                ? { name: poiDetail.name, latitude: poiDetail.latitude, longitude: poiDetail.longitude }
+                : null
+            }
+            request={parkingRequest}
+            onOpenDetail={openParkingDetail}
+          />
 
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1 lg:min-h-60">
             {showDiscovery &&
               trending &&
               (trending.pois.length > 0 || trending.queries.length > 0) && (
@@ -3277,6 +3326,8 @@ export function LocationExplorer() {
                 routeSummary={detailRouteSummary}
                 isGeofenced={geofences.has(detailPoiId)}
                 apiBaseUrl={API_BASE_URL}
+                uiLanguage={uiLanguage.language}
+                languages={uiLanguage.languages}
                 sessionId={telemetryState.sessionId}
                 onClose={closeDetail}
                 onDirections={() => {
@@ -3284,6 +3335,15 @@ export function LocationExplorer() {
                 }}
                 onToggleGeofence={() => {
                   if (detailAsPoi) void toggleGeofence(detailAsPoi);
+                }}
+                onFindParking={() => {
+                  if (!poiDetail) return;
+                  setParkingRequest({
+                    name: poiDetail.name,
+                    latitude: poiDetail.latitude,
+                    longitude: poiDetail.longitude,
+                    nonce: Date.now(),
+                  });
                 }}
                 onSelectSimilar={(poiId) => {
                   // Địa điểm tương tự thường KHÔNG nằm trong `pois` của lần tìm

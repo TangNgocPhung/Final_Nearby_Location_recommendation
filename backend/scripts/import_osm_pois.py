@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from app.config import settings
+from app.parking import refresh_facilities
 from app.poi_import import (
     fetch_overpass_elements,
     import_osm_elements,
@@ -45,6 +46,8 @@ def main() -> None:
             )
 
     stats = import_osm_elements(settings.database_url, elements, bbox, args.max_pois)
+    # Bảng thông tin gửi xe là dữ liệu dẫn xuất từ thẻ OSM vừa nhập.
+    stats["parkingFacilities"] = refresh_facilities(settings.database_url)
     print(json.dumps(stats, ensure_ascii=False, default=str))
 
 

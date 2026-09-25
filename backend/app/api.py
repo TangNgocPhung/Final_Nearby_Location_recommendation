@@ -1,6 +1,8 @@
 import logging
 import time
 from collections import defaultdict, deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -10,7 +12,20 @@ from fastapi import FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import chat, directions, geofence, photos, poi_detail, reviews, saved_places, tts
+from . import (
+    chat,
+    directions,
+    geofence,
+    languages,
+    narration,
+    parking,
+    photos,
+    poi_detail,
+    reviews,
+    saved_places,
+    streetview,
+    translate,
+)
 from .ranking_snapshots import record_snapshot
 from .config import settings
 from .geocoding import parse_location, reverse_geocode
@@ -21,9 +36,11 @@ from .models import (
     EventBatch,
     GeofenceRequest,
     GeoParseRequest,
+    ParkingReportRequest,
     ReviewRequest,
     SavedPlaceRequest,
     SearchRequest,
+    TranslateRequest,
 )
 from .features.online import feature_store_status
 from .features.serving import profile_category_boost, session_profile
@@ -43,10 +60,20 @@ DATABASE_URL = settings.database_url
 RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
 logger = logging.getLogger("nearby-api")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Thread nền, không chặn khởi động: API sẵn sàng ngay, thuyết minh được
+    # tạo dần phía sau (xem app/narration.py).
+    narration.start_prewarm()
+    yield
+
+
 app = FastAPI(
     title="Nearby POI API",
     version="0.3.0",
     description="Tầng thu thập dữ liệu, định vị và tìm kiếm POI theo không gian.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -473,6 +500,23 @@ def get_poi_photos(
     )
 
 
+@app.get("/api/v1/pois/{poi_id}/streetview")
+def get_poi_streetview(poi_id: str) -> Any:
+    """Ảnh đường phố Mapillary quanh địa điểm: một tấm 360° gần nhất và một
+    tấm ảnh thường nhìn thẳng về phía địa điểm. Xem `app/streetview.py`.
+
+    Tách khỏi `/photos` vì khác nguồn, khác nhịp gọi (Mapillary không bắt giãn
+    một giây như Wikimedia) và khác ý nghĩa: đây là ảnh ĐƯỜNG PHỐ, giao diện
+    phải ghi rõ ngày chụp và khoảng cách.
+    """
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    context = photos.poi_photo_context(poi_id)
+    if context is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có địa điểm này"})
+    return streetview.street_views(poi_id, context["latitude"], context["longitude"])
+
+
 @app.get("/api/v1/pois/{poi_id}/narration")
 def get_poi_narration(
     poi_id: str,
@@ -481,40 +525,42 @@ def get_poi_narration(
     """AI thuyết minh CHỦ ĐỘNG cho một POI — người dùng chỉ cần chọn địa
     điểm, không cần gõ câu hỏi như chat. Xem docstring `chat.generate_poi_narration`.
 
-    Tách khỏi endpoint chi tiết (cùng lý do với `/photos`): gọi Ollama mất
-    tới hàng chục giây, gộp vào sẽ làm cả trang chi tiết phải chờ. Giao diện
-    chỉ gọi khi người dùng bấm "Nghe thuyết minh", không gọi tự động.
+    Tách khỏi endpoint chi tiết (cùng lý do với `/photos`): khi CHƯA có
+    cache, gọi Ollama mất tới hàng chục giây, gộp vào sẽ làm cả trang chi
+    tiết phải chờ. Chữ được cache và tạo sẵn lúc khởi động (`app/narration.py`),
+    nên giao diện gọi ngay khi mở panel để hiện chữ luôn.
 
     ``available: false`` khi POI chưa có `poi_knowledge` — KHÔNG phải lỗi,
     chỉ là chưa biên soạn; giao diện ẩn hẳn nút thuyết minh trong trường hợp
     này thay vì hiện nút rồi báo lỗi.
 
-    ``language`` sai giá trị (không phải "vi"/"en") thì rơi về "vi" thay vì
+    ``language``: một trong 134 mã ở `app/languages.py`. Chỉ vi/en được tạo
+    sẵn; ngôn ngữ khác sinh ở lần gọi đầu (tới ~1-2 phút trên CPU) rồi cache.
+    Sai giá trị (không có trong danh sách) thì rơi về "vi" thay vì
     400 — cùng nguyên tắc "không nghiêm khắc quá mức với dữ liệu suy đoán
     được" đã dùng ở nơi khác; tự sửa về mặc định an toàn hơn là chặn cả
     request chỉ vì một query param sai.
     """
     if not is_postgres_uuid(poi_id):
         return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
-    return chat.generate_poi_narration(poi_id, language=language)
+    return narration.get_text(poi_id, language)
 
 
 @app.get("/api/v1/pois/{poi_id}/narration/audio")
 def get_poi_narration_audio(
     poi_id: str,
     language: str = Query(default=chat.DEFAULT_NARRATION_LANGUAGE),
+    cached_only: bool = Query(default=False),
 ) -> Any:
     """Thuyết minh đọc thành GIỌNG NÓI THẬT (VieNeu-TTS, xem `app/tts.py`) —
     thay cho `speechSynthesis` của trình duyệt vốn phụ thuộc máy người xem có
     cài giọng tiếng Việt hay không.
 
-    Sinh văn bản (LLM) và tổng hợp giọng nói CÙNG một request, KHÔNG tách hai
-    endpoint riêng: tách ra sẽ phải gọi LLM hai lần cho hai request khác
-    nhau (một cho hiển thị chữ, một cho đọc), tốn gấp đôi thời gian VÀ có thể
-    ra hai đoạn văn hơi khác nhau — audio đọc một câu, chữ hiển thị một câu
-    khác. Văn bản đã đọc trả kèm qua header `X-Narration-Text` (URL-encoded
-    vì header HTTP không mang được UTF-8 thô) để giao diện hiển thị ĐÚNG
-    những gì đang phát, không lệch.
+    Audio LUÔN đọc đúng chữ đã cache của endpoint `/narration` (xem
+    `app/narration.get_audio`) — không gọi LLM lần hai, nên chữ đang hiển thị
+    và câu đang đọc không bao giờ lệch nhau. Văn bản đã đọc vẫn trả kèm qua
+    header `X-Narration-Text` (URL-encoded vì header HTTP không mang được
+    UTF-8 thô).
 
     404 khi POI chưa có `poi_knowledge` (giống endpoint text). 503 khi có
     narration nhưng TTS lỗi/ngôn ngữ chưa có giọng (vd "en" — VieNeu-TTS chỉ
@@ -522,48 +568,119 @@ def get_poi_narration_audio(
     trường hợp này, không phải lỗi cứng.
 
     Có CACHE (Phase 16.3, ``app/tts.get_cached``/``store``) theo (poi_id,
-    language) — nội dung 14 POI có `poi_knowledge` không đổi giữa các lần
-    hỏi, nên không có lý do sinh lại LLM+TTS (tổng ~2 phút, đo được thật) mỗi
-    lần người dùng bấm nghe CÙNG một POI. Lần đầu vẫn chậm như bình thường;
-    từ lần thứ hai trở đi gần như tức thì.
+    language), và backend tạo sẵn audio cho mọi POI có `poi_knowledge` ngay
+    lúc khởi động (`narration.start_prewarm`) — người dùng bấm nghe là phát
+    luôn, không phải chờ LLM+TTS (~2 phút, đo được thật).
     """
     if not is_postgres_uuid(poi_id):
         return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
 
-    cached = tts.get_cached(poi_id, language)
-    if cached is not None:
-        return Response(
-            content=cached["audio"],
-            media_type="audio/wav",
-            headers={
-                "X-Narration-Text": quote(cached["narration"]),
-                "X-Narration-Verified": "true" if cached["verified"] else "false",
-                "X-Narration-Cache": "hit",
-            },
-        )
-
-    result = chat.generate_poi_narration(poi_id, language=language)
-    if not result["available"] or not result["narration"]:
+    # `cached_only`: giao diện tải trước audio ngay khi mở panel để bấm là
+    # phát luôn — nhưng KHÔNG được vì thế mà kích hoạt LLM+TTS cho mọi POI
+    # người dùng chỉ lướt qua. Chưa có cache thì trả 204, chờ người dùng bấm.
+    if cached_only and not narration.has_cached_audio(poi_id, language):
+        return Response(status_code=204)
+    status, result = narration.get_audio(poi_id, language)
+    if status == "unavailable":
         return JSONResponse(status_code=404, content={"detail": "Chưa có thuyết minh cho địa điểm này"})
-
-    audio_bytes = tts.synthesize(result["narration"], language)
-    if audio_bytes is None:
+    if status != "ok" or result is None:
         return JSONResponse(
             status_code=503,
             content={"detail": "Chưa tạo được giọng đọc cho ngôn ngữ này"},
         )
-
-    tts.store(poi_id, language, result["narration"], result["verified"], audio_bytes)
-
     return Response(
-        content=audio_bytes,
+        content=result["audio"],
         media_type="audio/wav",
         headers={
             "X-Narration-Text": quote(result["narration"]),
             "X-Narration-Verified": "true" if result["verified"] else "false",
-            "X-Narration-Cache": "miss",
+            "X-Narration-Cache": result["cache"],
+            # Nội dung cố định theo (poi_id, language) — cho trình duyệt giữ
+            # lại, mở lại POI vừa nghe thì phát ngay không cần tải lại.
+            "Cache-Control": "private, max-age=3600",
         },
     )
+
+
+@app.get("/api/v1/parking/search")
+def parking_search(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    vehicle: str = Query(default="motorbike", pattern="^(motorbike|car|bicycle|ev)$"),
+    minutes: int = Query(default=120, ge=15, le=7 * 24 * 60),
+    dest_lat: float | None = Query(default=None, ge=-90, le=90),
+    dest_lng: float | None = Query(default=None, ge=-180, le=180),
+    radius: int = Query(default=1000, ge=100, le=5000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Tìm chỗ gửi xe / trạm sạc theo loại xe, xếp hạng theo quãng đi bộ tới
+    điểm đến + tiền gửi ước tính cho ``minutes`` phút + độ chắc chắn của dữ
+    liệu. Không có điểm đến thì lấy vị trí người dùng. Xem `app/parking.py`."""
+    destination = (dest_lat, dest_lng) if dest_lat is not None and dest_lng is not None else None
+    return parking.search(
+        latitude=lat,
+        longitude=lng,
+        vehicle=vehicle,
+        minutes=minutes,
+        destination=destination,
+        radius=radius,
+        limit=limit,
+    )
+
+
+@app.get("/api/v1/parking/{poi_id}")
+def parking_detail(poi_id: str, minutes: int = Query(default=120, ge=15, le=7 * 24 * 60)) -> Any:
+    """Thông tin gửi xe của một bãi/trạm sạc cho panel chi tiết: giá từng loại
+    xe (kèm mức tin cậy + nguồn), giờ mở cửa, sức chứa, cổng sạc."""
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    detail = parking.facility_detail(poi_id, minutes)
+    if detail is None:
+        return JSONResponse(status_code=404, content={"detail": "Địa điểm này không phải bãi xe/trạm sạc"})
+    return detail
+
+
+@app.post("/api/v1/parking/{poi_id}/reports", status_code=201)
+def parking_report(poi_id: str, payload: ParkingReportRequest) -> Any:
+    """Người dùng báo giá/giờ thực tế (crowdsource). Mỗi phiên một lần / bãi /
+    loại xe / ngày."""
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    status = parking.add_report(
+        poi_id, payload.session_id, payload.vehicle, payload.amount_vnd, payload.unit, payload.opening_hours
+    )
+    if status == "not_parking":
+        return JSONResponse(status_code=404, content={"detail": "Địa điểm này không phải bãi xe/trạm sạc"})
+    if status == "duplicate":
+        return JSONResponse(status_code=409, content={"detail": "Hôm nay bạn đã báo cho bãi này rồi"})
+    return parking.facility_detail(poi_id)
+
+
+@app.get("/api/v1/languages")
+def list_languages() -> dict[str, Any]:
+    """134 ngôn ngữ cho ô chọn ngôn ngữ giao diện và thuyết minh — xem
+    `app/languages.py`. Tiếng Việt là ngôn ngữ gốc, không cần dịch."""
+    return {"source": languages.SOURCE_LANGUAGE, "languages": languages.as_dicts()}
+
+
+@app.get("/api/v1/translations/{language}")
+def get_translations(language: str) -> Any:
+    """Mọi bản dịch giao diện ĐÃ CÓ cho một ngôn ngữ (chỉ đọc cache, không gọi
+    LLM) — frontend áp ngay khi đổi ngôn ngữ, rồi mới gửi phần còn thiếu lên
+    `POST` bên dưới."""
+    if not translate.is_supported(language):
+        return JSONResponse(status_code=404, content={"detail": "Ngôn ngữ không được hỗ trợ"})
+    return {"language": language, "translations": translate.cached_translations(language)}
+
+
+@app.post("/api/v1/translations/{language}")
+def post_translations(language: str, payload: TranslateRequest) -> Any:
+    """Dịch một lô chuỗi giao diện bằng Qwen (xem `app/translate.py`). Chuỗi
+    đã dịch trước đó trả từ cache; chuỗi dịch hỏng thì vắng mặt trong kết
+    quả, frontend giữ nguyên tiếng Việt cho chuỗi đó."""
+    if not translate.is_supported(language):
+        return JSONResponse(status_code=404, content={"detail": "Ngôn ngữ không được hỗ trợ"})
+    return {"language": language, "translations": translate.translate_texts(payload.texts, language)}
 
 
 @app.get("/api/v1/categories")

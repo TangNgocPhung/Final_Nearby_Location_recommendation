@@ -85,6 +85,9 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("shop", "motorcycle"): ("car_repair", "Sửa xe"),
     ("shop", "motorcycle_repair"): ("car_repair", "Sửa xe"),
     ("amenity", "parking"): ("parking", "Bãi xe"),
+    # Bãi giữ xe máy chuyên dụng — cùng category "parking", loại xe phục vụ
+    # tách riêng ở `parking_facilities` (xem app/parking.py).
+    ("amenity", "motorcycle_parking"): ("parking", "Bãi xe"),
     ("amenity", "bus_station"): ("bus_station", "Bến xe"),
     ("railway", "station"): ("train_station", "Ga tàu"),
     ("tourism", "museum"): ("museum", "Văn hóa"),
@@ -545,6 +548,28 @@ def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
     return None
 
 
+# Bãi xe/trạm sạc KHÔNG có tag `name` vẫn được nhập, với tên tự sinh: đo được
+# thật (Overpass, bbox TP.HCM, 2026-09-25) chỉ 50/621 `parking`, 15/203
+# `motorcycle_parking` và 9/25 `charging_station` có tên — bỏ POI không tên
+# như các loại khác là bỏ gần hết dữ liệu bãi xe.
+_UNNAMED_FALLBACK_NAMES: dict[tuple[str, str], str] = {
+    ("amenity", "motorcycle_parking"): "Bãi giữ xe máy",
+    ("amenity", "parking"): "Bãi đỗ xe",
+    ("amenity", "charging_station"): "Trạm sạc xe điện",
+}
+# Bãi riêng (của cơ quan, chung cư...) không phục vụ người ngoài — hiện ra chỉ
+# làm người dùng chạy tới rồi bị từ chối.
+_PRIVATE_ACCESS = {"private", "no"}
+
+
+def _fallback_name(tags: dict[str, str]) -> str | None:
+    for (key, value), label in _UNNAMED_FALLBACK_NAMES.items():
+        if tags.get(key) == value:
+            detail = tags.get("operator") or tags.get("brand") or tags.get("addr:street")
+            return f"{label} {detail}" if detail else label
+    return None
+
+
 def _address(tags: dict[str, str]) -> str:
     street = tags.get("addr:street") or tags.get("addr:place")
     parts = [tags.get("addr:housenumber"), street, tags.get("addr:district")]
@@ -574,9 +599,15 @@ def _normalize_country_code(raw: str | None) -> str:
 def normalize_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
     tags = element.get("tags") or {}
     name = tags.get("name") or tags.get("name:vi")
+    generated_name = False
+    if not name:
+        name = _fallback_name(tags)
+        generated_name = name is not None
     category_value = osm_category(tags)
     center = element.get("center") or element
     if not name or not category_value or "lat" not in center or "lon" not in center:
+        return None
+    if category_value[0] in ("parking", "charging_station") and tags.get("access") in _PRIVATE_ACCESS:
         return None
     category, category_label = category_value
     latitude, longitude = float(center["lat"]), float(center["lon"])
@@ -631,4 +662,7 @@ def normalize_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
         "embedding_model": EMBEDDING_MODEL,
         "dedupe_fingerprint": dedupe_fingerprint(name, category, latitude, longitude),
         "raw_payload": element,
+        # Tên tự sinh ("Bãi giữ xe máy") trùng nhau hàng loạt — không được dùng
+        # để gộp trùng theo tên như POI thường (xem `poi_import._find_existing`).
+        "generated_name": generated_name,
     }

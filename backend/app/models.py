@@ -92,6 +92,38 @@ class ChatRequest(BaseModel):
     radius: int = Field(default=3_000, ge=100, le=50_000)
 
 
+class TranslateRequest(BaseModel):
+    """Một lô chuỗi giao diện tiếng Việt cần dịch — xem `app/translate.py`.
+    Giới hạn số chuỗi để mỗi request xong trong timeout của gateway."""
+
+    texts: list[str] = Field(min_length=1, max_length=40)
+
+
+class ParkingReportRequest(BaseModel):
+    """Người dùng báo giá gửi xe / giờ mở cửa thực tế của một bãi — xem
+    `app/parking.add_report`. Phải có ít nhất một trong hai: giá hoặc giờ."""
+
+    session_id: UUID
+    vehicle: Literal["motorbike", "car", "bicycle", "ev"]
+    amount_vnd: int | None = Field(default=None, ge=0, le=5_000_000)
+    unit: Literal["turn", "hour", "day", "night", "month", "kwh"] | None = None
+    opening_hours: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def _check(self) -> "ParkingReportRequest":
+        if self.amount_vnd is None and not self.opening_hours:
+            raise ValueError("Cần báo ít nhất giá hoặc giờ mở cửa")
+        if (self.amount_vnd is None) != (self.unit is None):
+            raise ValueError("Giá và đơn vị tính phải đi cùng nhau")
+        if self.opening_hours:
+            from .opening_hours import parse_opening_hours
+
+            parsed = parse_opening_hours(self.opening_hours)
+            if not parsed.get("alwaysOpen") and parsed.get("parseStatus") != "parsed":
+                raise ValueError('Giờ mở cửa phải có dạng "06:00-22:00" hoặc "24/7"')
+        return self
+
+
 class ReviewRequest(BaseModel):
     """Đánh giá 1-5 sao thật — explicit feedback, khác ClientEvent event_type
     'review' (tín hiệu nhẹ trong ingestion_events, dùng để tính category
