@@ -615,6 +615,9 @@ export function LocationExplorer() {
   const uiLanguage = useAutoTranslate(API_BASE_URL);
   // Nút "Gửi xe" ở panel chi tiết đẩy yêu cầu sang ParkingFinder.
   const [parkingRequest, setParkingRequest] = useState<ParkingRequest | null>(null);
+  // Khung "Tìm chỗ gửi xe" chỉ hiện khi người dùng cần — để mặc định thì cột
+  // trái quá rối. Mở bằng nút gọn ở cột trái hoặc nút "Gửi xe" ở panel chi tiết.
+  const [parkingOpen, setParkingOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
   const about = useAboutDialog();
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -2697,18 +2700,35 @@ export function LocationExplorer() {
               </div>
             </CardContent>
           </Card>
-          <ParkingFinder
-            apiBaseUrl={API_BASE_URL}
-            mapRef={mapRef}
-            userPosition={position}
-            selectedPlace={
-              poiDetail
-                ? { name: poiDetail.name, latitude: poiDetail.latitude, longitude: poiDetail.longitude }
-                : null
-            }
-            request={parkingRequest}
-            onOpenDetail={openParkingDetail}
-          />
+          {parkingOpen ? (
+            <ParkingFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              selectedPlace={
+                poiDetail
+                  ? { name: poiDetail.name, latitude: poiDetail.latitude, longitude: poiDetail.longitude }
+                  : null
+              }
+              request={parkingRequest}
+              onOpenDetail={openParkingDetail}
+              onClose={() => {
+                setParkingOpen(false);
+                // Xoá yêu cầu cũ: không thì lần mở sau tự tìm lại điểm đến cũ.
+                setParkingRequest(null);
+              }}
+            />
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setParkingOpen(true)}
+              className="h-11 shrink-0 justify-start gap-2 rounded-2xl border-emerald-950/10 bg-white/80 px-4 text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
+            >
+              <CircleParking className="size-5 text-primary" aria-hidden />
+              Tìm chỗ gửi xe
+            </Button>
+          )}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1 lg:min-h-60">
             {showDiscovery &&
@@ -3338,6 +3358,7 @@ export function LocationExplorer() {
                 }}
                 onFindParking={() => {
                   if (!poiDetail) return;
+                  setParkingOpen(true);
                   setParkingRequest({
                     name: poiDetail.name,
                     latitude: poiDetail.latitude,

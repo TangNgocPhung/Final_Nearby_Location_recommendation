@@ -67,6 +67,7 @@ export function ParkingFinder({
   selectedPlace,
   request,
   onOpenDetail,
+  onClose,
 }: {
   apiBaseUrl: string;
   mapRef: React.RefObject<MapLibreMap | null>;
@@ -75,6 +76,8 @@ export function ParkingFinder({
   selectedPlace: Place | null;
   request: ParkingRequest | null;
   onOpenDetail: (poiId: string) => void;
+  /** đóng khung — trang cha gỡ component, marker kết quả tự dọn theo */
+  onClose?: () => void;
 }) {
   const [vehicle, setVehicle] = useState<Vehicle>('motorbike');
   const [minutes, setMinutes] = useState(120);
@@ -188,6 +191,16 @@ export function ParkingFinder({
         <CardTitle className="flex items-center gap-2 text-base font-bold">
           <CircleParking className="size-5 text-primary" />
           Tìm chỗ gửi xe
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Đóng tìm chỗ gửi xe"
+              className="ml-auto grid size-7 place-items-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              <X className="size-4" aria-hidden />
+            </button>
+          )}
         </CardTitle>
         <CardDescription>Theo loại xe, thời gian gửi và nơi bạn muốn tới.</CardDescription>
       </CardHeader>
