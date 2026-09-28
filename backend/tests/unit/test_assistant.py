@@ -97,3 +97,58 @@ def test_hen_nhom_bo_quan_khong_co_duong(monkeypatch):
         lambda *args: {"durations": [[600], [None]], "approximate": False},
     )
     assert assistant.plan_meetup(participants)["status"] == "none"
+
+
+# --- Gợi ý chủ động: cửa hàng theo lễ, gần nhà ------------------------------------
+
+from datetime import datetime  # noqa: E402
+
+
+def test_moi_le_co_cua_hang_deu_tro_toi_cua_hang_da_khai_bao():
+    for event in assistant.CALENDAR:
+        if "shop" in event:
+            assert event["shop"] in assistant.SHOPS, event["id"]
+
+
+def test_20_10_va_20_11_goi_y_tiem_hoa():
+    shops = {event["id"]: event.get("shop") for event in assistant.CALENDAR}
+    assert shops["phu_nu_vn"] == "florist"
+    assert shops["nha_giao"] == "florist"
+    assert shops["quoc_te_phu_nu"] == "florist"
+
+
+def test_via_than_tai_tinh_theo_am_lich():
+    # Mùng 10 tháng Giêng năm Đinh Mùi 2027 = 15/2/2027.
+    events = assistant.upcoming_events(date(2027, 2, 10), horizon_days=10)
+    than_tai = next(event for event in events if event["id"] == "than_tai")
+    assert than_tai["date"] == date(2027, 2, 15)
+    assert than_tai["shop"] == "jewelry"
+
+
+def test_chua_luu_nha_thi_moi_dat_nha():
+    chip = assistant.home_meal_chip(None, 10.7757, 106.7009, datetime(2026, 9, 28, 12, 0))
+    assert chip["action"] == {"type": "set_home"}
+
+
+def test_goi_y_quan_an_tim_quanh_nha_chu_khong_quanh_gps():
+    home = {"label": "Nhà", "latitude": 10.8000, "longitude": 106.6500}
+    chip = assistant.home_meal_chip(home, 10.7757, 106.7009, datetime(2026, 9, 28, 18, 30))
+    action = chip["action"]
+    assert action["type"] == "search"
+    assert (action["latitude"], action["longitude"]) == (10.8, 106.65)
+    assert action["category"] == "restaurant"
+    assert chip["title"] == "Ăn tối gần nhà"
+    assert "cách nhà" in chip["subtitle"]
+
+
+def test_gio_tra_chieu_gan_nha_tim_quan_ca_phe():
+    home = {"label": "Nhà", "latitude": 10.7757, "longitude": 106.7009}
+    chip = assistant.home_meal_chip(home, 10.7757, 106.7009, datetime(2026, 9, 28, 15, 0))
+    assert chip["action"]["category"] == "cafe"
+    assert chip["subtitle"] == "Bạn đang ở gần nhà"
+
+
+def test_ngoai_gio_an_van_goi_y_quan_an_gan_nha():
+    home = {"label": "Nhà", "latitude": 10.7757, "longitude": 106.7009}
+    chip = assistant.home_meal_chip(home, 10.7757, 106.7009, datetime(2026, 9, 28, 3, 0))
+    assert chip["title"] == "Quán ăn gần nhà"

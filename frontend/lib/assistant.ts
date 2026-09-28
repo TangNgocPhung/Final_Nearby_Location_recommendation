@@ -11,6 +11,19 @@ export type PlaceRef = {
   distanceMeters?: number | null;
 };
 
+/** Tìm trực tiếp theo category quanh một toạ độ — không qua LLM (backend
+ * `assistant.shop_search` / `home_meal_chip`). */
+export type SearchAction = {
+  type: 'search';
+  title: string;
+  category: string | null;
+  query: string | null;
+  latitude: number;
+  longitude: number;
+  radius: number;
+  count?: number;
+};
+
 export type AssistantEvent = {
   name: string;
   date: string;
@@ -19,17 +32,22 @@ export type AssistantEvent = {
   note: string;
   places: PlaceRef[];
   ask?: string | null;
+  search?: SearchAction | null;
 };
 
 export type SuggestionAction =
   | { type: 'ask'; prompt: string }
   | { type: 'event'; event: AssistantEvent }
+  | SearchAction
+  | { type: 'set_home' }
   | { type: 'tour' }
+  | { type: 'explore' }
+  | { type: 'voice' }
   | { type: 'meetup' };
 
 export type Suggestion = {
   id: string;
-  kind: 'event' | 'weather' | 'time' | 'tour' | 'meetup';
+  kind: 'event' | 'shop' | 'weather' | 'time' | 'home' | 'tour' | 'explore' | 'voice' | 'meetup';
   icon: string;
   title: string;
   subtitle: string;
@@ -140,7 +158,23 @@ export function distanceMeters(
   return 2 * 6_371_000 * Math.asin(Math.sqrt(h));
 }
 
-const SPEECH_LANG: Record<string, string> = { vi: 'vi-VN', en: 'en-US' };
+// Mã ngôn ngữ → mã giọng đọc của trình duyệt. Ngôn ngữ không có ở đây vẫn được
+// truyền nguyên mã (vd "km"), trình duyệt tự chọn giọng gần nhất nếu có.
+export const SPEECH_LANG: Record<string, string> = {
+  vi: 'vi-VN',
+  en: 'en-US',
+  zh: 'zh-CN',
+  ja: 'ja-JP',
+  ko: 'ko-KR',
+  fr: 'fr-FR',
+  de: 'de-DE',
+  es: 'es-ES',
+  ru: 'ru-RU',
+  th: 'th-TH',
+  id: 'id-ID',
+  it: 'it-IT',
+  pt: 'pt-BR',
+};
 
 /**
  * Phát thuyết minh cho MỘT điểm và trả Promise kết thúc khi đọc xong — để tour
@@ -214,6 +248,13 @@ export class NarrationPlayer {
     return new Promise((resolve) => {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = lang;
+      // Chọn đúng giọng của ngôn ngữ nếu máy có — chỉ đặt `lang` thì vài trình
+      // duyệt vẫn đọc bằng giọng mặc định (thường là tiếng Anh).
+      const prefix = lang.slice(0, 2).toLowerCase();
+      const voice = window.speechSynthesis
+        .getVoices()
+        .find((item) => item.lang.toLowerCase().startsWith(prefix));
+      if (voice) utterance.voice = voice;
       this.finish = () => resolve('stopped');
       utterance.onend = () => resolve('ended');
       utterance.onerror = () => resolve('stopped');

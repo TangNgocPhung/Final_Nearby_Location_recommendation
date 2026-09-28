@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MapPin, MessageCircle, Send, Sparkles, Star, Users, X } from 'lucide-react';
+import { Home, MapPin, MessageCircle, Search, Send, Sparkles, Star, Users, X } from 'lucide-react';
 
+import { AssistantExplore } from '@/components/assistant-explore';
 import { AssistantMeetup } from '@/components/assistant-meetup';
 import { AssistantTour } from '@/components/assistant-tour';
 
@@ -27,6 +28,7 @@ import {
   formatMeters,
   type AssistantOverlay,
   type PlaceRef,
+  type SearchAction,
   type Suggestion,
   type SuggestionsResponse,
 } from '@/lib/assistant';
@@ -67,6 +69,10 @@ type ChatTurn = {
   places?: PlaceRef[];
   /** câu hỏi gợi ý tiếp theo, bấm là gửi cho chatbot */
   followUp?: string | null;
+  /** nút tìm trực tiếp (tiệm hoa gần bạn…) — chạy pipeline xếp hạng, không qua LLM */
+  search?: SearchAction | null;
+  /** hiện nút "đặt vị trí hiện tại làm nhà" */
+  offerSetHome?: boolean;
 };
 
 // Tải lại gợi ý khi người dùng đi xa hơn mức này, hoặc sau REFRESH_MS.
@@ -193,6 +199,9 @@ export function ChatWidget({
   onFocusLocation,
   onMapOverlay,
   onPickOnMap,
+  onOpenVoice,
+  onSimulatePosition,
+  onSavedChanged,
 }: {
   apiBaseUrl: string;
   sessionId: string;
@@ -203,11 +212,19 @@ export function ChatWidget({
   onFocusLocation: (latitude: number, longitude: number) => void;
   onMapOverlay: (overlay: AssistantOverlay | null) => void;
   onPickOnMap: (callback: ((latitude: number, longitude: number) => void) | null) => void;
+  /** mở chế độ giọng nói (người khiếm thị) */
+  onOpenVoice?: () => void;
+  /** đặt vị trí mô phỏng khi trình diễn trên máy không có GPS */
+  onSimulatePosition?: (latitude: number, longitude: number) => void;
+  /** danh sách "Đã lưu" vừa đổi (vd vừa đặt nhà) — để thanh bên tải lại */
+  onSavedChanged?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<'chat' | 'tour' | 'meetup'>('chat');
+  const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
+  // Tăng lên để buộc tải lại gợi ý (vd vừa lưu nhà → hiện chip "quán gần nhà").
+  const [suggestionsVersion, setSuggestionsVersion] = useState(0);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -266,7 +283,11 @@ export function ChatWidget({
     suggestedAtRef.current = { at: Date.now(), ...position };
     const controller = new AbortController();
     const params = new URLSearchParams({ lat: String(position.latitude), lng: String(position.longitude) });
-    fetch(`${apiBaseUrl}/api/v1/assistant/suggestions?${params}`, { signal: controller.signal })
+    // X-Session-ID: backend đọc địa chỉ "Nhà" đã lưu và tiến độ săn địa danh.
+    fetch(`${apiBaseUrl}/api/v1/assistant/suggestions?${params}`, {
+      signal: controller.signal,
+      headers: { 'X-Session-ID': sessionId },
+    })
       .then((res) => (res.ok ? (res.json() as Promise<SuggestionsResponse>) : null))
       .then((data) => {
         if (data) setSuggestions(data);
@@ -276,15 +297,94 @@ export function ChatWidget({
         suggestedAtRef.current = null;
       });
     return () => controller.abort();
-  }, [apiBaseUrl, open, position]);
+  }, [apiBaseUrl, open, position, sessionId, suggestionsVersion]);
+
+  /** Tìm trực tiếp theo category quanh một toạ độ (tiệm hoa, quán gần nhà) —
+   * pipeline xếp hạng thật, không qua LLM nên chạy cả khi Ollama tắt. */
+  const runSearch = useCallback(
+    async (action: SearchAction) => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams({
+          lat: String(action.latitude),
+          lng: String(action.longitude),
+          radius: String(action.radius),
+          limit: '8',
+        });
+        if (action.category) params.set('category', action.category);
+        if (action.query) params.set('q', action.query);
+        const res = await fetch(`${apiBaseUrl}/api/pois/nearby?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const results = (await res.json()) as ChatPoiResult[];
+        const radius = formatMeters(action.radius);
+        setTurns((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: results.length
+              ? `${action.title}: ${results.length} địa điểm trong bán kính ${radius}, xếp theo độ phù hợp và khoảng cách.`
+              : `Chưa có địa điểm nào phù hợp trong bán kính ${radius}.`,
+            results,
+          },
+        ]);
+      } catch {
+        setTurns((prev) => [
+          ...prev,
+          { role: 'assistant', content: 'Xin lỗi, chưa tìm được lúc này. Bạn thử lại sau ít phút nhé.' },
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [apiBaseUrl],
+  );
+
+  const setHomeHere = useCallback(async () => {
+    const here = positionRef.current;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/v1/saved`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
+        body: JSON.stringify({ kind: 'home', label: 'Nhà', latitude: here.latitude, longitude: here.longitude }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setTurns((prev) => [
+        ...prev,
+        { role: 'assistant', content: '🏠 Đã lưu vị trí hiện tại làm Nhà. Từ giờ mình sẽ gợi ý quán ăn quanh nhà cho bạn.' },
+      ]);
+      suggestedAtRef.current = null;
+      setSuggestionsVersion((value) => value + 1);
+      onSavedChanged?.();
+    } catch {
+      setTurns((prev) => [...prev, { role: 'assistant', content: 'Chưa lưu được địa chỉ nhà, bạn thử lại nhé.' }]);
+    }
+  }, [apiBaseUrl, onSavedChanged, sessionId]);
 
   const pickSuggestion = useCallback(
     (suggestion: Suggestion) => {
       const action = suggestion.action;
       if (action.type === 'ask') {
         void send(action.prompt);
+      } else if (action.type === 'search') {
+        setTurns((prev) => [...prev, { role: 'user', content: `${suggestion.icon} ${suggestion.title}` }]);
+        void runSearch(action);
+      } else if (action.type === 'set_home') {
+        setTurns((prev) => [
+          ...prev,
+          { role: 'user', content: `${suggestion.icon} ${suggestion.title}` },
+          {
+            role: 'assistant',
+            content:
+              'Bạn đang ở nhà? Bấm nút dưới để lưu vị trí hiện tại làm Nhà. Hoặc mở một địa điểm trên bản đồ và chọn “Đặt làm nhà”.',
+            offerSetHome: true,
+          },
+        ]);
       } else if (action.type === 'tour') {
         setView('tour');
+      } else if (action.type === 'explore') {
+        setView('explore');
+      } else if (action.type === 'voice') {
+        onOpenVoice?.();
       } else if (action.type === 'meetup') {
         setView('meetup');
       } else {
@@ -303,12 +403,15 @@ export function ChatWidget({
             role: 'assistant',
             content: `${event.name} — ${when}${event.lunar ? ', tính theo âm lịch' : ''}. ${event.note}`,
             places: event.places,
-            followUp: event.ask ?? null,
+            // Có cửa hàng thật để gợi ý (tiệm hoa, tiệm vàng) thì nút tìm trực
+            // tiếp thay cho câu hỏi gửi LLM.
+            search: event.search ?? null,
+            followUp: event.search ? null : (event.ask ?? null),
           },
         ]);
       }
     },
-    [send],
+    [onOpenVoice, runSearch, send],
   );
 
   return (
@@ -371,6 +474,24 @@ export function ChatWidget({
             onViewPoi={onViewPoi}
             onMapOverlay={onMapOverlay}
             onPickOnMap={onPickOnMap}
+          />
+        ) : view === 'explore' ? (
+          <AssistantExplore
+            apiBaseUrl={apiBaseUrl}
+            sessionId={sessionId}
+            position={position}
+            language={language}
+            onBack={() => {
+              setView('chat');
+              // Tiến độ vừa đổi → chip "Săn địa danh" cần số mới.
+              suggestedAtRef.current = null;
+              setSuggestionsVersion((value) => value + 1);
+            }}
+            onViewPoi={onViewPoi}
+            onMapOverlay={onMapOverlay}
+            onFocusLocation={onFocusLocation}
+            onPickOnMap={onPickOnMap}
+            onSimulatePosition={onSimulatePosition}
           />
         ) : (
           <>
@@ -448,6 +569,28 @@ export function ChatWidget({
                                 className="mt-1 w-fit rounded-full border border-primary/30 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/5"
                               >
                                 {turn.followUp} →
+                              </button>
+                            )}
+                            {turn.search && (
+                              <button
+                                type="button"
+                                onClick={() => void runSearch(turn.search!)}
+                                disabled={loading}
+                                className="mt-1 flex w-fit items-center gap-1 rounded-full border border-primary/30 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/5"
+                              >
+                                <Search className="size-3" />
+                                Xem {turn.search.title.toLowerCase()}
+                                {turn.search.count ? ` (${turn.search.count})` : ''} →
+                              </button>
+                            )}
+                            {turn.offerSetHome && (
+                              <button
+                                type="button"
+                                onClick={() => void setHomeHere()}
+                                className="mt-1 flex w-fit items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                              >
+                                <Home className="size-3" />
+                                Đặt vị trí hiện tại làm Nhà
                               </button>
                             )}
                           </MessageContent>

@@ -87,6 +87,35 @@ class MeetupRequest(BaseModel):
     need_parking: bool = False
 
 
+class ExploreDiscoverRequest(BaseModel):
+    """Một lượt khám phá trong Săn địa danh — xem `app/explore.discover`.
+
+    Ảnh gửi dạng base64 trong JSON thay vì multipart: trình duyệt đã thu ảnh về
+    ≤ 1280 px trước khi gửi (vài trăm KB), và JSON giữ nguyên cách mọi endpoint
+    khác của API nhận dữ liệu — không thêm phụ thuộc `python-multipart`.
+    """
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_meters: float | None = Field(default=None, ge=0, le=100_000)
+    # ~8 MB ảnh sau base64 (x4/3) — trần phòng thủ, giao diện gửi nhỏ hơn nhiều.
+    image_base64: str = Field(min_length=100, max_length=11_000_000)
+    share_publicly: bool = True
+    session_id: UUID | None = None
+
+
+class VoiceTurnRequest(BaseModel):
+    """Một lượt nói trong chế độ giọng nói — xem `app/voice.respond`.
+
+    ``state`` là trạng thái hội thoại do client giữ (server không lưu phiên).
+    """
+
+    text: str = Field(default="", max_length=300)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    state: dict[str, Any] | None = None
+
+
 class SearchRequest(BaseModel):
     query: str = Field(default="", max_length=160)
     latitude: float = Field(ge=-90, le=90)

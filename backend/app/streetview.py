@@ -111,6 +111,7 @@ FIELDS = ",".join(
         "computed_geometry",
         "creator",
         "thumb_1024_url",
+        "thumb_2048_url",
     )
 )
 
@@ -190,6 +191,9 @@ def _view(item: dict[str, Any], poi_lat: float, poi_lng: float) -> dict[str, Any
         "compassAngle": round(float(compass), 1) if compass is not None else None,
         "creator": (item.get("creator") or {}).get("username"),
         "thumbUrl": item.get("thumb_1024_url"),
+        # Bản 2048 px cho AI đọc biển hiệu (app/storefront.py) — chữ trên bản
+        # 1024 px thường chỉ cao vài pixel.
+        "thumbLargeUrl": item.get("thumb_2048_url") or item.get("thumb_1024_url"),
         "sourceUrl": f"https://www.mapillary.com/app/?pKey={item['id']}",
         "_capturedMs": captured_at if isinstance(captured_at, (int, float)) else 0,
         "_quality": item.get("quality_score"),
@@ -254,6 +258,7 @@ def choose_views(
         chosen = dict(views[0])
         chosen.pop("_capturedMs", None)
         chosen.pop("_quality", None)
+        chosen.pop("thumbLargeUrl", None)
         return chosen
 
     return {"pano": best(panos), "facing": best(facing)}
@@ -601,3 +606,19 @@ def street_views(poi_id: str, lat: float, lng: float) -> dict[str, Any]:
             _cache.pop(next(iter(_cache)))
         _cache[poi_id] = (now, result)
     return result
+
+
+def ranked_views(
+    lat: float, lng: float
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """Toàn bộ ảnh 360° và ảnh nhìn về phía địa điểm, đã xếp hạng (tốt trước).
+
+    Cho bước xác minh biển hiệu (``app/storefront.py``), cần NHIỀU ảnh chứ không
+    chỉ ảnh tốt nhất. ``None`` = không hỏi được Mapillary.
+    """
+    if not settings.mapillary_client_token:
+        return None
+    items = _search_images(lat, lng)
+    if items is None:
+        return None
+    return _classify(items, lat, lng, FACING_TOLERANCE_DEG)

@@ -47,7 +47,9 @@ from .config import settings
 
 logger = logging.getLogger("nearby-directions")
 
-CACHE_PREFIX = "nearby:route"
+# v2: bước đi có thêm `location` (toạ độ điểm rẽ) — khoá mới để tuyến cũ trong
+# cache (thiếu trường này) không được trả cho chế độ dẫn đường bằng giọng nói.
+CACHE_PREFIX = "nearby:route:v2"
 CACHE_TTL_SECONDS = 6 * 3600
 REQUEST_TIMEOUT_SECONDS = 4.0
 
@@ -168,12 +170,20 @@ def _shape_response(payload: dict[str, Any], mode: str, approximate: bool) -> di
             kind = ((step.get("maneuver") or {}).get("type")) or ""
             if distance < MIN_STEP_DISTANCE_METERS and kind not in ("depart", "arrive"):
                 continue
+            # Toạ độ điểm rẽ [lng, lat]: chế độ giọng nói cần biết người dùng đã
+            # tới gần chỗ rẽ chưa để đọc đúng lúc, không đọc cả danh sách từ đầu.
+            location = (step.get("maneuver") or {}).get("location")
             steps.append(
                 {
                     "text": _maneuver_text(step),
                     "distanceMeters": round(distance, 1),
                     "durationSeconds": round(float(step.get("duration") or 0.0), 1),
                     "name": (step.get("name") or "").strip() or None,
+                    "location": (
+                        [round(float(location[0]), 6), round(float(location[1]), 6)]
+                        if isinstance(location, (list, tuple)) and len(location) == 2
+                        else None
+                    ),
                 }
             )
 

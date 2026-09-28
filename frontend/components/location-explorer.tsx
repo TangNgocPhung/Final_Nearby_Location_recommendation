@@ -50,6 +50,7 @@ import {
   type LucideIcon,
   Mailbox,
   MapPin,
+  Mic,
   Moon,
   Navigation,
   PartyPopper,
@@ -77,10 +78,13 @@ import {
   WashingMachine,
   Wrench,
   X,
+  Zap,
 } from 'lucide-react';
 
 import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
 import { ChatWidget } from '@/components/chat-widget';
+import { VoiceMode } from '@/components/voice-mode';
+import { ChargingFinder } from '@/components/charging-finder';
 import { ParkingFinder, type ParkingRequest } from '@/components/parking-finder';
 import { useProximityNotifications } from '@/hooks/use-proximity';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
@@ -619,6 +623,7 @@ export function LocationExplorer() {
   // Khung "Tìm chỗ gửi xe" chỉ hiện khi người dùng cần — để mặc định thì cột
   // trái quá rối. Mở bằng nút gọn ở cột trái hoặc nút "Gửi xe" ở panel chi tiết.
   const [parkingOpen, setParkingOpen] = useState(false);
+  const [chargingOpen, setChargingOpen] = useState(false);
   // Lớp vẽ tạm của trợ lý (tuyến tour, người trong nhóm hẹn, quán gợi ý) — xem
   // components/chat-widget.tsx. Tách khỏi 'route' để chỉ đường và tour không
   // xoá lẫn nhau.
@@ -629,6 +634,8 @@ export function LocationExplorer() {
   // MapLibre — đăng ký MỘT lần lúc khởi tạo — luôn đọc giá trị mới nhất.
   const mapPickRef = useRef<((latitude: number, longitude: number) => void) | null>(null);
   const [mapPicking, setMapPicking] = useState(false);
+  // Chế độ giọng nói cho người khiếm thị (Alt+V, nút "Giọng nói" trên thanh trên).
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const requestMapPick = useCallback(
     (callback: ((latitude: number, longitude: number) => void) | null) => {
       mapPickRef.current = callback;
@@ -2218,6 +2225,41 @@ export function LocationExplorer() {
     requestCurrentLocationRef.current = requestCurrentLocation;
   });
 
+  // Cùng lý do với requestCurrentLocationRef: runSearch là hàm dài đổi tham
+  // chiếu mỗi render, giữ bản mới nhất qua ref.
+  const runSearchRef = useRef(runSearch);
+  useEffect(() => {
+    runSearchRef.current = runSearch;
+  });
+
+  // Vị trí MÔ PHỎNG: máy tính không có GPS mà vẫn phải trình diễn được Săn địa
+  // danh / dẫn đường. Không gửi location_ping (không phải vị trí thật của ai) và
+  // ghi rõ trên trạng thái để không ai nhầm với GPS.
+  const simulatePosition = useCallback(
+    (latitude: number, longitude: number) => {
+      const nextPosition = { latitude, longitude };
+      setPosition(nextPosition);
+      setGpsStatus('Vị trí mô phỏng (trình diễn) · không phải GPS');
+      setStatus('Đang dùng vị trí mô phỏng đặt trên bản đồ');
+      mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 16, essential: true });
+      void runSearchRef.current(query, selectedCategory, nextPosition);
+    },
+    [query, selectedCategory],
+  );
+
+  // Alt+V bật/tắt chế độ giọng nói ở bất cứ đâu trên trang — người không nhìn
+  // thấy màn hình không phải đi tìm nút.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.altKey && (event.key === 'v' || event.key === 'V')) {
+        event.preventDefault();
+        setVoiceOpen((value) => !value);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   // Tự hỏi vị trí NGAY KHI MỞ TRANG thay vì đứng ở Quận 1 chờ người dùng bấm
   // "Vị trí của tôi". Trình duyệt tự lo phần đồng ý: lần đầu nó hiện hộp xin
   // quyền, đã cho phép từ trước thì vào thẳng, đã chặn thì rơi vào nhánh lỗi
@@ -2465,6 +2507,16 @@ export function LocationExplorer() {
               ) : (
                 <Moon className="size-4" />
               )}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setVoiceOpen(true)}
+              aria-label="Bật chế độ giọng nói cho người khiếm thị (phím tắt Alt+V)"
+              title="Chế độ giọng nói (Alt+V)"
+            >
+              <Mic data-icon="inline-start" />
+              <span className="hidden sm:inline">Giọng nói</span>
             </Button>
             <Button variant="outline" size="sm" onClick={requestCurrentLocation}>
               <LocateFixed data-icon="inline-start" />
@@ -2825,16 +2877,35 @@ export function LocationExplorer() {
                 setParkingRequest(null);
               }}
             />
+          ) : chargingOpen ? (
+            <ChargingFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              onOpenDetail={openParkingDetail}
+              onClose={() => setChargingOpen(false)}
+            />
           ) : (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setParkingOpen(true)}
-              className="h-11 shrink-0 justify-start gap-2 rounded-2xl border-emerald-950/10 bg-white/80 px-4 text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
-            >
-              <CircleParking className="size-5 text-primary" aria-hidden />
-              Tìm chỗ gửi xe
-            </Button>
+            <div className="grid shrink-0 grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setParkingOpen(true)}
+                className="h-11 justify-start gap-2 rounded-2xl border-emerald-950/10 bg-white/80 px-4 text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
+              >
+                <CircleParking className="size-5 text-primary" aria-hidden />
+                Tìm chỗ gửi xe
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setChargingOpen(true)}
+                className="h-11 justify-start gap-2 rounded-2xl border-emerald-950/10 bg-white/80 px-4 text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
+              >
+                <Zap className="size-5 text-sky-600" aria-hidden />
+                Trạm sạc xe điện
+              </Button>
+            </div>
           )}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1 lg:min-h-60">
@@ -3525,6 +3596,17 @@ export function LocationExplorer() {
           }
           onMapOverlay={setAssistantOverlay}
           onPickOnMap={requestMapPick}
+          onOpenVoice={() => setVoiceOpen(true)}
+          onSimulatePosition={simulatePosition}
+          onSavedChanged={() => void reloadSavedPlaces()}
+        />
+      )}
+      {voiceOpen && (
+        <VoiceMode
+          apiBaseUrl={API_BASE_URL}
+          position={position}
+          onClose={() => setVoiceOpen(false)}
+          onMapOverlay={setAssistantOverlay}
         />
       )}
       {mapPicking && (

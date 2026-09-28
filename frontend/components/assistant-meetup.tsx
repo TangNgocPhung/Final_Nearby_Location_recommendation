@@ -216,7 +216,7 @@ export function AssistantMeetup({
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm">
         <p className="text-xs text-muted-foreground">
           Chọn quán mà người đi <b>xa nhất</b> cũng không phải đi quá lâu — tính theo thời gian chạy xe
-          máy thật, không phải đường chim bay.
+          máy trên đường thật (OSRM), không phải đường chim bay.
         </p>
 
         <div className="space-y-2">
@@ -368,11 +368,19 @@ export function AssistantMeetup({
                 />
               ))}
             </ol>
-            <p className="text-[11px] text-muted-foreground">
-              Thời gian xe máy theo đường thật (OSRM, chưa tính kẹt xe)
-              {plan.approximate ? ' — hiện là ƯỚC TÍNH vì chưa có dữ liệu đường xe máy' : ''}. Đã xét{' '}
-              {plan.candidateCount} quán quanh điểm giữa của nhóm.
-            </p>
+            {plan.approximate ? (
+              // Máy chủ định tuyến không trả lời: số phút là khoảng cách chim bay
+              // × hệ số — phải nói thẳng, không để người đọc tưởng là giờ chạy thật.
+              <p className="rounded-md bg-amber-100 px-2 py-1.5 text-[11px] text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                ⚠️ Máy chủ định tuyến đang tắt nên số phút hiện là <b>ước tính</b> từ khoảng cách đường chim bay,
+                chưa phải thời gian chạy xe thật. Đã xét {plan.candidateCount} quán quanh điểm giữa của nhóm.
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                Thời gian xe máy theo đường thật (OSRM, hồ sơ xe máy riêng, chưa tính kẹt xe). Đã xét{' '}
+                {plan.candidateCount} quán quanh điểm giữa của nhóm.
+              </p>
+            )}
           </>
         )}
       </div>

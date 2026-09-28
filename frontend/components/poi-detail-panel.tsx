@@ -47,6 +47,8 @@ import type { UiLanguage } from '@/hooks/use-auto-translate';
 import { usePoiNarration } from '@/hooks/use-poi-narration';
 import { ParkingInfo } from '@/components/parking-info';
 import { StreetView, useStreetViews } from '@/components/street-view';
+import { VerificationBadge } from '@/components/verification-badge';
+import { VisitorPhotos } from '@/components/visitor-photos';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -1207,6 +1209,9 @@ export function PoiDetailPanel(props: {
             </div>
           )}
 
+          {/* Ảnh người chơi Săn địa danh đã chụp và AI xác minh. */}
+          <VisitorPhotos apiBaseUrl={apiBaseUrl} poiId={detail.id} />
+
           {/* b. TÊN + XẾP HẠNG ------------------------------------------- */}
           <div className="px-4 pt-4">
             <div className="flex items-start gap-2">
@@ -1252,6 +1257,7 @@ export function PoiDetailPanel(props: {
             </div>
 
             <div className="mt-2 flex flex-wrap items-center gap-2">
+              <VerificationBadge apiBaseUrl={apiBaseUrl} poiId={detail.id} />
               <OpeningBadge status={detail.openingStatus} />
               {detail.brand && (
                 <Badge variant="outline" className="bg-white dark:bg-card">

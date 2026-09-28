@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 from psycopg.rows import dict_row
 
-from . import directions, weather
+from . import directions, explore, weather
 from .config import settings
 from .lunar import lunar_to_solar, solar_to_lunar, year_name
 
@@ -89,16 +89,21 @@ _PLACES: dict[str, dict[str, Any]] = {
 # `lunar=(ngày, tháng)` hoặc `solar=(ngày, tháng)`. `note` là câu mô tả phong tục
 # — viết ở thể "thường/theo lệ", không khẳng định lịch cụ thể của năm nay.
 # `ask` (tuỳ chọn) là câu hỏi gửi cho chatbot khi bấm "Gợi ý thêm".
+# `shop` (tuỳ chọn) = khoá trong ``SHOPS``: lễ có tục mua/tặng một thứ cụ thể
+# (hoa, vàng) thì gợi ý thẳng các cửa hàng THẬT theo category — tìm bằng
+# pipeline xếp hạng, không đi qua LLM, nên vẫn chạy khi Ollama tắt.
 CALENDAR: tuple[dict[str, Any], ...] = (
     {"id": "tet_duong_lich", "name": "Tết Dương lịch", "solar": (1, 1), "icon": "🎆",
      "note": "Ngày nghỉ lễ. Đêm 31/12 khu trung tâm Quận 1 thường rất đông người đón năm mới.",
      "places": ("nguyen_hue",)},
     {"id": "valentine", "name": "Lễ Tình nhân", "solar": (14, 2), "icon": "💝",
-     "note": "Quán cà phê, nhà hàng thường đông khách buổi tối.",
-     "ask": "Nhà hàng lãng mạn gần đây cho buổi tối"},
+     "note": "Quán cà phê, nhà hàng thường đông khách buổi tối; nhiều người mua hoa tặng.",
+     "ask": "Nhà hàng lãng mạn gần đây cho buổi tối", "shop": "florist"},
+    {"id": "thay_thuoc", "name": "Ngày Thầy thuốc Việt Nam", "solar": (27, 2), "icon": "🩺",
+     "note": "Nhiều người tặng hoa cảm ơn bác sĩ, điều dưỡng.", "shop": "florist"},
     {"id": "quoc_te_phu_nu", "name": "Quốc tế Phụ nữ", "solar": (8, 3), "icon": "🌷",
      "note": "Tiệm hoa, quán cà phê thường đông hơn ngày thường.",
-     "ask": "Tiệm hoa gần đây"},
+     "ask": "Tiệm hoa gần đây", "shop": "florist"},
     {"id": "giai_phong", "name": "Ngày Giải phóng miền Nam, thống nhất đất nước", "solar": (30, 4),
      "icon": "🇻🇳", "note": "Ngày nghỉ lễ. Dinh Độc Lập là di tích gắn trực tiếp với sự kiện 30/4/1975.",
      "places": ("dinh_doc_lap",)},
@@ -109,9 +114,9 @@ CALENDAR: tuple[dict[str, Any], ...] = (
     {"id": "quoc_khanh", "name": "Quốc khánh", "solar": (2, 9), "icon": "🇻🇳",
      "note": "Ngày nghỉ lễ."},
     {"id": "phu_nu_vn", "name": "Ngày Phụ nữ Việt Nam", "solar": (20, 10), "icon": "🌹",
-     "note": "Tiệm hoa, nhà hàng thường đông khách.", "ask": "Tiệm hoa gần đây"},
+     "note": "Tiệm hoa, nhà hàng thường đông khách.", "ask": "Tiệm hoa gần đây", "shop": "florist"},
     {"id": "nha_giao", "name": "Ngày Nhà giáo Việt Nam", "solar": (20, 11), "icon": "📚",
-     "note": "Tiệm hoa, quà tặng thường đông khách.", "ask": "Tiệm hoa gần đây"},
+     "note": "Tiệm hoa, quà tặng thường đông khách.", "ask": "Tiệm hoa gần đây", "shop": "florist"},
     {"id": "giang_sinh", "name": "Đêm Giáng sinh", "solar": (24, 12), "icon": "🎄",
      "note": "Theo lệ hằng năm, khu quanh Nhà thờ Đức Bà rất đông người đêm Noel.",
      "places": ("duc_ba",)},
@@ -121,6 +126,9 @@ CALENDAR: tuple[dict[str, Any], ...] = (
      "note": "Theo lệ hằng năm, Đường hoa Nguyễn Huệ và Hội hoa xuân Tao Đàn mở dịp Tết. "
              "Nhiều quán ăn nghỉ Tết — nên kiểm tra giờ mở cửa.",
      "places": ("nguyen_hue", "tao_dan")},
+    {"id": "than_tai", "name": "Ngày vía Thần Tài", "lunar": (10, 1), "icon": "🪙",
+     "note": "Theo lệ hằng năm, tiệm vàng thường rất đông người mua lấy may từ sáng sớm.",
+     "shop": "jewelry"},
     {"id": "nguyen_tieu", "name": "Rằm tháng Giêng (Tết Nguyên Tiêu)", "lunar": (15, 1), "icon": "🏮",
      "note": "Các hội quán người Hoa ở Chợ Lớn thường rất đông người đi lễ.",
      "places": ("tue_thanh", "nghia_an")},
@@ -134,7 +142,8 @@ CALENDAR: tuple[dict[str, Any], ...] = (
     {"id": "doan_ngo", "name": "Tết Đoan Ngọ", "lunar": (5, 5), "icon": "🍑",
      "note": "Tục ăn cơm rượu, trái cây đầu mùa."},
     {"id": "vu_lan", "name": "Lễ Vu Lan", "lunar": (15, 7), "icon": "🌹",
-     "note": "Mùa báo hiếu; các chùa thường rất đông người đi lễ.", "places": ("vinh_nghiem",)},
+     "note": "Mùa báo hiếu; các chùa thường rất đông người đi lễ, theo tục cài bông hồng lên áo.",
+     "places": ("vinh_nghiem",), "shop": "florist"},
     {"id": "trung_thu", "name": "Tết Trung Thu", "lunar": (15, 8), "icon": "🏮",
      "note": "Theo lệ hằng năm, phố lồng đèn Lương Nhữ Học (Quận 5) rực rỡ và rất đông "
              "người dạo chơi mấy tối quanh Rằm tháng Tám.",
@@ -182,6 +191,129 @@ def _when_label(days_until: int) -> str:
 def lunar_label(today: date) -> str:
     day, month, year, leap = solar_to_lunar(today)
     return f"{day}/{month}{' nhuận' if leap else ''} năm {year_name(year)}"
+
+
+# Cửa hàng gắn với tục lệ của một ngày lễ. Chỉ gợi ý mua sắm trong
+# ``SHOP_LEAD_DAYS`` ngày trước lễ — nhắc mua hoa 20/10 từ 21/9 là quá sớm để có
+# ích, còn tuần cuối là lúc người ta thật sự đi tìm tiệm.
+SHOPS: dict[str, dict[str, Any]] = {
+    "florist": {"category": "florist", "icon": "💐", "noun": "Tiệm hoa"},
+    "jewelry": {"category": "jewelry", "icon": "🪙", "noun": "Tiệm vàng"},
+}
+SHOP_LEAD_DAYS = 7
+# Bán kính tìm cửa hàng: dữ liệu tiệm hoa THƯA (25 tiệm cho cả vùng nhập OSM,
+# đo 2026-09-28) nên thử rộng dần thay vì báo "không có" khi 2 km quanh đây trống.
+SHOP_RADII_METERS = (3_000, 6_000, 12_000)
+
+
+def shop_search(
+    shop_key: str, lat: float, lng: float, connection: psycopg.Connection | None = None
+) -> dict[str, Any] | None:
+    """Hành động "tìm cửa hàng" cho một lễ: category + bán kính NHỎ NHẤT còn có
+    cửa hàng. ``None`` khi trong bán kính lớn nhất cũng không có tiệm nào — khi
+    đó không hiện chip, thay vì dẫn người dùng tới một danh sách rỗng."""
+    shop = SHOPS.get(shop_key)
+    if shop is None:
+        return None
+    own = connection is None
+    conn = connection or _connect()
+    try:
+        for radius in SHOP_RADII_METERS:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM pois
+                WHERE category = %(cat)s
+                  AND ST_DWithin(location, ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)::geography, %(r)s)
+                """,
+                {"cat": shop["category"], "lat": lat, "lng": lng, "r": radius},
+            ).fetchone()
+            count = int(row["n"]) if row else 0
+            if count:
+                return {
+                    "type": "search",
+                    "title": f"{shop['noun']} gần bạn",
+                    "category": shop["category"],
+                    "query": None,
+                    "latitude": lat,
+                    "longitude": lng,
+                    "radius": radius,
+                    "count": count,
+                }
+        return None
+    finally:
+        if own:
+            conn.close()
+
+
+def home_place(owner_id: str | None, connection: psycopg.Connection | None = None) -> dict[str, Any] | None:
+    """Địa chỉ "Nhà" người dùng đã lưu (``saved_places.kind = 'home'``)."""
+    if not owner_id:
+        return None
+    own = connection is None
+    conn = connection or _connect()
+    try:
+        return conn.execute(
+            """
+            SELECT label, ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude
+            FROM saved_places WHERE owner_id = %s AND kind = 'home'
+            """,
+            (owner_id,),
+        ).fetchone()
+    finally:
+        if own:
+            conn.close()
+
+
+# Bán kính "gần nhà": đủ để đi bộ/chạy xe vài phút từ nhà.
+HOME_RADIUS_METERS = 1_500
+# Đang cách nhà dưới mức này thì "gần nhà" trùng với "gần bạn" — chip giờ ăn
+# thường đã đủ, không lặp lại.
+AT_HOME_METERS = 300
+
+
+def home_meal_chip(
+    home: dict[str, Any] | None, lat: float, lng: float, now: datetime
+) -> dict[str, Any] | None:
+    """Chip "quán ăn gần nhà" — tìm quanh toạ độ NHÀ chứ không quanh GPS hiện tại.
+
+    Chưa lưu nhà thì trả chip mời đặt nhà: tính năng này vô dụng nếu người dùng
+    không biết phải làm gì để bật nó.
+    """
+    if home is None:
+        return {
+            "id": "home:set",
+            "kind": "home",
+            "icon": "🏠",
+            "title": "Gợi ý quán ăn gần nhà",
+            "subtitle": "Lưu địa chỉ nhà để bật gợi ý này",
+            "action": {"type": "set_home"},
+        }
+    home_lat, home_lng = float(home["latitude"]), float(home["longitude"])
+    away = haversine_m(lat, lng, home_lat, home_lng)
+    slot = _meal_slot(now)
+    category = slot[5] if slot else "restaurant"
+    title = f"{slot[6]} gần nhà" if slot else "Quán ăn gần nhà"
+    subtitle = (
+        "Bạn đang ở gần nhà"
+        if away < AT_HOME_METERS
+        else f"Quanh nhà · bạn đang cách nhà {away / 1000:.1f} km"
+    )
+    return {
+        "id": "home:food",
+        "kind": "home",
+        "icon": "🏠",
+        "title": title,
+        "subtitle": subtitle,
+        "action": {
+            "type": "search",
+            "title": title,
+            "category": category,
+            "query": None,
+            "latitude": home_lat,
+            "longitude": home_lng,
+            "radius": HOME_RADIUS_METERS,
+        },
+    }
 
 
 # --- Tra địa điểm ----------------------------------------------------------------
@@ -247,30 +379,48 @@ TOUR_CONTENT_TYPES = (
 TOUR_SEARCH_RADIUS_METERS = 6_000
 
 
-def _meal_suggestion(now: datetime) -> dict[str, Any] | None:
+# (giờ bắt đầu, giờ kết thúc, biểu tượng, tiêu đề, câu hỏi cho chatbot,
+#  category khi tìm trực tiếp, nhãn bữa)
+_MEAL_SLOTS = (
+    (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi", "restaurant", "Ăn sáng"),
+    (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi", "restaurant", "Ăn trưa"),
+    (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi", "cafe", "Cà phê chiều"),
+    (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi", "restaurant", "Ăn tối"),
+    (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi", "restaurant", "Ăn khuya"),
+)
+
+
+def _meal_slot(now: datetime) -> tuple[Any, ...] | None:
     hour = now.hour + now.minute / 60
-    slots = (
-        (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi"),
-        (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi"),
-        (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi"),
-        (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi"),
-        (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi"),
-    )
-    for start, end, icon, title, prompt in slots:
-        if start <= hour < end:
-            return {
-                "id": "meal",
-                "kind": "time",
-                "icon": icon,
-                "title": title,
-                "subtitle": now.strftime("Bây giờ %H:%M"),
-                "action": {"type": "ask", "prompt": prompt},
-            }
+    for slot in _MEAL_SLOTS:
+        if slot[0] <= hour < slot[1]:
+            return slot
     return None
 
 
-def suggestions(lat: float, lng: float, now: datetime | None = None) -> dict[str, Any]:
-    """Chip gợi ý cho khung chatbot, theo vị trí + thời điểm hiện tại."""
+def _meal_suggestion(now: datetime) -> dict[str, Any] | None:
+    slot = _meal_slot(now)
+    if slot is None:
+        return None
+    _start, _end, icon, title, prompt, _category, _label = slot
+    return {
+        "id": "meal",
+        "kind": "time",
+        "icon": icon,
+        "title": title,
+        "subtitle": now.strftime("Bây giờ %H:%M"),
+        "action": {"type": "ask", "prompt": prompt},
+    }
+
+
+def suggestions(
+    lat: float, lng: float, now: datetime | None = None, owner_id: str | None = None
+) -> dict[str, Any]:
+    """Chip gợi ý cho khung chatbot, theo vị trí + thời điểm hiện tại.
+
+    ``owner_id`` (phiên trình duyệt) chỉ dùng để đọc địa chỉ "Nhà" đã lưu —
+    không có thì bỏ qua gợi ý gần nhà, mọi chip khác vẫn như cũ.
+    """
     now = (now or datetime.now(VN_TZ)).astimezone(VN_TZ)
     today = now.date()
     vietnam = in_vietnam(lat, lng)
@@ -279,8 +429,31 @@ def suggestions(lat: float, lng: float, now: datetime | None = None) -> dict[str
     # 1) Lễ / sự kiện sắp tới (chỉ Việt Nam).
     if vietnam:
         with _connect() as connection:
+            shop_chips: list[dict[str, Any]] = []
             for event in upcoming_events(today)[:MAX_EVENT_SUGGESTIONS]:
                 places = resolve_places(tuple(event.get("places", ())), lat, lng, connection)
+                shop_action = (
+                    shop_search(event["shop"], lat, lng, connection) if event.get("shop") else None
+                )
+                # Chip mua sắm riêng, chỉ trong tuần cuối trước lễ và chỉ một chip
+                # cho mỗi loại cửa hàng (8/3 và Valentine cùng là tiệm hoa).
+                if (
+                    shop_action
+                    and event["daysUntil"] <= SHOP_LEAD_DAYS
+                    and all(chip["action"]["category"] != shop_action["category"] for chip in shop_chips)
+                ):
+                    shop = SHOPS[event["shop"]]
+                    shop_chips.append(
+                        {
+                            "id": f"shop:{event['id']}",
+                            "kind": "shop",
+                            "icon": shop["icon"],
+                            "title": f"{shop['noun']} cho {event['name']}",
+                            "subtitle": f"{_when_label(event['daysUntil'])} · "
+                            f"{shop_action['count']} tiệm trong {shop_action['radius'] // 1000} km",
+                            "action": shop_action,
+                        }
+                    )
                 chips.append(
                     {
                         "id": f"event:{event['id']}",
@@ -300,10 +473,14 @@ def suggestions(lat: float, lng: float, now: datetime | None = None) -> dict[str
                                 "note": event["note"],
                                 "places": places,
                                 "ask": event.get("ask"),
+                                # Tìm cửa hàng THẬT (không qua LLM) — nút "Xem
+                                # tiệm hoa gần bạn" dưới câu trả lời của sự kiện.
+                                "search": shop_action,
                             },
                         },
                     }
                 )
+            chips.extend(shop_chips)
             # Mùng 1 / Rằm: nhiều người ăn chay, đi chùa — gợi ý thực dụng.
             lunar_day = solar_to_lunar(today)[0]
             if lunar_day in (1, 15):
@@ -345,10 +522,14 @@ def suggestions(lat: float, lng: float, now: datetime | None = None) -> dict[str
                 }
             )
 
-    # 3) Giờ ăn.
+    # 3) Giờ ăn — quanh chỗ đang đứng, rồi quanh NHÀ nếu đã lưu.
     meal = _meal_suggestion(now)
     if meal:
         chips.append(meal)
+    if vietnam:
+        home_chip = home_meal_chip(home_place(owner_id), lat, lng, now)
+        if home_chip:
+            chips.append(home_chip)
 
     # 4) Tour thuyết minh — chỉ khi quanh đây có địa điểm có bài thuyết minh.
     stops_nearby = _tour_candidates(lat, lng, TOUR_SEARCH_RADIUS_METERS)
@@ -364,7 +545,38 @@ def suggestions(lat: float, lng: float, now: datetime | None = None) -> dict[str
             }
         )
 
-    # 5) Hẹn nhóm.
+    # 5) Săn địa danh — cùng tập POI có câu chuyện kiểm chứng với tour.
+    hunt = explore.nearby_summary(owner_id, lat, lng, TOUR_SEARCH_RADIUS_METERS)
+    if hunt["nearby"]:
+        remaining = hunt["nearby"] - hunt["discoveredNearby"]
+        chips.append(
+            {
+                "id": "explore",
+                "kind": "explore",
+                "icon": "🗺️",
+                "title": "Săn địa danh Sài Gòn",
+                "subtitle": (
+                    f"{remaining} địa danh chờ khám phá · gần nhất {round(hunt['nearestMeters'])} m"
+                    if remaining and hunt["nearestMeters"] is not None
+                    else f"Đã khám phá {hunt['discovered']}/{hunt['total']} địa danh"
+                ),
+                "action": {"type": "explore"},
+            }
+        )
+
+    # 6) Chế độ giọng nói cho người khiếm thị — luôn có, để ai cần là thấy.
+    chips.append(
+        {
+            "id": "voice",
+            "kind": "voice",
+            "icon": "🎙️",
+            "title": "Chế độ giọng nói",
+            "subtitle": "Tìm và đi tới địa điểm chỉ bằng lời nói",
+            "action": {"type": "voice"},
+        }
+    )
+
+    # 7) Hẹn nhóm.
     chips.append(
         {
             "id": "meetup",

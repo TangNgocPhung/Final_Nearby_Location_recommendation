@@ -14,8 +14,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import (
     assistant,
+    charging,
     chat,
     directions,
+    explore,
     geofence,
     languages,
     narration,
@@ -24,8 +26,11 @@ from . import (
     poi_detail,
     reviews,
     saved_places,
+    storefront,
     streetview,
     translate,
+    tts,
+    voice,
 )
 from .ranking_snapshots import record_snapshot
 from .config import settings
@@ -35,6 +40,7 @@ from .ltr import model as ltr_model
 from .models import (
     ChatRequest,
     EventBatch,
+    ExploreDiscoverRequest,
     GeofenceRequest,
     GeoParseRequest,
     MeetupRequest,
@@ -44,6 +50,7 @@ from .models import (
     TourRequest,
     SearchRequest,
     TranslateRequest,
+    VoiceTurnRequest,
 )
 from .features.online import feature_store_status
 from .features.serving import profile_category_boost, session_profile
@@ -505,12 +512,16 @@ def get_poi_photos(
 
 @app.get("/api/v1/assistant/suggestions")
 def get_assistant_suggestions(
+    request: Request,
     lat: float = Query(ge=-90, le=90),
     lng: float = Query(ge=-180, le=180),
 ) -> dict[str, Any]:
     """Chip gợi ý cho khung chatbot theo vị trí + thời điểm: lễ sắp tới (âm
-    lịch), mưa, giờ ăn, tour thuyết minh, hẹn nhóm. Xem `app/assistant.py`."""
-    return assistant.suggestions(lat, lng)
+    lịch) kèm cửa hàng theo tục lệ (tiệm hoa 20/10, 20/11…), mưa, giờ ăn quanh
+    đây và quanh NHÀ, tour thuyết minh, săn địa danh, chế độ giọng nói, hẹn
+    nhóm. Xem `app/assistant.py`. ``X-Session-ID`` (nếu có) chỉ dùng để đọc địa
+    chỉ nhà đã lưu và tiến độ săn địa danh."""
+    return assistant.suggestions(lat, lng, owner_id=_owner_id(request))
 
 
 @app.post("/api/v1/assistant/tour")
@@ -527,6 +538,154 @@ def post_assistant_meetup(payload: MeetupRequest) -> dict[str, Any]:
         payload.category,
         payload.need_parking,
     )
+
+
+# --- Săn địa danh Sài Gòn -----------------------------------------------------------
+
+
+@app.get("/api/v1/explore")
+def get_explore(
+    request: Request,
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+) -> dict[str, Any]:
+    """Bản đồ săn: mọi địa danh có câu chuyện kiểm chứng, gần trước xa sau, kèm
+    trạng thái đã khám phá và tiến độ bộ sưu tập của phiên hiện tại."""
+    return explore.overview(_owner_id(request), lat, lng)
+
+
+@app.get("/api/v1/explore/{poi_id}/story")
+def get_explore_story(poi_id: str, request: Request) -> Any:
+    """Câu chuyện của một địa danh — chỉ mở khi phiên này đã khám phá nó."""
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    result = explore.story(_owner_id(request), poi_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": "Không phải địa danh săn được"})
+    return result
+
+
+@app.post("/api/v1/explore/{poi_id}/discover")
+def post_explore_discover(poi_id: str, payload: ExploreDiscoverRequest, request: Request) -> Any:
+    """Tới nơi + chụp ảnh → xác nhận vị trí (PostGIS) và ảnh (model thị giác
+    cục bộ) → mở khoá câu chuyện, lưu ảnh vào kho ảnh thật của POI.
+
+    Luôn 200 với trường ``status`` cho các kết cục của trò chơi (``too_far``,
+    ``photo_rejected``…) — đó là phản hồi cho người chơi, không phải lỗi HTTP.
+    """
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    owner_id = _owner_id(request, payload.session_id)
+    if not owner_id:
+        return JSONResponse(status_code=400, content={"detail": "Cần X-Session-ID hoặc session_id trong body"})
+    result = explore.discover(
+        owner_id,
+        poi_id,
+        payload.latitude,
+        payload.longitude,
+        payload.accuracy_meters,
+        payload.image_base64,
+        payload.share_publicly,
+    )
+    if result["status"] == "not_found":
+        return JSONResponse(status_code=404, content={"detail": "Không phải địa danh săn được"})
+    return result
+
+
+@app.get("/api/v1/pois/{poi_id}/visitor-photos")
+def get_visitor_photos(poi_id: str, limit: int = Query(default=12, ge=1, le=48)) -> Any:
+    """Ảnh người chơi Săn địa danh đã chụp tại chỗ — chỉ ảnh AI đã xác minh và
+    người chụp đồng ý công khai."""
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    return {"poiId": poi_id, "photos": explore.visitor_photos(poi_id, limit)}
+
+
+@app.get("/api/v1/visitor-photos/{photo_id}")
+def get_visitor_photo(photo_id: str, size: str = Query(default="full", pattern="^(full|thumb)$")) -> Response:
+    if not is_postgres_uuid(photo_id):
+        return JSONResponse(status_code=400, content={"detail": "photo_id phải là UUID"})
+    data = explore.photo_bytes(photo_id, thumb=size == "thumb")
+    if data is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có ảnh này"})
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# --- Chế độ giọng nói ------------------------------------------------------------
+
+
+def _voice_search(query: str, latitude: float, longitude: float) -> list[dict[str, Any]]:
+    """Tìm kiếm cho chế độ giọng nói: cùng pipeline với /api/v1/search, kể cả
+    geo-parser ("cà phê gần Bến Thành" tìm quanh Bến Thành)."""
+    parsed = parse_location(DATABASE_URL, query, latitude, longitude)
+    center_lat, center_lng = latitude, longitude
+    if parsed.get("bestMatch"):
+        center_lat = parsed["bestMatch"]["latitude"]
+        center_lng = parsed["bestMatch"]["longitude"]
+    return rank_pois(
+        center_lat, center_lng, voice.SEARCH_RADIUS_METERS, parsed["subject"] or query, None, voice.MAX_RESULTS
+    )
+
+
+def _has_story(poi_id: str) -> bool:
+    if not is_postgres_uuid(poi_id):
+        return False
+    with psycopg.connect(DATABASE_URL) as connection:
+        return connection.execute("SELECT 1 FROM poi_knowledge WHERE poi_id = %s", (poi_id,)).fetchone() is not None
+
+
+@app.post("/api/v1/voice/turn")
+def post_voice_turn(payload: VoiceTurnRequest) -> dict[str, Any]:
+    """Một lượt hội thoại của chế độ giọng nói (người khiếm thị): câu vừa nói →
+    câu trả lời để đọc + trạng thái mới + việc client cần làm (dẫn đường,
+    thuyết minh…). Không gọi LLM — xem lý do ở docstring `app/voice.py`."""
+    return voice.respond(
+        payload.text,
+        payload.latitude,
+        payload.longitude,
+        payload.state,
+        search=_voice_search,
+        has_story=_has_story,
+        where=lambda lat, lng: reverse_geocode(DATABASE_URL, lat, lng),
+    )
+
+
+_speech_cache: dict[str, bytes] = {}
+_SPEECH_CACHE_SIZE = 64
+
+
+@app.get("/api/v1/voice/speak")
+def get_voice_speak(text: str = Query(min_length=1, max_length=400)) -> Response:
+    """Đọc một câu tiếng Việt bằng giọng VieNeu-TTS (chạy trên máy chủ).
+
+    Chỉ là đường DỰ PHÒNG: giao diện dùng giọng đọc của trình duyệt trước, và
+    chỉ gọi tới đây khi máy người dùng không có giọng tiếng Việt (vd Chrome trên
+    Windows chưa cài gói giọng). Cache theo nguyên câu — các câu cố định (chào,
+    hướng dẫn, "đã tới nơi") chỉ phải tổng hợp một lần.
+    """
+    audio = _speech_cache.get(text)
+    if audio is None:
+        audio = tts.synthesize(text, "vi")
+        if audio is None:
+            return JSONResponse(status_code=503, content={"detail": "Giọng đọc máy chủ tạm không dùng được"})
+        if len(_speech_cache) >= _SPEECH_CACHE_SIZE:
+            _speech_cache.pop(next(iter(_speech_cache)))
+        _speech_cache[text] = audio
+    return Response(content=audio, media_type="audio/wav", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.get("/api/v1/pois/{poi_id}/verification")
+def get_poi_verification(poi_id: str) -> Any:
+    """Kết quả AI đọc biển hiệu trong ảnh đường phố để xác minh địa điểm còn
+    đúng tên (xem `app/storefront.py`). Kết quả do `scripts/verify_storefronts`
+    chạy nền ghi sẵn — endpoint này KHÔNG gọi model, chỉ đọc DB."""
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    return storefront.get_verification(poi_id)
 
 
 @app.get("/api/v1/pois/{poi_id}/streetview")
@@ -652,6 +811,30 @@ def parking_search(
         vehicle=vehicle,
         minutes=minutes,
         destination=destination,
+        radius=radius,
+        limit=limit,
+    )
+
+
+@app.get("/api/v1/charging/search")
+def charging_search(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    vehicle: str = Query(default="any", pattern="^(any|motorbike|car)$"),
+    network: str = Query(default="any", pattern="^(any|vinfast|other)$"),
+    open_now: bool = Query(default=False),
+    radius: int = Query(default=charging.DEFAULT_RADIUS_METERS, ge=500, le=30_000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Trạm sạc xe điện theo loại xe (xe máy/ô tô điện), mạng sạc (VinFast /
+    V-Green), đang mở cửa — xếp theo THỜI GIAN CHẠY XE THẬT tới trạm (OSRM).
+    Xem `app/charging.py`."""
+    return charging.search_stations(
+        latitude=lat,
+        longitude=lng,
+        vehicle=vehicle,
+        network=network,
+        open_now=open_now,
         radius=radius,
         limit=limit,
     )

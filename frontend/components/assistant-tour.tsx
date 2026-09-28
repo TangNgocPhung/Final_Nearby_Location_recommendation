@@ -6,6 +6,7 @@ import {
   Bike,
   Footprints,
   Headphones,
+  Languages,
   LoaderCircle,
   MapPin,
   Navigation,
@@ -26,6 +27,10 @@ import {
 import { cn } from '@/lib/utils';
 
 const DURATIONS = [60, 90, 120] as const;
+// Hai ngôn ngữ backend đã tạo sẵn thuyết minh lúc khởi động (app/narration.py).
+const PREWARMED_LANGUAGES = ['vi', 'en'];
+
+type LanguageOption = { code: string; name: string; nativeName: string };
 // Tới gần điểm dừng trong bán kính này thì tự đọc thuyết minh. 60 m: đủ rộng
 // cho sai số GPS trong phố nhiều nhà cao tầng, đủ hẹp để không đọc trước khi
 // người nghe nhìn thấy công trình.
@@ -64,6 +69,11 @@ export function AssistantTour({
   const [nowText, setNowText] = useState<string | null>(null);
   const [visited, setVisited] = useState<string[]>([]);
   const [autoRun, setAutoRun] = useState(false);
+  // Ngôn ngữ thuyết minh của tour — mặc định theo giao diện, đổi riêng được
+  // (khách nước ngoài dùng giao diện tiếng Việt vẫn nghe được tiếng mẹ đẻ).
+  const [narrationLanguage, setNarrationLanguage] = useState(language);
+  const [languages, setLanguages] = useState<LanguageOption[]>([]);
+  const [prepared, setPrepared] = useState<{ done: number; total: number } | null>(null);
   // Một trình phát cho cả vòng đời component (khởi tạo lười, không tạo lại mỗi
   // lần render).
   const [player] = useState(() => new NarrationPlayer(apiBaseUrl));
@@ -127,18 +137,59 @@ export function AssistantTour({
     }
   }, [apiBaseUrl, minutes, onMapOverlay, position.latitude, position.longitude, stopAll]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${apiBaseUrl}/api/v1/languages`, { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { languages: LanguageOption[] } | null) => {
+        if (data?.languages?.length) setLanguages(data.languages);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [apiBaseUrl]);
+
+  // Chuẩn bị sẵn chữ thuyết minh cho MỌI điểm của tour ở ngôn ngữ đã chọn.
+  // Chỉ vi/en được backend tạo sẵn; ngôn ngữ khác sinh lần đầu mất tới 1-2
+  // phút MỖI điểm trên CPU — không chuẩn bị trước thì "Phát cả tour" đứng hình
+  // giữa chừng. Tuần tự từng điểm (Ollama xử lý một yêu cầu một lúc).
+  useEffect(() => {
+    if (!plan || plan.status !== 'ready' || PREWARMED_LANGUAGES.includes(narrationLanguage)) {
+      // oxlint-disable-next-line react/react-compiler
+      setPrepared(null);
+      return;
+    }
+    const controller = new AbortController();
+    const lang = encodeURIComponent(narrationLanguage);
+    void (async () => {
+      let done = 0;
+      setPrepared({ done, total: plan.stops.length });
+      for (const stop of plan.stops) {
+        try {
+          await fetch(`${apiBaseUrl}/api/v1/pois/${stop.poiId}/narration?language=${lang}`, {
+            signal: controller.signal,
+          });
+        } catch {
+          if (controller.signal.aborted) return;
+        }
+        done += 1;
+        setPrepared({ done, total: plan.stops.length });
+      }
+    })();
+    return () => controller.abort();
+  }, [apiBaseUrl, narrationLanguage, plan]);
+
   const narrate = useCallback(
     async (stop: TourStop) => {
       setPlayingId(stop.poiId);
       setNowText(null);
-      const outcome = await player.play(stop.poiId, language, setNowText);
+      const outcome = await player.play(stop.poiId, narrationLanguage, setNowText);
       if (outcome !== 'stopped') {
         setVisited((prev) => (prev.includes(stop.poiId) ? prev : [...prev, stop.poiId]));
       }
       setPlayingId((current) => (current === stop.poiId ? null : current));
       return outcome;
     },
-    [language, player],
+    [narrationLanguage, player],
   );
 
   // "Phát cả tour": bay tới từng điểm rồi đọc, hết điểm này sang điểm kế.
@@ -208,6 +259,37 @@ export function AssistantTour({
             {plan ? 'Lên lại lộ trình' : 'Lên lộ trình đi bộ'}
           </Button>
           {error && <p className="mt-1.5 text-xs text-destructive">{error}</p>}
+          <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground" translate="no">
+            <Languages className="size-3.5 shrink-0" aria-hidden />
+            <span className="shrink-0">Thuyết minh bằng</span>
+            <select
+              value={narrationLanguage}
+              onChange={(event) => {
+                stopAll();
+                setNarrationLanguage(event.target.value);
+              }}
+              className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
+              aria-label="Ngôn ngữ thuyết minh của tour"
+            >
+              {(languages.length ? languages : [{ code: 'vi', name: 'Vietnamese', nativeName: 'Tiếng Việt' }, { code: 'en', name: 'English', nativeName: 'English' }]).map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.nativeName}
+                  {item.nativeName !== item.name ? ` · ${item.name}` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          {prepared && prepared.done < prepared.total && (
+            <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+              <LoaderCircle className="size-3 animate-spin" aria-hidden />
+              AI đang chuẩn bị thuyết minh: {prepared.done}/{prepared.total} điểm (lần đầu mỗi ngôn ngữ mất vài phút)
+            </p>
+          )}
+          {narrationLanguage !== 'vi' && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Giọng đọc máy chủ hiện chỉ có tiếng Việt — ngôn ngữ khác dùng giọng đọc của thiết bị.
+            </p>
+          )}
         </div>
 
         {plan?.status === 'none' && (

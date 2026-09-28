@@ -228,6 +228,15 @@ class Settings(BaseSettings):
     # Nơi cache tile phủ ảnh (~10 MB/tile). Rỗng thì dùng thư mục tạm của hệ
     # thống — chạy được, nhưng mất cache mỗi lần tạo lại container.
     mapillary_tile_dir: str = ""
+    # Model thị giác đọc biển hiệu (`app/storefront.py`). qwen3.5 có sẵn khả
+    # năng "vision"; bản 4b chạy được trên CPU máy dev (3-50 giây/ảnh).
+    ollama_vision_model: str = "qwen3.5:4b"
+    ollama_vision_timeout_seconds: float = 240.0
+    # Săn địa danh (`app/explore.py`): người chơi đứng chờ trước màn hình nên
+    # trần thấp hơn job nền đọc biển hiệu — và phải dưới proxy_read_timeout của
+    # gateway (150s). Hết giờ thì ảnh thành "chờ xác minh", lượt khám phá vẫn
+    # được tính vì vị trí đã đúng.
+    explore_vision_timeout_seconds: float = 100.0
     osm_bbox: str = "10.70,106.60,10.90,106.82"
     osm_max_pois: int = 3_000
     allowed_origins: str = (
