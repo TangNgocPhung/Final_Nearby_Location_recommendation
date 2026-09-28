@@ -331,7 +331,10 @@ services:
         - -c
         - "exec 3<>/dev/tcp/127.0.0.1/5000 && printf 'GET /route/v1/driving/106.7009,10.7757;106.7018,10.7784?overview=false HTTP/1.0\r\n\r\n' >&3 && grep -q '\"code\":\"Ok\"' <&3"
       interval: 15s
-      timeout: 5s
+      # osrm-routed giữ kết nối ~5s rồi mới đóng, và JSON trả về không có xuống
+      # dòng cuối nên `grep` phải đợi EOF — lần kiểm tra mất ~5,01s. Timeout 5s
+      # vì thế luôn trượt; để 15s như osrm-motorbike.
+      timeout: 15s
       retries: 5
       start_period: 20s
 
@@ -355,7 +358,7 @@ services:
         - -c
         - "exec 3<>/dev/tcp/127.0.0.1/5000 && printf 'GET /route/v1/foot/106.7009,10.7757;106.7018,10.7784?overview=false HTTP/1.0\r\n\r\n' >&3 && grep -q '\"code\":\"Ok\"' <&3"
       interval: 15s
-      timeout: 5s
+      timeout: 15s
       retries: 5
       start_period: 20s
 
