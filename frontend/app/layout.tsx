@@ -15,6 +15,10 @@ export const metadata: Metadata = {
 // `themeColor` chuyển ra khỏi `metadata` theo API mới — nhét trong `metadata`
 // bị đánh dấu deprecated (typescript/no-deprecated trong .oxlintrc.json).
 export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  interactiveWidget: 'resizes-content',
   themeColor: '#0f8a62',
 };
 

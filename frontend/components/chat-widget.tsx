@@ -54,16 +54,18 @@ type ChatPoiResult = {
   busyness?: ChatBusyness | null;
 };
 
-type ChatResponse = {
-  reply: string;
-  needsClarification: boolean;
-  searchParams: { query: string; category: string | null; radius: number } | null;
-  results: ChatPoiResult[];
-};
+// Từng dòng NDJSON của POST /api/v1/chat/stream: kết quả search tới trước
+// (~1s), lời diễn giải của LLM tới dần sau — xem `chat_turn_stream` (app/api.py).
+type ChatStreamEvent =
+  | { type: 'results'; needsClarification: boolean; results: ChatPoiResult[] }
+  | { type: 'delta'; text: string }
+  | { type: 'done'; reply: string };
 
 type ChatTurn = {
   role: 'user' | 'assistant';
   content: string;
+  /** câu trả lời đang được LLM viết dần (stream chưa xong) */
+  pending?: boolean;
   results?: ChatPoiResult[];
   /** địa điểm gắn với một gợi ý sự kiện (có thể là con phố, không có poiId) */
   places?: PlaceRef[];
@@ -202,6 +204,7 @@ export function ChatWidget({
   onOpenVoice,
   onSimulatePosition,
   onSavedChanged,
+  onOpenChange,
 }: {
   apiBaseUrl: string;
   sessionId: string;
@@ -218,8 +221,37 @@ export function ChatWidget({
   onSimulatePosition?: (latitude: number, longitude: number) => void;
   /** danh sách "Đã lưu" vừa đổi (vd vừa đặt nhà) — để thanh bên tải lại */
   onSavedChanged?: () => void;
+  /** Báo cho bố cục chính dành một cột riêng cho trợ lý trên màn hình rộng. */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const changeOpen = useCallback((next: boolean | ((current: boolean) => boolean)) => {
+    setOpen((current) => {
+      const value = typeof next === 'function' ? next(current) : next;
+      onOpenChange?.(value);
+      return value;
+    });
+  }, [onOpenChange]);
+  const viewPoi = (poiId: string) => {
+    if (window.innerWidth < 1280) changeOpen(false);
+    onViewPoi(poiId);
+  };
+  const focusLocation = (latitude: number, longitude: number) => {
+    if (window.innerWidth < 1280) changeOpen(false);
+    onFocusLocation(latitude, longitude);
+  };
+  const pickOnMap = (callback: ((latitude: number, longitude: number) => void) | null) => {
+    if (!callback) {
+      onPickOnMap(null);
+      return;
+    }
+    const restoreChat = window.innerWidth < 1280;
+    if (restoreChat) changeOpen(false);
+    onPickOnMap((latitude, longitude) => {
+      callback(latitude, longitude);
+      if (restoreChat) changeOpen(true);
+    });
+  };
   const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
@@ -241,8 +273,13 @@ export function ChatWidget({
     if (text === undefined) setInput('');
     setTurns((prev) => [...prev, { role: 'user', content: message }]);
     setLoading(true);
+    let started = false;
+    // Sửa lượt trợ lý cuối cùng — chính lượt đang được stream.
+    const updateReply = (patch: (turn: ChatTurn) => ChatTurn) =>
+      setTurns((prev) => [...prev.slice(0, -1), patch(prev[prev.length - 1])]);
+    const failMessage = 'Xin lỗi, trợ lý hiện không phản hồi được. Bạn thử lại sau ít phút nhé.';
     try {
-      const response = await fetch(`${apiBaseUrl}/api/v1/chat`, {
+      const response = await fetch(`${apiBaseUrl}/api/v1/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -252,22 +289,46 @@ export function ChatWidget({
           longitude: positionRef.current.longitude,
         }),
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data: ChatResponse = await response.json();
-      setTurns((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.reply, results: data.results },
-      ]);
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const handle = (event: ChatStreamEvent) => {
+        if (event.type === 'results') {
+          started = true;
+          setTurns((prev) => [
+            ...prev,
+            { role: 'assistant', content: '', results: event.results, pending: true },
+          ]);
+        } else if (event.type === 'delta') {
+          updateReply((turn) => ({ ...turn, content: turn.content + event.text }));
+        } else {
+          updateReply((turn) => ({ ...turn, content: event.reply || turn.content, pending: false }));
+        }
+      };
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line) handle(JSON.parse(line) as ChatStreamEvent);
+        }
+      }
+      if (!started) throw new Error('empty stream');
+      // Stream đứt giữa chừng (mất mạng) mà chưa có chữ nào thì báo lỗi thay
+      // vì để bong bóng trống mãi.
+      updateReply((turn) => ({ ...turn, content: turn.content || failMessage, pending: false }));
     } catch {
       // Backend/Ollama tạm không tới được — nói thẳng, không bịa câu trả lời
       // giả như đang tìm kiếm thành công.
-      setTurns((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Xin lỗi, trợ lý hiện không phản hồi được. Bạn thử lại sau ít phút nhé.',
-        },
-      ]);
+      if (started) {
+        updateReply((turn) => ({ ...turn, content: turn.content || failMessage, pending: false }));
+      } else {
+        setTurns((prev) => [...prev, { role: 'assistant', content: failMessage }]);
+      }
     } finally {
       setLoading(false);
     }
@@ -312,7 +373,9 @@ export function ChatWidget({
           limit: '8',
         });
         if (action.category) params.set('category', action.category);
-        if (action.query) params.set('q', action.query);
+        // Category đã đủ để lọc trực tiếp. Chỉ gửi q khi không biết category;
+        // q kích hoạt semantic search/embedding và chậm hơn đáng kể.
+        if (action.query && !action.category) params.set('q', action.query);
         const res = await fetch(`${apiBaseUrl}/api/pois/nearby?${params}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const results = (await res.json()) as ChatPoiResult[];
@@ -421,9 +484,9 @@ export function ChatWidget({
       <Button
         type="button"
         size="icon"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => changeOpen((value) => !value)}
         aria-label={open ? 'Đóng trợ lý' : 'Mở trợ lý tìm kiếm'}
-        className="fixed right-4 bottom-4 z-40 size-12 rounded-full shadow-lg sm:right-6 sm:bottom-6"
+        className="chat-launcher fixed right-4 bottom-4 z-40 size-12 rounded-full shadow-lg sm:right-6 sm:bottom-6"
       >
         {open ? <X className="size-5" /> : <MessageCircle className="size-5" />}
       </Button>
@@ -432,7 +495,7 @@ export function ChatWidget({
           phải tiếp tục đọc khi người dùng thu nhỏ trợ lý để nhìn bản đồ. */}
       <div
         className={cn(
-          'fixed inset-x-4 bottom-20 z-40 flex h-[70vh] max-h-[600px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl sm:right-6 sm:bottom-24 sm:left-auto sm:w-96',
+          'chat-panel fixed inset-0 z-40 flex h-dvh min-h-0 flex-col overflow-hidden border border-border bg-card shadow-2xl sm:inset-x-auto sm:top-auto sm:right-6 sm:bottom-24 sm:h-[min(620px,calc(100dvh-8rem))] sm:w-96 sm:rounded-xl xl:static xl:z-auto xl:h-full xl:max-h-none xl:min-h-0 xl:w-full xl:rounded-[26px] xl:shadow-[0_18px_60px_rgb(14_68_48/12%)]',
           !open && 'hidden',
         )}
       >
@@ -449,7 +512,7 @@ export function ChatWidget({
             type="button"
             size="icon"
             variant="ghost"
-            onClick={() => setOpen(false)}
+            onClick={() => changeOpen(false)}
             aria-label="Đóng"
           >
             <X className="size-4" />
@@ -462,18 +525,18 @@ export function ChatWidget({
             position={position}
             language={language}
             onBack={() => setView('chat')}
-            onViewPoi={onViewPoi}
+            onViewPoi={viewPoi}
             onMapOverlay={onMapOverlay}
-            onFocusLocation={onFocusLocation}
+            onFocusLocation={focusLocation}
           />
         ) : view === 'meetup' ? (
           <AssistantMeetup
             apiBaseUrl={apiBaseUrl}
             position={position}
             onBack={() => setView('chat')}
-            onViewPoi={onViewPoi}
+            onViewPoi={viewPoi}
             onMapOverlay={onMapOverlay}
-            onPickOnMap={onPickOnMap}
+            onPickOnMap={pickOnMap}
           />
         ) : view === 'explore' ? (
           <AssistantExplore
@@ -487,10 +550,10 @@ export function ChatWidget({
               suggestedAtRef.current = null;
               setSuggestionsVersion((value) => value + 1);
             }}
-            onViewPoi={onViewPoi}
+            onViewPoi={viewPoi}
             onMapOverlay={onMapOverlay}
-            onFocusLocation={onFocusLocation}
-            onPickOnMap={onPickOnMap}
+            onFocusLocation={focusLocation}
+            onPickOnMap={pickOnMap}
             onSimulatePosition={onSimulatePosition}
           />
         ) : (
@@ -539,14 +602,21 @@ export function ChatWidget({
                                       : 'bg-muted',
                                   )}
                                 >
-                                  {turn.content}
+                                  {turn.pending && !turn.content ? (
+                                    <span className="flex items-center gap-2 text-muted-foreground">
+                                      <Spinner className="size-3.5" />
+                                      Đang viết câu trả lời…
+                                    </span>
+                                  ) : (
+                                    turn.content
+                                  )}
                                 </BubbleContent>
                               </Bubble>
                             </BubbleGroup>
                             {turn.results && turn.results.length > 0 && (
                               <div className="flex w-full flex-col gap-1.5 pt-1">
                                 {turn.results.slice(0, 5).map((poi) => (
-                                  <ChatPoiCard key={poi.id} poi={poi} onView={onViewPoi} />
+                                  <ChatPoiCard key={poi.id} poi={poi} onView={viewPoi} />
                                 ))}
                               </div>
                             )}
@@ -556,8 +626,8 @@ export function ChatWidget({
                                   <PlaceCard
                                     key={place.poiId ?? place.name}
                                     place={place}
-                                    onView={onViewPoi}
-                                    onFocus={onFocusLocation}
+                                    onView={viewPoi}
+                                    onFocus={focusLocation}
                                   />
                                 ))}
                               </div>
@@ -597,14 +667,14 @@ export function ChatWidget({
                         </Message>
                       </MessageScrollerItem>
                     ))}
-                    {loading && (
+                    {loading && !turns.at(-1)?.pending && (
                       <MessageScrollerItem>
                         <Message align="start">
                           <MessageContent>
                             <BubbleGroup>
                               <Bubble align="start">
-                                <BubbleContent className="bg-muted">
-                                  <span className="flex items-center gap-2 text-muted-foreground">
+                                <BubbleContent className="bg-secondary text-secondary-foreground">
+                                  <span className="flex items-center gap-2 text-secondary-foreground">
                                     <Spinner className="size-3.5" />
                                     Đang tìm kiếm…
                                   </span>
@@ -636,12 +706,13 @@ export function ChatWidget({
               }}
             >
               <Input
+                className="min-w-0 flex-1"
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 placeholder="Bạn muốn tìm gì gần đây?"
                 disabled={loading}
               />
-              <Button type="submit" size="icon" disabled={loading || !input.trim()}>
+              <Button type="submit" size="icon" aria-label="Gửi tin nhắn" disabled={loading || !input.trim()}>
                 <Send className="size-4" />
               </Button>
             </form>

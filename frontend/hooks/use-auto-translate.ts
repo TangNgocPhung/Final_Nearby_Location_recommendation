@@ -9,9 +9,6 @@ const SOURCE_LANGUAGE = 'vi';
 const FALLBACK_LANGUAGES: UiLanguage[] = [
   { code: 'vi', name: 'Vietnamese', nativeName: 'Tiếng Việt' },
 ];
-// Khớp `MAX_TEXTS_PER_REQUEST`/`_CHUNK_ITEMS` ở backend/app/translate.py: mỗi
-// request là đúng một lượt gọi Qwen, xong trong timeout của gateway.
-const BATCH_SIZE = 12;
 const MAX_TEXT_LENGTH = 2000;
 const ATTRIBUTES = ['placeholder', 'title', 'aria-label', 'alt'] as const;
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'CODE', 'PRE']);
@@ -43,9 +40,8 @@ function isExcluded(element: Element | null): boolean {
 
 /**
  * Dịch TOÀN BỘ chữ đang hiện trên trang (text node + placeholder/title/
- * aria-label/alt) sang một ngôn ngữ khác, không cần tách chuỗi giao diện ra
- * file dịch: gom chữ tiếng Việt trên DOM, gửi backend dịch bằng Qwen (cache
- * theo ngôn ngữ), rồi thay `nodeValue` tại chỗ.
+ * aria-label/alt) sang một ngôn ngữ khác bằng bản dịch đã có sẵn trong cache
+ * backend. Hook này chỉ đọc cache, không tự gọi backend để tạo thêm bản dịch.
  *
  * Chỉ đổi `nodeValue`/thuộc tính của node sẵn có, KHÔNG thay node (kiểu
  * Google Translate chèn <font>) — React vẫn giữ đúng node của nó; lần render
@@ -59,14 +55,11 @@ class DomTranslator {
   private readonly texts = new Map<Text, Slot>();
   private readonly attrs = new Map<Element, Map<string, Slot>>();
   private readonly dict = new Map<string, string>();
-  private readonly queued = new Set<string>();
   private readonly failed = new Set<string>();
   private readonly dirty = new Set<Node>();
   private observer: MutationObserver | null = null;
   private flushTimer: number | null = null;
-  private running = false;
   private stopped = false;
-  private done = 0;
 
   constructor(
     private readonly apiBaseUrl: string,
@@ -86,7 +79,7 @@ class DomTranslator {
         }
       }
     } catch {
-      // Không lấy được cache — vẫn dịch dần từng lô như bình thường.
+      // Không lấy được cache — giữ nguyên tiếng Việt, không tự sinh bản dịch.
     }
     if (this.stopped) return;
     this.scan(document.body);
@@ -149,7 +142,6 @@ class DomTranslator {
     for (const element of elements) {
       for (const name of ATTRIBUTES) this.visitAttribute(element, name);
     }
-    void this.pump();
   }
 
   private visitText(node: Text) {
@@ -179,7 +171,7 @@ class DomTranslator {
     this.translateSlot(next, (text) => element.setAttribute(name, text));
   }
 
-  /** Áp bản dịch nếu đã có, không thì xếp hàng chờ dịch. Giữ nguyên khoảng
+  /** Áp bản dịch nếu đã có, không thì giữ nguyên tiếng Việt. Giữ nguyên khoảng
    * trắng đầu/cuối của chuỗi gốc — React hay tách " kết quả" thành node riêng. */
   private translateSlot(slot: Slot, write: (text: string) => void) {
     const key = slot.source.trim();
@@ -190,78 +182,14 @@ class DomTranslator {
       slot.applied = text;
       write(text);
     } else if (!this.failed.has(key)) {
-      this.queued.add(key);
+      this.failed.add(key);
     }
   }
 
-  private applyAll() {
-    for (const [node, slot] of this.texts) {
-      if (!node.isConnected) {
-        this.texts.delete(node);
-      } else if (slot.applied === null) {
-        this.translateSlot(slot, (text) => {
-          node.nodeValue = text;
-        });
-      }
-    }
-    for (const [element, slots] of this.attrs) {
-      if (!element.isConnected) {
-        this.attrs.delete(element);
-        continue;
-      }
-      for (const [name, slot] of slots) {
-        if (slot.applied === null) {
-          this.translateSlot(slot, (text) => element.setAttribute(name, text));
-        }
-      }
-    }
-  }
-
-  /** Gửi lần lượt từng lô lên backend — tuần tự, vì Ollama trên CPU cũng
-   * chỉ xử lý một lượt một lúc. */
-  private async pump() {
-    if (this.running) return;
-    this.running = true;
-    try {
-      while (!this.stopped && this.queued.size > 0) {
-        const batch = [...this.queued].slice(0, BATCH_SIZE);
-        this.onProgress({ done: this.done, total: this.done + this.queued.size });
-        let translations: Record<string, string> = {};
-        try {
-          const response = await fetch(
-            `${this.apiBaseUrl}/api/v1/translations/${encodeURIComponent(this.language)}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ texts: batch }),
-            },
-          );
-          if (response.ok) {
-            translations = ((await response.json()) as { translations: Record<string, string> })
-              .translations;
-          }
-        } catch {
-          // Mạng lỗi — các chuỗi trong lô giữ tiếng Việt, không thử lại vô hạn.
-        }
-        if (this.stopped) return;
-        for (const key of batch) {
-          this.queued.delete(key);
-          const translated = translations[key];
-          if (translated === undefined) this.failed.add(key);
-          else this.dict.set(key, translated);
-        }
-        this.done += batch.length;
-        this.applyAll();
-      }
-    } finally {
-      this.running = false;
-      if (!this.stopped) this.onProgress(null);
-    }
-  }
 }
 
 /**
- * Ngôn ngữ giao diện (134 ngôn ngữ, danh sách lấy từ `GET /api/v1/languages`)
+ * Ngôn ngữ giao diện (tiếng Việt + các cache dịch đã có sẵn ở backend)
  * — lưu lựa chọn trong localStorage, dịch trang bằng `DomTranslator`.
  */
 export function useAutoTranslate(apiBaseUrl: string) {
@@ -275,16 +203,22 @@ export function useAutoTranslate(apiBaseUrl: string) {
     // oxlint-disable-next-line react/react-compiler
     if (stored) setLanguageState(stored);
     const controller = new AbortController();
-    fetch(`${apiBaseUrl}/api/v1/languages`, { signal: controller.signal })
+    fetch(`${apiBaseUrl}/api/v1/languages?translations_only=1`, { signal: controller.signal })
       .then(
         (response) =>
           (response.ok ? response.json() : null) as Promise<{ languages: UiLanguage[] } | null>,
       )
       .then((data) => {
-        if (data?.languages?.length) setLanguages(data.languages);
+        if (!data?.languages?.length) return;
+        setLanguages(data.languages);
+        if (stored && !data.languages.some((item) => item.code === stored)) {
+          storeLanguage(SOURCE_LANGUAGE);
+          setLanguageState(SOURCE_LANGUAGE);
+        }
       })
       .catch(() => {
         // Backend chưa chạy — chỉ còn tiếng Việt, giao diện vẫn dùng được.
+        if (stored && stored !== SOURCE_LANGUAGE) setLanguageState(SOURCE_LANGUAGE);
       });
     return () => controller.abort();
   }, [apiBaseUrl]);

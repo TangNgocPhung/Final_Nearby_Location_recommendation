@@ -513,15 +513,17 @@ export function VoiceMode({
       aria-modal="true"
       aria-label="Chế độ giọng nói cho người khiếm thị"
       tabIndex={-1}
-      className="fixed inset-0 z-[60] flex flex-col bg-slate-950 text-white outline-none"
+      className="voice-mode fixed inset-0 z-[60] flex h-dvh flex-col overflow-hidden bg-slate-950 text-white outline-none"
     >
-      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
-        <p className="text-lg font-bold">🎙️ Chế độ giọng nói</p>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 px-3 py-2 sm:px-4 sm:py-3">
+        <p className="flex items-center gap-2 text-base font-bold sm:text-lg"><Mic className="size-5 shrink-0" aria-hidden /> Chế độ giọng nói</p>
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setSelfVoice((value) => !value)}
             aria-pressed={selfVoice}
+            aria-label={selfVoice ? 'Tự đọc to: bật' : 'Tự đọc to: tắt'}
+            title="Tự đọc to"
             className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10"
           >
             {selfVoice ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
@@ -531,9 +533,12 @@ export function VoiceMode({
             type="button"
             onClick={() => setAutoListen((value) => !value)}
             aria-pressed={autoListen}
-            className="hidden items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10 sm:flex"
+            aria-label={autoListen ? 'Tự nghe sau khi đọc: bật' : 'Tự nghe sau khi đọc: tắt'}
+            className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10"
           >
-            {autoListen ? 'Tự nghe sau khi đọc: bật' : 'Tự nghe sau khi đọc: tắt'}
+            <Mic className="size-4" aria-hidden />
+            <span className="sm:hidden">Tự nghe</span>
+            <span className="hidden sm:inline">{autoListen ? 'Tự nghe sau khi đọc: bật' : 'Tự nghe sau khi đọc: tắt'}</span>
           </button>
           <button
             type="button"
@@ -546,28 +551,28 @@ export function VoiceMode({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-4 py-6">
+      <div className="voice-content flex min-h-0 flex-1 flex-col items-center gap-4 overflow-y-auto overscroll-contain px-4 py-4 sm:gap-6 sm:py-6">
         <button
           type="button"
           onClick={() => (phase === 'listening' ? recognitionRef.current?.stop() : listen())}
           disabled={!recognitionSupported}
           aria-label={phase === 'listening' ? 'Đang nghe — nhấn để dừng' : 'Nhấn để nói'}
           className={cn(
-            'grid size-44 place-items-center rounded-full border-4 transition sm:size-56',
+            'voice-mic grid size-32 shrink-0 place-items-center rounded-full border-4 transition sm:size-56',
             phase === 'listening'
               ? 'animate-pulse border-amber-300 bg-amber-400 text-slate-950'
               : 'border-emerald-300 bg-emerald-500 text-slate-950 hover:bg-emerald-400',
             !recognitionSupported && 'opacity-40',
           )}
         >
-          {recognitionSupported ? <Mic className="size-20" /> : <MicOff className="size-20" />}
+          {recognitionSupported ? <Mic className="size-14 sm:size-20" /> : <MicOff className="size-14 sm:size-20" />}
         </button>
-        <p className="text-2xl font-semibold" aria-hidden>
+        <p className="w-full break-words text-center text-xl font-semibold sm:text-2xl" aria-hidden>
           {phaseLabel}
         </p>
         {interim && <p className="text-xl text-amber-200">“{interim}”</p>}
         {lastApp && (
-          <p className="max-w-3xl text-center text-2xl leading-relaxed text-white sm:text-3xl">{lastApp.text}</p>
+          <p className="w-full max-w-3xl break-words text-center text-lg leading-relaxed text-white sm:text-3xl">{lastApp.text}</p>
         )}
         {navigation && (
           <p className="rounded-full bg-emerald-500/20 px-4 py-2 text-lg text-emerald-200">
@@ -581,7 +586,7 @@ export function VoiceMode({
         )}
       </div>
 
-      <div className="border-t border-white/10 px-4 py-3">
+      <div className="shrink-0 border-t border-white/10 px-3 py-3 sm:px-4">
         <form
           className="mx-auto flex max-w-3xl items-center gap-2"
           onSubmit={(event) => {
@@ -592,20 +597,20 @@ export function VoiceMode({
             void handleUtterance(text);
           }}
         >
-          <Keyboard className="size-5 shrink-0 text-white/60" aria-hidden />
+          <Keyboard className="hidden size-5 shrink-0 text-white/60 sm:block" aria-hidden />
           <input
             value={typed}
             onChange={(event) => setTyped(event.target.value)}
             placeholder="Hoặc gõ lệnh: “quán phở”, “số hai”, “dẫn đường”…"
             aria-label="Gõ lệnh thay cho nói"
-            className="h-11 flex-1 rounded-lg border border-white/20 bg-white/5 px-3 text-base text-white placeholder:text-white/40"
+            className="h-11 min-w-0 flex-1 rounded-lg border border-white/20 bg-white/5 px-3 text-base text-white placeholder:text-white/40"
           />
           <button type="submit" className="h-11 rounded-lg bg-white px-4 font-semibold text-slate-950">
             Gửi
           </button>
         </form>
         {/* Nhật ký hội thoại: trình đọc màn hình đọc mỗi dòng mới (aria-live). */}
-        <div role="log" aria-live="polite" aria-label="Nhật ký hội thoại" className="mx-auto mt-2 max-h-28 max-w-3xl overflow-y-auto text-sm text-white/70">
+        <div role="log" aria-live="polite" aria-label="Nhật ký hội thoại" className="mx-auto mt-2 max-h-16 max-w-3xl overflow-y-auto break-words text-sm text-white/70 sm:max-h-28">
           {lines.map((line, index) => (
             <p key={index}>
               <span className="font-semibold">{line.who === 'user' ? 'Bạn' : 'Nearby'}:</span> {line.text}

@@ -35,6 +35,16 @@ export type TelemetryState = {
 
 const STORAGE_KEY = 'nearby.session-id.v1';
 
+function createEventId(): string {
+  if (typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  // LAN previews use HTTP, where randomUUID is unavailable on mobile browsers.
+  const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0'));
+  return [hex.slice(0, 4), hex.slice(4, 6), hex.slice(6, 8), hex.slice(8, 10), hex.slice(10)].map((part) => part.join('')).join('-');
+}
+
 class TelemetryClient {
   private apiBaseUrl: string;
   private queue: Array<TelemetryEvent & Record<string, unknown>> = [];
@@ -59,7 +69,7 @@ class TelemetryClient {
       this.cachedSessionId = existing;
       return existing;
     }
-    this.cachedSessionId = window.crypto.randomUUID();
+    this.cachedSessionId = createEventId();
     window.localStorage.setItem(STORAGE_KEY, this.cachedSessionId);
     return this.cachedSessionId;
   }
@@ -85,7 +95,7 @@ class TelemetryClient {
     if (!sessionId || !events.length) return;
     for (const event of events) {
       this.queue.push({
-        id: window.crypto.randomUUID(),
+        id: createEventId(),
         session_id: sessionId,
         occurred_at: new Date().toISOString(),
         ...event,
