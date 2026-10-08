@@ -8,6 +8,7 @@ import maplibregl, {
 } from 'maplibre-gl';
 import {
   Activity,
+  ArrowLeft,
   Baby,
   BatteryCharging,
   Bell,
@@ -792,6 +793,11 @@ export function LocationExplorer() {
   const [transportMode, setTransportMode] =
     useState<TransportMode>('motorbike');
   const [showSteps, setShowSteps] = useState(false);
+  // POI mà người dùng ĐÃ BẤM "Chỉ đường". Tách khỏi selectedPoiId giống Google
+  // Maps: chọn một địa điểm chỉ hiện thông tin, tuyến đường chỉ được tính và
+  // vẽ khi người dùng chủ động yêu cầu. Chỉ có hiệu lực khi trùng POI đang chọn
+  // (xem `directionsActive`), nên chọn sang POI khác là tự thoát chế độ chỉ đường.
+  const [directionsPoiId, setDirectionsPoiId] = useState<string | null>(null);
   const [parserStatus, setParserStatus] = useState(
     'Sẵn sàng hiểu “gần Bến Thành”',
   );
@@ -1016,8 +1022,11 @@ export function LocationExplorer() {
   const selectedPoiLatitude = selectedPoi?.latitude ?? null;
   const selectedPoiLongitude = selectedPoi?.longitude ?? null;
   const selectedPoiName = selectedPoi?.name ?? null;
+  const directionsActive =
+    directionsPoiId !== null && directionsPoiId === selectedPoiId;
 
-  // Lấy tuyến đường mỗi khi đổi POI đang chọn hoặc đổi vị trí người dùng.
+  // Lấy tuyến đường khi người dùng bật chỉ đường cho POI đang chọn, và tính lại
+  // khi đổi vị trí người dùng hoặc phương tiện. Chỉ CHỌN POI thì không gọi gì.
   //
   // Huỷ bằng AbortController: chọn nhanh ba POI liên tiếp thì ba yêu cầu cùng
   // bay, và nếu không huỷ thì cái nào về SAU sẽ ghi đè — người dùng thấy tuyến
@@ -1033,12 +1042,13 @@ export function LocationExplorer() {
     // Đây là điểm mấu chốt để effect không phải liệt kê `selectedPoi` vào
     // deps, xem giải thích đầy đủ ở deps bên dưới.
     if (
+      !directionsActive ||
       !selectedPoiId ||
       selectedPoiLatitude === null ||
       selectedPoiLongitude === null ||
       selectedPoiName === null
     ) {
-      // Reset có chủ đích khi bỏ chọn POI.
+      // Reset có chủ đích khi bỏ chọn POI hoặc thoát chế độ chỉ đường.
       // oxlint-disable-next-line react/react-compiler
       setRoute(null);
       setRouteStatus('idle');
@@ -1114,6 +1124,7 @@ export function LocationExplorer() {
     // Toạ độ và id là thứ thực sự quyết định tuyến đường; định danh của mảng
     // chứa chúng thì không.
   }, [
+    directionsActive,
     selectedPoiId,
     selectedPoiLatitude,
     selectedPoiLongitude,
@@ -1253,6 +1264,9 @@ export function LocationExplorer() {
         },
       });
       selectedSinceRef.current = Date.now();
+      // Chọn POI khác thì về lại chế độ xem thông tin. Bấm lại đúng POI đang
+      // chỉ đường thì giữ nguyên tuyến.
+      setDirectionsPoiId((current) => (current === poi.id ? current : null));
       setSelectedPoiId(poi.id);
       mapRef.current?.flyTo({
         center: [poi.longitude, poi.latitude],
@@ -1450,6 +1464,9 @@ export function LocationExplorer() {
         metadata: { source },
       });
       selectedSinceRef.current = Date.now();
+      setDirectionsPoiId((current) =>
+        current === enriched.id ? current : null,
+      );
       setSelectedPoiId(enriched.id);
       mapRef.current?.flyTo({
         center: [enriched.longitude, enriched.latitude],
@@ -2109,6 +2126,8 @@ export function LocationExplorer() {
           })),
         );
       }
+      // Kết quả đầu tiên được chọn sẵn để xem thông tin, KHÔNG tự chỉ đường.
+      setDirectionsPoiId(null);
       setSelectedPoiId(data.results[0]?.id ?? null);
       setGatewayStatus(`Gateway OK · ${data.requestId.slice(0, 8)}`);
       if (data.parsedLocation.matched && data.parsedLocation.bestMatch) {
@@ -2158,6 +2177,7 @@ export function LocationExplorer() {
       // Xoá metadata: giữ lại thì bảng tín hiệu vẫn khoe "truy xuất đa kênh"
       // trong khi màn hình đang là 6 POI mẫu bịa sẵn.
       setSearchMeta(null);
+      setDirectionsPoiId(null);
       setSelectedPoiId(fallback[0]?.id ?? null);
       setStatus(
         `${fallback.length} kết quả mẫu · khởi động backend để dùng PostGIS`,
@@ -2518,11 +2538,15 @@ export function LocationExplorer() {
     }
   }
 
+  /** Bật chế độ chỉ đường cho một POI — cách DUY NHẤT để tuyến được tính.
+   *  Effect lấy tuyến tự chạy khi `directionsActive` bật; effect vẽ tuyến tự
+   *  lùi khung nhìn cho vừa tuyến khi dữ liệu về. */
   function startNavigation(poi: Poi) {
     // Nút chính luôn ở trong ứng dụng. Trước đây khi route chưa kịp tải hoặc
     // POI mẫu không có UUID, nhánh cuối tự mở Google Maps — đúng cú nhảy trang
     // mà người dùng không mong đợi.
-    const inAppRoute = route && route.poiId === poi.id ? route : null;
+    const inAppRoute =
+      directionsActive && route && route.poiId === poi.id ? route : null;
     telemetry.capture({
       event_type: 'navigation_start',
       poi_id: poi.id,
@@ -2532,8 +2556,25 @@ export function LocationExplorer() {
         route_ready: Boolean(inAppRoute),
       },
     });
+    setShowSteps(true);
+    if (selectedPoiId !== poi.id) {
+      // "Chỉ đường" trong panel chi tiết có thể thuộc một POI chưa được chọn
+      // (deep link, địa điểm tương tự). Tuyến chỉ tính cho POI đang chọn, nên
+      // chọn nó trước — thêm vào danh sách nếu nó chưa có ở đó.
+      if (!visiblePois.some((item) => item.id === poi.id)) {
+        setPois((current) => [
+          {
+            ...poi,
+            distanceMeters:
+              poi.distanceMeters ?? distanceInMeters(position, poi),
+          },
+          ...current,
+        ]);
+      }
+      setSelectedPoiId(poi.id);
+    }
+    setDirectionsPoiId(poi.id);
     if (inAppRoute) {
-      setShowSteps(true);
       const map = mapRef.current;
       if (map) {
         const bounds = new maplibregl.LngLatBounds();
@@ -2548,14 +2589,6 @@ export function LocationExplorer() {
           duration: 700,
         });
       }
-      return;
-    }
-    if (routeStatus === 'loading') {
-      setStatus('Đang tính tuyến đường trong ứng dụng…');
-    } else if (routeStatus === 'off') {
-      setStatus('Chưa khởi động dịch vụ định tuyến OSRM');
-    } else {
-      setStatus('Không tìm được đường bộ tới địa điểm này');
     }
   }
 
@@ -3395,211 +3428,264 @@ export function LocationExplorer() {
           )}
           {selectedPoi && (
             <div className="absolute bottom-3 left-3 right-3 z-10 max-h-[42%] overflow-y-auto rounded-2xl border border-white/70 bg-white/92 p-3 shadow-xl backdrop-blur-xl sm:bottom-5 sm:left-5 sm:right-auto sm:max-h-none sm:w-[360px] sm:overflow-visible sm:p-4 dark:border-white/10 dark:bg-card/95">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <Badge variant="secondary">Đang chọn</Badge>
-                  <h2 className="mt-2 text-lg font-bold">{selectedPoi.name}</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {selectedPoi.address}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-start gap-1.5">
-                  <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
-                    <MapPin className="size-5" />
+              {/* Hai chế độ tách hẳn nhau như Google Maps: chọn POI chỉ hiện
+                  THÔNG TIN; bấm "Chỉ đường" (hoặc nút biểu tượng tuyến) mới
+                  sang chế độ CHỈ ĐƯỜNG — chọn phương tiện, tính và vẽ tuyến. */}
+              {directionsActive ? (
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-2">
+                    <button
+                      type="button"
+                      aria-label="Quay lại thông tin địa điểm"
+                      title="Quay lại thông tin địa điểm"
+                      onClick={() => setDirectionsPoiId(null)}
+                      className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <ArrowLeft className="size-4" />
+                    </button>
+                    <div className="min-w-0">
+                      <Badge variant="secondary">Chỉ đường</Badge>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Từ vị trí của bạn tới
+                      </p>
+                      <h2 className="text-lg font-bold">{selectedPoi.name}</h2>
+                    </div>
                   </div>
                   <button
                     type="button"
-                    aria-label="Đóng thẻ địa điểm"
-                    onClick={() => setSelectedPoiId(null)}
-                    className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    aria-label="Đóng chỉ đường"
+                    onClick={() => {
+                      setDirectionsPoiId(null);
+                      setSelectedPoiId(null);
+                    }}
+                    className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   >
                     <X className="size-4" />
                   </button>
                 </div>
-              </div>
-              <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm">
-                <span className="font-medium text-amber-600">
-                  {selectedPoi.rating === null
-                    ? 'Chưa có đánh giá'
-                    : `★ ${selectedPoi.rating.toFixed(1)}`}
-                </span>
-                <span>{formatDistance(selectedPoi.distanceMeters)}</span>
-                <Button size="sm" onClick={() => startNavigation(selectedPoi)}>
-                  Chỉ đường
-                </Button>
-              </div>
-              {/* Chọn phương tiện — mỗi phương tiện gọi một đồ thị OSRM
-                  riêng (car / foot / motorbike, xem docker-compose.yml). Đổi
-                  lựa chọn tự kích hoạt lại effect tính tuyến ở trên
-                  (transportMode nằm trong deps). */}
-              <div className="mt-3 flex gap-1.5 border-t border-border pt-3">
-                {TRANSPORT_MODES.map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    onClick={() => setTransportMode(item.value)}
-                    className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
-                      transportMode === item.value
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-border text-muted-foreground hover:bg-muted'
-                    }`}
-                  >
-                    {item.icon} {item.label}
-                  </button>
-                ))}
-              </div>
-              {/* Tuyến đường thật từ OSRM tự dựng. Ba trạng thái còn lại đều nói
-                  rõ VÌ SAO chưa có tuyến, thay vì để ô trống — người dùng không
-                  phân biệt được "đang tính" với "hỏng" nếu cả hai đều là khoảng
-                  trắng. */}
-              {routeStatus === 'loading' && (
-                <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-                  Đang tính đường đi…
-                </p>
-              )}
-              {routeStatus === 'off' && (
-                <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-                  Chưa khởi động dữ liệu định tuyến nội bộ.
-                </p>
-              )}
-              {routeStatus === 'none' && (
-                <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-                  Không tìm được đường bộ tới địa điểm này.
-                </p>
-              )}
-              {route && route.poiId === selectedPoi.id && (
-                <div className="mt-3 space-y-2 border-t border-border pt-3">
-                  <div className="flex items-center gap-3">
-                    <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
-                      <Route className="size-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold">
-                        {route.durationMinutes} phút ·{' '}
-                        {formatDistance(route.distanceMeters)}
-                      </p>
-                      {/* Nói rõ đây là ĐƯỜNG ĐI THẬT chứ không phải đường chim
-                          bay — con số cũ (etaMinutes) tính bằng khoảng cách
-                          thẳng chia vận tốc cố định nên luôn lạc quan.
-                          `approximate` (backend bật khi phải mượn đồ thị ô tô)
-                          xét TRƯỚC tên hồ sơ: im lặng ở đây là lừa người dùng
-                          rằng hệ thống đo đúng phương tiện họ chọn. Phải có
-                          nhánh 'motorbike' riêng — thiếu nó thì tuyến xe máy
-                          THẬT bị ghi nhãn "hồ sơ ô tô", sai theo hướng ngược
-                          lại với cảnh báo xấp xỉ. */}
-                      <p className="text-[11px] text-muted-foreground">
-                        {route.approximate
-                          ? 'Tuyến ô tô (xấp xỉ cho xe máy)'
-                          : route.mode === 'foot'
-                            ? 'Theo đường thật, hồ sơ đi bộ'
-                            : route.mode === 'motorbike'
-                              ? 'Theo đường thật, hồ sơ xe máy'
-                              : 'Theo đường thật, hồ sơ ô tô'}
-                        {route.cached ? ' · từ cache' : ''}
+              ) : (
+                <>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <Badge variant="secondary">Đang chọn</Badge>
+                      <h2 className="mt-2 text-lg font-bold">{selectedPoi.name}</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {selectedPoi.address}
                       </p>
                     </div>
-                    {route.steps.length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setShowSteps((current) => !current)}
+                    <div className="flex shrink-0 items-start gap-1.5">
+                      <button
+                        type="button"
+                        aria-label={`Chỉ đường tới ${selectedPoi.name}`}
+                        title="Chỉ đường"
+                        onClick={() => startNavigation(selectedPoi)}
+                        className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
                       >
-                        {showSteps ? 'Ẩn' : `${route.steps.length} bước`}
-                      </Button>
-                    )}
+                        <Route className="size-5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Đóng thẻ địa điểm"
+                        onClick={() => setSelectedPoiId(null)}
+                        className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
                   </div>
-                  {showSteps && (
-                    <ol className="max-h-44 space-y-1.5 overflow-y-auto pr-1 text-xs">
-                      {route.steps.map((step, index) => (
-                        <li
-                          key={`${index}-${step.text}`}
-                          className="flex items-start gap-2 rounded-lg bg-muted/60 px-2.5 py-1.5"
-                        >
-                          <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-primary/15 text-[9px] font-bold text-primary">
-                            {index + 1}
-                          </span>
-                          <span className="min-w-0 flex-1">{step.text}</span>
-                          <span className="shrink-0 tabular-nums text-muted-foreground">
-                            {formatDistance(step.distanceMeters)}
-                          </span>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
+                  <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm">
+                    <span className="font-medium text-amber-600">
+                      {selectedPoi.rating === null
+                        ? 'Chưa có đánh giá'
+                        : `★ ${selectedPoi.rating.toFixed(1)}`}
+                    </span>
+                    <span>{formatDistance(selectedPoi.distanceMeters)}</span>
+                    <Button size="sm" onClick={() => startNavigation(selectedPoi)}>
+                      Chỉ đường
+                    </Button>
+                  </div>
+                </>
               )}
-              {/* flex-wrap vì hai nút đều whitespace-nowrap (cva gốc của Button)
-                  nên min-width:auto ghim sàn cả hàng ở ~263px, flex-1 co không
-                  nổi. Thẻ chỉ rộng "viewport - 104px", tức máy 320-360px còn
-                  216-256px: không cho xuống dòng là nút thò ra ngoài viền thẻ,
-                  đè lên bản đồ rồi bị overflow-hidden của khung bản đồ cắt cụt
-                  chữ. Từ ~367px trở lên vẫn nằm gọn một hàng như cũ. */}
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => openDetail(selectedPoi.id, 'overlay')}
-                >
-                  <Info data-icon="inline-start" />
-                  Xem chi tiết
-                </Button>
-                <Button
-                  variant={
-                    savedByPoi.has(selectedPoi.id) ? 'default' : 'outline'
-                  }
-                  size="sm"
-                  className="shrink-0"
-                  title={
-                    savedByPoi.has(selectedPoi.id)
-                      ? 'Bỏ khỏi danh sách đã lưu'
-                      : 'Lưu địa điểm này'
-                  }
-                  onClick={() => void toggleSaved(selectedPoi)}
-                >
-                  {savedByPoi.has(selectedPoi.id) ? (
-                    <BookmarkCheck data-icon="inline-start" />
-                  ) : (
-                    <Bookmark data-icon="inline-start" />
+              {directionsActive && (
+                <>
+                  {/* Chọn phương tiện — mỗi phương tiện gọi một đồ thị OSRM
+                      riêng (car / foot / motorbike, xem docker-compose.yml). Đổi
+                      lựa chọn tự kích hoạt lại effect tính tuyến ở trên
+                      (transportMode nằm trong deps). */}
+                  <div className="mt-3 flex gap-1.5 border-t border-border pt-3">
+                    {TRANSPORT_MODES.map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => setTransportMode(item.value)}
+                        className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
+                          transportMode === item.value
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-border text-muted-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {item.icon} {item.label}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Tuyến đường thật từ OSRM tự dựng. Ba trạng thái còn lại đều nói
+                      rõ VÌ SAO chưa có tuyến, thay vì để ô trống — người dùng không
+                      phân biệt được "đang tính" với "hỏng" nếu cả hai đều là khoảng
+                      trắng. */}
+                  {routeStatus === 'loading' && (
+                    <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                      Đang tính đường đi…
+                    </p>
                   )}
-                  {savedByPoi.has(selectedPoi.id) ? 'Đã lưu' : 'Lưu'}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  title="Đặt địa điểm này làm nhà"
-                  onClick={() => void toggleSaved(selectedPoi, 'home')}
-                >
-                  <Home data-icon="inline-start" />
-                  Đặt làm nhà
-                </Button>
-                <Button
-                  variant={
-                    geofences.has(selectedPoi.id) ? 'default' : 'outline'
-                  }
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => void toggleGeofence(selectedPoi)}
-                >
-                  {geofences.has(selectedPoi.id) ? (
-                    <BellRing data-icon="inline-start" />
-                  ) : (
-                    <Bell data-icon="inline-start" />
+                  {routeStatus === 'off' && (
+                    <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                      Chưa khởi động dữ liệu định tuyến nội bộ.
+                    </p>
                   )}
-                  {geofences.has(selectedPoi.id)
-                    ? 'Đang nhắc · 300 m'
-                    : 'Nhắc tôi khi tới gần'}
-                </Button>
-              </div>
-              {geofences.size > 0 && (
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  {proximity.connected
-                    ? `Đang chờ thông báo · ${geofences.size} địa điểm`
-                    : 'Kênh thông báo chưa kết nối'}
-                  {proximity.permission === 'denied' &&
-                    ' · trình duyệt đang chặn quyền thông báo'}
-                </p>
+                  {routeStatus === 'none' && (
+                    <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                      Không tìm được đường bộ tới địa điểm này.
+                    </p>
+                  )}
+                  {route && route.poiId === selectedPoi.id && (
+                    <div className="mt-3 space-y-2 border-t border-border pt-3">
+                      <div className="flex items-center gap-3">
+                        <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+                          <Route className="size-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold">
+                            {route.durationMinutes} phút ·{' '}
+                            {formatDistance(route.distanceMeters)}
+                          </p>
+                          {/* Nói rõ đây là ĐƯỜNG ĐI THẬT chứ không phải đường chim
+                              bay — con số cũ (etaMinutes) tính bằng khoảng cách
+                              thẳng chia vận tốc cố định nên luôn lạc quan.
+                              `approximate` (backend bật khi phải mượn đồ thị ô tô)
+                              xét TRƯỚC tên hồ sơ: im lặng ở đây là lừa người dùng
+                              rằng hệ thống đo đúng phương tiện họ chọn. Phải có
+                              nhánh 'motorbike' riêng — thiếu nó thì tuyến xe máy
+                              THẬT bị ghi nhãn "hồ sơ ô tô", sai theo hướng ngược
+                              lại với cảnh báo xấp xỉ. */}
+                          <p className="text-[11px] text-muted-foreground">
+                            {route.approximate
+                              ? 'Tuyến ô tô (xấp xỉ cho xe máy)'
+                              : route.mode === 'foot'
+                                ? 'Theo đường thật, hồ sơ đi bộ'
+                                : route.mode === 'motorbike'
+                                  ? 'Theo đường thật, hồ sơ xe máy'
+                                  : 'Theo đường thật, hồ sơ ô tô'}
+                            {route.cached ? ' · từ cache' : ''}
+                          </p>
+                        </div>
+                        {route.steps.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowSteps((current) => !current)}
+                          >
+                            {showSteps ? 'Ẩn' : `${route.steps.length} bước`}
+                          </Button>
+                        )}
+                      </div>
+                      {showSteps && (
+                        <ol className="max-h-44 space-y-1.5 overflow-y-auto pr-1 text-xs">
+                          {route.steps.map((step, index) => (
+                            <li
+                              key={`${index}-${step.text}`}
+                              className="flex items-start gap-2 rounded-lg bg-muted/60 px-2.5 py-1.5"
+                            >
+                              <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-primary/15 text-[9px] font-bold text-primary">
+                                {index + 1}
+                              </span>
+                              <span className="min-w-0 flex-1">{step.text}</span>
+                              <span className="shrink-0 tabular-nums text-muted-foreground">
+                                {formatDistance(step.distanceMeters)}
+                              </span>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+              {!directionsActive && (
+                <>
+                  {/* flex-wrap vì hai nút đều whitespace-nowrap (cva gốc của Button)
+                      nên min-width:auto ghim sàn cả hàng ở ~263px, flex-1 co không
+                      nổi. Thẻ chỉ rộng "viewport - 104px", tức máy 320-360px còn
+                      216-256px: không cho xuống dòng là nút thò ra ngoài viền thẻ,
+                      đè lên bản đồ rồi bị overflow-hidden của khung bản đồ cắt cụt
+                      chữ. Từ ~367px trở lên vẫn nằm gọn một hàng như cũ. */}
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => openDetail(selectedPoi.id, 'overlay')}
+                    >
+                      <Info data-icon="inline-start" />
+                      Xem chi tiết
+                    </Button>
+                    <Button
+                      variant={
+                        savedByPoi.has(selectedPoi.id) ? 'default' : 'outline'
+                      }
+                      size="sm"
+                      className="shrink-0"
+                      title={
+                        savedByPoi.has(selectedPoi.id)
+                          ? 'Bỏ khỏi danh sách đã lưu'
+                          : 'Lưu địa điểm này'
+                      }
+                      onClick={() => void toggleSaved(selectedPoi)}
+                    >
+                      {savedByPoi.has(selectedPoi.id) ? (
+                        <BookmarkCheck data-icon="inline-start" />
+                      ) : (
+                        <Bookmark data-icon="inline-start" />
+                      )}
+                      {savedByPoi.has(selectedPoi.id) ? 'Đã lưu' : 'Lưu'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      title="Đặt địa điểm này làm nhà"
+                      onClick={() => void toggleSaved(selectedPoi, 'home')}
+                    >
+                      <Home data-icon="inline-start" />
+                      Đặt làm nhà
+                    </Button>
+                    <Button
+                      variant={
+                        geofences.has(selectedPoi.id) ? 'default' : 'outline'
+                      }
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => void toggleGeofence(selectedPoi)}
+                    >
+                      {geofences.has(selectedPoi.id) ? (
+                        <BellRing data-icon="inline-start" />
+                      ) : (
+                        <Bell data-icon="inline-start" />
+                      )}
+                      {geofences.has(selectedPoi.id)
+                        ? 'Đang nhắc · 300 m'
+                        : 'Nhắc tôi khi tới gần'}
+                    </Button>
+                  </div>
+                  {geofences.size > 0 && (
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      {proximity.connected
+                        ? `Đang chờ thông báo · ${geofences.size} địa điểm`
+                        : 'Kênh thông báo chưa kết nối'}
+                      {proximity.permission === 'denied' &&
+                        ' · trình duyệt đang chặn quyền thông báo'}
+                    </p>
+                  )}
+                </>
               )}
             </div>
           )}
