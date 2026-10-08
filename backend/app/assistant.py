@@ -38,8 +38,8 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 # Khung bao Việt Nam (xấp xỉ, gồm cả Phú Quốc). Ngoài khung thì không có lịch.
 VIETNAM_BBOX = (8.0, 102.0, 23.5, 110.0)  # south, west, north, east
 
-EVENT_HORIZON_DAYS = 30
-MAX_EVENT_SUGGESTIONS = 3
+EVENT_HORIZON_DAYS = 60
+MAX_EVENT_SUGGESTIONS = 4
 
 
 def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -398,18 +398,53 @@ def _meal_slot(now: datetime) -> tuple[Any, ...] | None:
     return None
 
 
-def _meal_suggestion(now: datetime) -> dict[str, Any] | None:
+def _meal_search_action(
+    title: str, prompt: str, category: str, lat: float, lng: float
+) -> dict[str, Any]:
+    return {
+        "type": "search",
+        "title": title,
+        "query": prompt,
+        "category": category,
+        "latitude": lat,
+        "longitude": lng,
+        "radius": 3_000,
+    }
+
+
+def _meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str, Any] | None:
     slot = _meal_slot(now)
     if slot is None:
         return None
-    _start, _end, icon, title, prompt, _category, _label = slot
+    _start, _end, icon, title, prompt, category, label = slot
     return {
         "id": "meal",
         "kind": "time",
         "icon": icon,
         "title": title,
-        "subtitle": now.strftime("Bây giờ %H:%M"),
-        "action": {"type": "ask", "prompt": prompt},
+        # f-string chứ không phải strftime("Bây giờ %H:%M"): strftime trên Windows
+        # từ chối chữ không phải ASCII trong chuỗi định dạng (UnicodeEncodeError).
+        "subtitle": f"Bây giờ {now:%H:%M}",
+        "action": _meal_search_action(label, prompt, category, lat, lng),
+    }
+
+
+def _upcoming_meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str, Any]:
+    """Gợi ý mốc ăn uống kế tiếp để người dùng lên kế hoạch trước."""
+    hour = now.hour + now.minute / 60
+    upcoming = next((slot for slot in _MEAL_SLOTS if slot[0] > hour), None)
+    tomorrow = upcoming is None
+    if upcoming is None:
+        upcoming = _MEAL_SLOTS[0]
+    start, _end, icon, _title, prompt, category, label = upcoming
+    when = "sáng mai" if tomorrow else f"{int(start):02d}:{int((start % 1) * 60):02d} hôm nay"
+    return {
+        "id": "meal:next",
+        "kind": "time",
+        "icon": icon,
+        "title": f"Gợi ý cho {label.lower()}",
+        "subtitle": f"Sắp tới · {when}",
+        "action": _meal_search_action(label, prompt, category, lat, lng),
     }
 
 
@@ -505,7 +540,9 @@ def suggestions(
                 "icon": "🌧️",
                 "title": "Mưa to" if current.get("isHeavyRain") else "Đang mưa",
                 "subtitle": "Tìm chỗ trong nhà gần bạn",
-                "action": {"type": "ask", "prompt": "Quán cà phê trong nhà gần tôi để trú mưa"},
+                "action": _meal_search_action(
+                    "Chỗ trú mưa", "Quán cà phê trong nhà gần tôi để trú mưa", "cafe", lat, lng
+                ),
             }
         )
     elif settings.weather_enabled:
@@ -518,14 +555,17 @@ def suggestions(
                     "icon": "🌦️",
                     "title": f"Có thể mưa lúc {forecast['time']}",
                     "subtitle": f"Khả năng {forecast['probability']}% — nên chọn chỗ trong nhà",
-                    "action": {"type": "ask", "prompt": "Quán cà phê trong nhà gần tôi"},
+                    "action": _meal_search_action(
+                        "Chỗ trong nhà", "Quán cà phê trong nhà gần tôi", "cafe", lat, lng
+                    ),
                 }
             )
 
     # 3) Giờ ăn — quanh chỗ đang đứng, rồi quanh NHÀ nếu đã lưu.
-    meal = _meal_suggestion(now)
+    meal = _meal_suggestion(now, lat, lng)
     if meal:
         chips.append(meal)
+    chips.append(_upcoming_meal_suggestion(now, lat, lng))
     if vietnam:
         home_chip = home_meal_chip(home_place(owner_id), lat, lng, now)
         if home_chip:

@@ -1,12 +1,11 @@
 """Dịch giao diện sang 134 ngôn ngữ (xem `app/languages.py`) bằng Qwen chạy
 local qua Ollama — không cần API key, không cần Internet lúc demo.
 
-Frontend KHÔNG giữ file dịch cho từng ngôn ngữ: nó gom các chuỗi tiếng Việt
-đang hiện trên trang, gửi lên đây, nhận bản dịch về rồi thay tại chỗ (xem
-`frontend/hooks/use-auto-translate.ts`). Bản dịch cache theo từng ngôn ngữ
-trên volume riêng (`nearby-i18n-cache`), nên mỗi chuỗi chỉ phải dịch MỘT lần
-cho mỗi ngôn ngữ — lần đầu chọn một ngôn ngữ mất vài phút trên CPU (~2 giây
-mỗi chuỗi, đo được thật 2026-09-25), từ lần thứ hai hiện ngay.
+Frontend chỉ đọc các file dịch đã có sẵn theo từng ngôn ngữ trên volume riêng
+(`nearby-i18n-cache`) rồi thay chữ tại chỗ (xem
+`frontend/hooks/use-auto-translate.ts`). Endpoint POST bên dưới vẫn tồn tại để
+chuẩn bị/cache bản dịch trước buổi demo, nhưng UI không tự gọi endpoint này khi
+người dùng bấm chọn ngôn ngữ.
 
 Bản dịch hỏng (model trả thiếu khoá, trả rỗng, dài bất thường) KHÔNG được
 cache — chuỗi đó giữ nguyên tiếng Việt và được thử dịch lại ở lượt sau.
@@ -97,6 +96,25 @@ def cached_translations(language: str) -> dict[str, str]:
         return {}
     with _lock_for(language):
         return dict(_load(language))
+
+
+def cached_language_codes() -> set[str]:
+    """Các ngôn ngữ đã có sẵn cache bản dịch trên đĩa hoặc trong bộ nhớ."""
+    codes = {
+        language
+        for language, mapping in _memory.items()
+        if is_supported(language) and mapping
+    }
+    try:
+        for path in CACHE_DIR.glob("*.json"):
+            language = path.stem
+            if is_supported(language):
+                with _lock_for(language):
+                    if _load(language):
+                        codes.add(language)
+    except OSError as error:
+        logger.warning("Không liệt kê được cache bản dịch: %s", error)
+    return codes
 
 
 def _chunks(texts: list[str]) -> list[list[str]]:

@@ -149,6 +149,9 @@ class Settings(BaseSettings):
     # diễn giải kết quả bằng lời; KHÔNG bao giờ tự quyết định POI — xem
     # app/chat.py.
     ollama_chat_model: str = "llama3.2:3b"
+    # Giữ model chat trong RAM giữa các lượt chat. Mặc định của Ollama là 5
+    # phút — người dùng nghỉ lâu hơn thì lượt sau phải chờ nạp lại model.
+    ollama_chat_keep_alive: str = "30m"
     # Model riêng cho thuyết minh POI và dịch giao diện (app/translate.py) —
     # cần đa ngôn ngữ (134 ngôn ngữ, xem app/languages.py), việc mà
     # llama3.2:3b làm kém. Để trống thì dùng chung `ollama_chat_model`.
@@ -195,9 +198,7 @@ class Settings(BaseSettings):
     # Key nay tinh phi theo tung truy van va phai la key CUA BAN. Xem
     # `app/poi_ratings.py` ve gioi han luu tru theo dieu khoan cua Google.
     google_maps_api_key: str = ""
-    # Ảnh địa điểm lấy từ Wikimedia Commons (`app/photos.py`). OSM không có
-    # trường ảnh, không có GOOGLE_MAPS_API_KEY, và Static Maps của MapTiler trả
-    # 403 — Commons là nguồn duy nhất gọi được.
+    # Google Places photos when a key is configured; Commons is the fallback.
     #
     # Tắt được vì hai lý do thực tế: đo độ trễ sạch của trang chi tiết (dò ảnh
     # là nhiều lần gọi mạng ngoài, mỗi lần cách nhau tối thiểu một giây vì giới

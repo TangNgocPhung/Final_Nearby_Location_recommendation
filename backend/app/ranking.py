@@ -109,12 +109,14 @@ def fetch_candidates(
                 ST_SetSRID(ST_Point(%(longitude)s, %(latitude)s), 4326)::geography,
                 %(radius)s
             )
-            -- Lọc theo category_label (nhãn hiển thị), không phải category (mã
-            -- OSM chi tiết): sau khi nhập OSM thật, nhiều mã khác nhau
-            -- (convenience/clothes/supermarket/electronics/shopping_mall...)
-            -- cùng chung một nhãn ("Mua sắm"), và người dùng chọn theo nhãn
-            -- trên chip lọc chứ không phân biệt được các mã con.
-            AND (CAST(%(category)s AS text) IS NULL OR category_label = %(category)s)
+            -- UI gửi nhãn nhóm (vd "Ăn uống"), còn gợi ý/chatbot gửi mã chuẩn
+            -- (vd "restaurant"). Chấp nhận cả hai để đường tìm trực tiếp không
+            -- phải chạy embedding chỉ để đổi mã thành nhãn.
+            AND (
+                CAST(%(category)s AS text) IS NULL
+                OR category_label = %(category)s
+                OR category = %(category)s
+            )
             AND (
                 CAST(%(query_text)s AS text) IS NULL
                 OR name ILIKE '%%' || %(query_text)s || '%%'

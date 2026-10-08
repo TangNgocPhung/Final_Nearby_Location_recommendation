@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from collections import defaultdict, deque
@@ -76,6 +77,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Thread nền, không chặn khởi động: API sẵn sàng ngay, thuyết minh được
     # tạo dần phía sau (xem app/narration.py).
     narration.start_prewarm()
+    chat.start_warmup()
     yield
 
 
@@ -304,25 +306,20 @@ def contextual_search(payload: SearchRequest, request: Request) -> dict[str, Any
     }
 
 
-@app.post("/api/v1/chat")
-def chat_turn(payload: ChatRequest, request: Request) -> dict[str, Any]:
-    """Một lượt chatbot: LLM trích ý định -> pipeline search THẬT -> LLM diễn
-    giải. LLM không bao giờ tự chọn POI — xem docstring `app/chat.py`.
+def _plan_chat_turn(payload: ChatRequest) -> tuple[dict[str, Any], str | None]:
+    """Phần KHÔNG cần LLM của một lượt chat: khớp tên POI, trích ý định bằng
+    luật, chạy search thật. Trả ``(response, reply)`` — ``reply`` là ``None``
+    khi còn phải để LLM diễn giải ``response["results"]``.
 
-    Không cá nhân hoá (category_boost/graph_boost) như `/api/v1/search`:
-    phạm vi Phase 14 là chứng minh luồng intent->search->explain chạy đúng,
-    cá nhân hoá chatbot để lại cho lượt sau khi luồng cơ bản đã ổn định.
+    Tách riêng để ``/api/v1/chat`` và ``/api/v1/chat/stream`` dùng chung đúng
+    một luồng, chỉ khác ở cách trả phần diễn giải.
     """
     session_id = str(payload.session_id)
 
     # Khớp tên POI THẬT trước, không qua LLM — xem docstring `chat.find_named_poi`.
-    # Khớp được thì bỏ qua hẳn extract_search_intent (ít một lượt gọi Ollama,
-    # và không còn phụ thuộc việc model có "hiểu" tên địa danh hay không).
     named_poi = chat.find_named_poi(payload.message, payload.latitude, payload.longitude)
     if named_poi is not None:
-        reply = chat.explain_results(session_id, payload.message, [named_poi])
         return {
-            "reply": reply,
             "needsClarification": False,
             "searchParams": {
                 "query": payload.message,
@@ -331,43 +328,40 @@ def chat_turn(payload: ChatRequest, request: Request) -> dict[str, Any]:
             },
             "retrievalBackend": "poi-name-match",
             "results": [named_poi],
-        }
+        }, None
 
-    intent = chat.extract_search_intent(session_id, payload.message)
+    quick_intent = chat.quick_search_intent(payload.message)
+    intent = quick_intent or chat.rule_based_intent(payload.message)
 
     if intent["needs_clarification"] or not intent["search_query"]:
         question = intent["clarifying_question"] or "Bạn có thể nói rõ hơn bạn đang muốn tìm gì không?"
         chat.record_clarification(session_id, payload.message, question)
-        return {
-            "reply": question,
-            "needsClarification": True,
-            "searchParams": None,
-            "results": [],
-        }
+        return {"needsClarification": True, "searchParams": None, "results": []}, question
 
     radius = intent["radius_m"] or payload.radius
     geo_telemetry: dict[str, Any] = {}
-    # `category` KHÔNG truyền vào rank_pois_detailed: đo được thật (2026-09-20)
-    # bộ lọc category làm kênh geo/h3 rỗng và cả pipeline rơi về PostGIS 0 kết
-    # quả cho những category vẫn tìm ra POI tốt qua BM25/Vector thuần câu chữ
-    # (vd "cafe") — bug có sẵn trong pipeline search, ngoài phạm vi chatbot.
-    # Để nguyên câu hỏi tự nhiên cho BM25/Vector tự hiểu, như search box vẫn
-    # làm; `category` chỉ còn dùng để hiển thị/debug trong `searchParams`.
+    # Câu rõ loại địa điểm đi đường nhanh: lọc theo category + khoảng cách,
+    # không tạo embedding và không gọi LLM. Câu phức tạp vẫn giữ nguyên văn để
+    # BM25/Vector hiểu đầy đủ sắc thái ("yên tĩnh", "có wifi"...).
+    fast_category = intent["category"] if quick_intent is not None else None
     results, retrieval_backend = rank_pois_detailed(
         payload.latitude,
         payload.longitude,
         radius,
-        intent["search_query"],
-        None,
+        None if fast_category else intent["search_query"],
+        fast_category,
         20,
         telemetry=geo_telemetry,
     )
     for index, poi in enumerate(results):
         poi["rank"] = index
 
-    reply = chat.explain_results(session_id, payload.message, results)
+    reply = (
+        chat.summarize_results_fast(session_id, payload.message, results)
+        if quick_intent is not None
+        else None
+    )
     return {
-        "reply": reply,
         "needsClarification": False,
         "searchParams": {
             "query": intent["search_query"],
@@ -375,8 +369,58 @@ def chat_turn(payload: ChatRequest, request: Request) -> dict[str, Any]:
             "radius": radius,
         },
         "retrievalBackend": retrieval_backend,
+        "fastPath": quick_intent is not None,
         "results": results,
-    }
+    }, reply
+
+
+@app.post("/api/v1/chat")
+def chat_turn(payload: ChatRequest) -> dict[str, Any]:
+    """Một lượt chatbot: ý định (luật) -> pipeline search THẬT -> LLM diễn
+    giải. LLM không bao giờ tự chọn POI — xem docstring `app/chat.py`.
+
+    Không cá nhân hoá (category_boost/graph_boost) như `/api/v1/search`:
+    phạm vi Phase 14 là chứng minh luồng intent->search->explain chạy đúng,
+    cá nhân hoá chatbot để lại cho lượt sau khi luồng cơ bản đã ổn định.
+    """
+    response, reply = _plan_chat_turn(payload)
+    if reply is None:
+        reply = chat.explain_results(str(payload.session_id), payload.message, response["results"])
+    return {"reply": reply, **response}
+
+
+@app.post("/api/v1/chat/stream")
+def chat_turn_stream(payload: ChatRequest) -> StreamingResponse:
+    """Như `/api/v1/chat` nhưng trả NDJSON từng dòng để khung chat hiện kết
+    quả ngay khi search xong (~1s), rồi hiện dần phần diễn giải khi LLM sinh
+    chữ — thay vì bắt người dùng chờ hết ~30s LLM trên CPU mới thấy gì.
+
+    Các dòng: ``{"type": "results", ...}`` (giống `/api/v1/chat` trừ
+    ``reply``), rồi 0..n ``{"type": "delta", "text": ...}``, cuối cùng
+    ``{"type": "done", "reply": <toàn bộ câu trả lời>}``.
+    """
+    response, reply = _plan_chat_turn(payload)
+
+    def lines():
+        yield json.dumps({"type": "results", **response}, ensure_ascii=False, default=str) + "\n"
+        full_reply = reply
+        if full_reply is None:
+            pieces: list[str] = []
+            for piece in chat.explain_results_stream(
+                str(payload.session_id), payload.message, response["results"]
+            ):
+                pieces.append(piece)
+                yield json.dumps({"type": "delta", "text": piece}, ensure_ascii=False) + "\n"
+            full_reply = "".join(pieces).strip()
+        yield json.dumps({"type": "done", "reply": full_reply}, ensure_ascii=False) + "\n"
+
+    # X-Accel-Buffering: nginx (gateway) mặc định gom response rồi mới gửi —
+    # tắt cho riêng response này để từng dòng tới trình duyệt ngay.
+    return StreamingResponse(
+        lines(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 def is_postgres_uuid(value: str) -> bool:
@@ -476,6 +520,7 @@ def get_my_review(poi_id: str, request: Request) -> Any:
 def get_poi_photos(
     poi_id: str,
     limit: int = Query(default=photos.MAX_PHOTOS, ge=1, le=photos.MAX_PHOTOS),
+    confidence: str = Query(default="all", pattern="^(all|place|area)$"),
 ) -> Any:
     """Ảnh của một địa điểm. Tách khỏi endpoint chi tiết vì CÓ THỂ gọi mạng.
 
@@ -498,16 +543,31 @@ def get_poi_photos(
     if context is None:
         return JSONResponse(status_code=404, content={"detail": "Không có địa điểm này"})
 
-    cached = photos.cached_photos(poi_id, limit)
+    if settings.photos_enabled and settings.google_maps_api_key and confidence != "area":
+        from .google_photos import place_photos
+
+        google = place_photos(poi_id, context, limit)
+        if google["status"] == "ready":
+            return JSONResponse(content=google, headers={"Cache-Control": "no-store"})
+
+    cached = photos.cached_photos(poi_id, limit, confidence=confidence)
     if cached is not None:
         return cached
 
     if not settings.photos_enabled:
         return {"poiId": poi_id, "status": "unavailable", "fetchedAt": None, "photos": []}
 
-    return photos.fetch_and_store(
+    fetched = photos.fetch_and_store(
         poi_id, context["latitude"], context["longitude"], context["tags"], limit
     )
+    if confidence == "all":
+        return fetched
+    fetched["photos"] = [
+        photo for photo in fetched["photos"] if photo.get("confidence") == confidence
+    ]
+    if fetched["status"] == "ready" and not fetched["photos"]:
+        fetched["status"] = "empty"
+    return fetched
 
 
 @app.get("/api/v1/assistant/suggestions")
@@ -869,17 +929,21 @@ def parking_report(poi_id: str, payload: ParkingReportRequest) -> Any:
 
 
 @app.get("/api/v1/languages")
-def list_languages() -> dict[str, Any]:
+def list_languages(translations_only: bool = Query(default=False)) -> dict[str, Any]:
     """134 ngôn ngữ cho ô chọn ngôn ngữ giao diện và thuyết minh — xem
     `app/languages.py`. Tiếng Việt là ngôn ngữ gốc, không cần dịch."""
-    return {"source": languages.SOURCE_LANGUAGE, "languages": languages.as_dicts()}
+    items = languages.as_dicts()
+    if translations_only:
+        ready = {languages.SOURCE_LANGUAGE, *translate.cached_language_codes()}
+        items = [item for item in items if item["code"] in ready]
+    return {"source": languages.SOURCE_LANGUAGE, "languages": items}
 
 
 @app.get("/api/v1/translations/{language}")
 def get_translations(language: str) -> Any:
     """Mọi bản dịch giao diện ĐÃ CÓ cho một ngôn ngữ (chỉ đọc cache, không gọi
-    LLM) — frontend áp ngay khi đổi ngôn ngữ, rồi mới gửi phần còn thiếu lên
-    `POST` bên dưới."""
+    LLM) — frontend áp ngay khi đổi ngôn ngữ và giữ nguyên tiếng Việt cho
+    chuỗi chưa có bản dịch sẵn."""
     if not translate.is_supported(language):
         return JSONResponse(status_code=404, content={"detail": "Ngôn ngữ không được hỗ trợ"})
     return {"language": language, "translations": translate.cached_translations(language)}

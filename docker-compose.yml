@@ -24,6 +24,7 @@ x-backend-environment: &backend-environment
   #   docker compose --env-file config/development.env --env-file .env ...
   MAPILLARY_CLIENT_TOKEN: ${MAPILLARY_CLIENT_TOKEN:-}
   MAPILLARY_TILE_DIR: /app/mapillary_cache
+  GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
   # Trạm sạc xe điện từ Open Charge Map (app/charging_import.py) — chỉ cần khi
   # chạy `python -m scripts.import_parking --openchargemap`; rỗng thì bỏ qua.
   OPENCHARGEMAP_API_KEY: ${OPENCHARGEMAP_API_KEY:-}
