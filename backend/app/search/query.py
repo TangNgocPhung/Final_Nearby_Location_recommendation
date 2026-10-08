@@ -6,9 +6,55 @@ Tách khỏi client để test được mà không cần OpenSearch. Mỗi hàm 
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from ..config import settings
+from ..poi_features import categories_for_query, normalize_text
+
+# Trường của hai clause văn bản. Cổng token (`_token_gate`) dùng lại đúng các
+# trường này, bỏ boost (filter không chấm điểm) và bỏ `name.prefix`.
+_FOLDED_FIELDS = (
+    "name^3",
+    "name.prefix^1.5",
+    "category_label^2",
+    "search_keywords^2",
+    "tags^1.5",
+    "brand^1.5",
+    "description",
+)
+_STRICT_FIELDS = (
+    "name.strict^5",
+    "category_label.strict^3",
+    "search_keywords.strict^3",
+    "tags.strict^2",
+    "description.strict^1.5",
+)
+# AUTO:5,8 thay cho AUTO (=3,6): token <= 4 ký tự phải khớp ĐÚNG. Âm tiết tiếng
+# Việt sau khi bỏ dấu phần lớn chỉ 2-4 ký tự, và sửa 1 ký tự trên đó là đổi hẳn
+# sang chữ khác: đo được 19/09/2026 "benh" khớp mờ sang "ben" (Công viên BẾN
+# Bạch Đằng) và "binh" (Công viên Lãnh BINH Thăng), nên "bệnh viện" trả công
+# viên. Lỗi gõ phổ biến nhất (thiếu/sai dấu) đã được analyzer vi_folded lo,
+# không cần fuzzy.
+_FUZZINESS = "AUTO:5,8"
+
+# Danh từ đầu chung chung: "quán phở" và "phở" cùng tìm một thứ. Chỉ được bỏ
+# khỏi phần BẮT BUỘC khi bỏ đi không đổi loại địa điểm mà truy vấn nhắm tới
+# (`categories_for_query`): "quán cà phê" -> "cà phê" vẫn là cafe nên bỏ được,
+# còn "quán bar" -> "bar", "tiệm bánh" -> "bánh" thì mất loại nên giữ. Cùng
+# danh sách với `voice._GENERIC_HEADS` — tầng giọng nói đã bỏ sẵn trước khi tới
+# đây, còn ô tìm kiếm thì chưa.
+_GENERIC_HEADS = (("cửa", "hàng"), ("cửa", "tiệm"), ("quán",), ("tiệm",))
+
+# Năm dấu thanh (dạng combining). Dấu mũ/móc/trăng (â, ơ, ă...) KHÔNG nằm ở
+# đây: chúng là một phần của nguyên âm, không phải thanh điệu.
+_TONE_MARKS = "\u0300\u0301\u0309\u0303\u0323"
+# Vần mở "oa", "oe", "uy" có HAI kiểu đặt dấu cùng hợp lệ: "hoà"/"hòa",
+# "khoẻ"/"khỏe", "thuỷ"/"thủy". Đếm trong DB 2026-10-08: 328 tên kiểu cũ, 1279
+# tên kiểu mới — người gõ kiểu này phải khớp được tên viết kiểu kia. "qu" là
+# phụ âm đầu ("quả", "quý") nên không thuộc vần này.
+_TWO_STYLE_RHYME = re.compile(r"(?<!q)(o[ae]|uy)$")
 
 
 def _geo_filter(latitude: float, longitude: float, radius_m: int) -> dict[str, Any]:
@@ -39,6 +85,139 @@ def _min_should_match() -> dict[str, Any]:
     value = (settings.search_text_min_should_match or "").strip()
     return {"minimum_should_match": value} if value else {}
 
+
+def query_tokens(query_text: str) -> list[str]:
+    """Tách truy vấn thành token chữ thường, GIỮ dấu, chuẩn NFC.
+
+    Xấp xỉ tokenizer ``standard`` của OpenSearch đủ cho tiếng Việt (âm tiết
+    cách nhau bằng dấu cách). NFC trước khi tách: ở dạng NFD dấu thanh là ký
+    tự combining, ``\\w`` không coi là chữ nên "phở" bị cắt làm đôi.
+    """
+    return re.findall(r"\w+", unicodedata.normalize("NFC", query_text).lower())
+
+
+def _has_marks(token: str) -> bool:
+    return normalize_text(token) != token
+
+
+def _tone_placements(token: str) -> set[str]:
+    """Cả hai kiểu đặt dấu của vần mở oa/oe/uy ("hoà" -> {"hoà", "hòa"})."""
+    decomposed = unicodedata.normalize("NFD", token)
+    tones = [char for char in decomposed if char in _TONE_MARKS]
+    if len(tones) != 1:
+        return {token}
+    bare = unicodedata.normalize("NFC", decomposed.replace(tones[0], ""))
+    match = _TWO_STYLE_RHYME.search(bare)
+    if not match:
+        return {token}
+    stem = bare[: match.start()]
+    first, second = match.group(1)
+    return {
+        unicodedata.normalize("NFC", stem + first + tones[0] + second),
+        unicodedata.normalize("NFC", stem + first + second + tones[0]),
+    }
+
+
+def _strict_alternatives(token: str) -> list[str]:
+    """Các cách viết trong chỉ mục được coi là CÙNG từ với ``token`` có dấu.
+
+    Đúng dấu (cả hai kiểu đặt dấu, cả dạng NFD — 59 tên trong DB lưu NFD), hoặc
+    KHÔNG dấu: tên OSM kiểu "Pho Hien" vẫn là phở. Sai dấu ("phố", "Phòng"...)
+    thì không.
+    """
+    forms = _tone_placements(token)
+    forms |= {unicodedata.normalize("NFD", form) for form in forms}
+    forms.add(normalize_text(token))
+    return sorted(forms)
+
+
+def _generic_head_positions(tokens: list[str]) -> set[int]:
+    """Vị trí các danh từ đầu chung chung bỏ được khỏi phần bắt buộc.
+
+    Gõ có dấu thì so có dấu ("quận" không phải "quán"); gõ không dấu thì so
+    không dấu ("quan pho"). Phải còn từ phía sau, và từ ngay sau không phải số:
+    "quan 1" là Quận 1, không phải "quán" + "1".
+    """
+    positions: set[int] = set()
+    query = " ".join(tokens)
+    categories = categories_for_query(query)
+    for head in _GENERIC_HEADS:
+        folded_head = tuple(normalize_text(word) for word in head)
+        size = len(head)
+        for start in range(len(tokens) - size):
+            window = tuple(tokens[start : start + size])
+            if window != head and window != folded_head:
+                continue
+            if tokens[start + size].isdigit():
+                continue
+            rest = tokens[:start] + tokens[start + size :]
+            if categories_for_query(" ".join(rest)) == categories:
+                positions.update(range(start, start + size))
+    return positions
+
+
+def _token_gate(query_text: str) -> dict[str, Any] | None:
+    """Điều kiện LỌT vào kênh BM25, xét từng token của truy vấn.
+
+    Hai lỗi đo được 2026-10-08 với "quán phở" (Phở Nhà Mình 174 m không có
+    mặt, thay vào là "Nhà Hát Thành Phố", "Phố Nhật Quán", "Phòng Quản lý..."):
+
+    1. ``vi_folded`` gộp "phở"/"phố" thành ``pho`` và "quán"/"quản" thành
+       ``quan``, còn ``.strict`` chỉ CỘNG điểm — khớp sai dấu không bao giờ bị
+       loại. Nên token GÕ CÓ DẤU ở đây chỉ được thoả bằng ``.strict`` với
+       đúng dấu hoặc không dấu (`_strict_alternatives`). Token không dấu vẫn
+       khớp mọi dấu qua ``vi_folded`` như cũ — người dùng gõ không dấu là
+       chuyện thường, không phải lỗi.
+    2. ``minimum_should_match`` "2<70%" đòi đủ cả "quán" lẫn "phở", loại mất
+       mọi quán tên "Phở ..." không có chữ "Quán". Danh từ đầu chung chung
+       (`_generic_head_positions`) giờ chỉ còn cộng điểm, không bắt buộc.
+
+    ``minimum_should_match`` áp lên các TOKEN BẮT BUỘC ở đây chứ không còn
+    trên từng multi_match: multi_match ``best_fields`` đòi các token khớp
+    trong CÙNG một trường, nên không có chỗ để đặt "token này phải đúng dấu".
+    Bỏ ``name.prefix``: edge-ngram cho "pho" khớp vào "Phòng" — gõ dở đã có
+    endpoint gợi ý riêng (``/pois/suggest``).
+
+    Trả ``None`` khi truy vấn không có token chữ/số nào.
+    """
+    tokens = query_tokens(query_text)
+    if not tokens:
+        return None
+    optional = _generic_head_positions(tokens)
+    required = [token for index, token in enumerate(tokens) if index not in optional]
+    clauses: list[dict[str, Any]] = []
+    for token in required:
+        if _has_marks(token):
+            clauses.append(
+                {
+                    "multi_match": {
+                        "query": " ".join(_strict_alternatives(token)),
+                        "fields": [field.split("^")[0] for field in _STRICT_FIELDS],
+                        "operator": "or",
+                    }
+                }
+            )
+        else:
+            clauses.append(
+                {
+                    "multi_match": {
+                        "query": token,
+                        "fields": [
+                            field.split("^")[0]
+                            for field in _FOLDED_FIELDS
+                            if not field.startswith("name.prefix")
+                        ],
+                        "fuzziness": _FUZZINESS,
+                    }
+                }
+            )
+    return {
+        "bool": {
+            "should": clauses,
+            "minimum_should_match": _min_should_match().get("minimum_should_match", 1),
+        }
+    }
+
 def bm25_body(
     query_text: str,
     latitude: float,
@@ -61,8 +240,13 @@ def bm25_body(
     khác nhau đúng 1 ký tự (ệ/ê) nên fuzzy sẽ lại khớp mờ, xoá sạch tác dụng
     phân biệt dấu thanh mà field này tồn tại để giải quyết. Hai clause cộng
     điểm (không phải lấy max) nên candidate khớp cả hai được thưởng thêm,
-    còn candidate chỉ khớp nhờ fold vẫn giữ nguyên điểm cũ — không bị phạt,
-    chỉ không được thưởng.
+    còn candidate chỉ khớp nhờ fold vẫn giữ nguyên điểm cũ.
+
+    Hai clause đó chỉ CHẤM ĐIỂM. Ai được LỌT vào kênh do `_token_gate` quyết
+    định (đặt trong ``filter`` nên không đổi điểm): token gõ có dấu phải khớp
+    đúng dấu (hoặc tên không dấu), danh từ đầu chung chung như "quán" không
+    bắt buộc — đo 2026-10-08, chỉ cộng điểm thì "quán phở" vẫn trả "Nhà Hát
+    Thành Phố" và bỏ sót "Phở Nhà Mình" cách 174 m.
 
     ``search_keywords`` là từ vựng tiếng Việt của LOẠI địa điểm, sinh lúc index
     từ ``poi_features.CATEGORY_KEYWORDS``. Boost đặt ngang ``category_label``
@@ -70,60 +254,43 @@ def bm25_body(
     không phải nó TÊN gì — "rạp chiếu phim" không được thắng một POI thật sự
     mang chữ đó trong tên (``name^3``/``name.strict^5``)."""
     filters = _category_filter(category) + [_geo_filter(latitude, longitude, radius_m)]
+    text_match: dict[str, Any] = {
+        "minimum_should_match": 1,
+        "should": [
+            {
+                "multi_match": {
+                    "query": query_text,
+                    "type": "best_fields",
+                    "fields": list(_FOLDED_FIELDS),
+                    "fuzziness": _FUZZINESS,
+                    "operator": "or",
+                }
+            },
+            {
+                "multi_match": {
+                    "query": query_text,
+                    "type": "best_fields",
+                    "fields": list(_STRICT_FIELDS),
+                    "operator": "or",
+                }
+            },
+            # Thưởng khi tên chứa NGUYÊN cụm theo đúng thứ tự. Cần từ khi
+            # "quán" thôi bắt buộc (`_token_gate`): gõ không dấu "quan pho"
+            # thì "Quán Phở 32" và "cơ quan ... Thành phố" khớp cùng hai token,
+            # chỉ thứ tự liền nhau mới tách được — đo 2026-10-08, thiếu clause
+            # này "Quán Phở 32" rơi khỏi top 10.
+            {"match_phrase": {"name": {"query": query_text, "boost": 2}}},
+        ],
+    }
+    gate = _token_gate(query_text)
+    if gate is not None:
+        text_match["filter"] = [gate]
     return {
         "size": size,
         "_source": ["poi_id"],
         "query": {
             "bool": {
-                "must": [
-                    {
-                        "bool": {
-                            "minimum_should_match": 1,
-                            "should": [
-                                {
-                                    "multi_match": {
-                                        "query": query_text,
-                                        "type": "best_fields",
-                                        "fields": [
-                                            "name^3",
-                                            "name.prefix^1.5",
-                                            "category_label^2",
-                                            "search_keywords^2",
-                                            "tags^1.5",
-                                            "brand^1.5",
-                                            "description",
-                                        ],
-                                        # AUTO:5,8 thay cho AUTO (=3,6): token <= 4 ký tự phải khớp
-                                        # ĐÚNG. Âm tiết tiếng Việt sau khi bỏ dấu phần lớn chỉ 2-4 ký
-                                        # tự, và sửa 1 ký tự trên đó là đổi hẳn sang chữ khác: đo được
-                                        # 19/09/2026 "benh" khớp mờ sang "ben" (Công viên BẾN Bạch
-                                        # Đằng) và "binh" (Công viên Lãnh BINH Thăng), nên "bệnh viện"
-                                        # trả công viên. Lỗi gõ phổ biến nhất (thiếu/sai dấu) đã được
-                                        # analyzer vi_folded lo, không cần fuzzy.
-                                        "fuzziness": "AUTO:5,8",
-                                        "operator": "or",
-                                        **_min_should_match(),
-                                    }
-                                },
-                                {
-                                    "multi_match": {
-                                        "query": query_text,
-                                        "type": "best_fields",
-                                        "fields": [
-                                            "name.strict^5",
-                                            "category_label.strict^3",
-                                            "search_keywords.strict^3",
-                                            "tags.strict^2",
-                                            "description.strict^1.5",
-                                        ],
-                                        "operator": "or",
-                                        **_min_should_match(),
-                                    }
-                                },
-                            ],
-                        }
-                    }
-                ],
+                "must": [{"bool": text_match}],
                 "filter": filters,
             }
         },

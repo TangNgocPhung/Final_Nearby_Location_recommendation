@@ -19,6 +19,7 @@ phối dữ liệu train LTR.
 """
 
 import os
+import unicodedata
 
 import httpx
 import pytest
@@ -149,3 +150,58 @@ def test_rap_chieu_phim_khop_qua_tu_vung_cua_loai() -> None:
 
     assert results, "Không có kết quả nào cho 'rạp chiếu phim'"
     assert results[0]["categoryLabel"] == "Xem phim"
+
+
+# --- "quán phở" (đo 2026-10-08) ----------------------------------------------
+
+# Toạ độ đúng lúc đo lỗi: Phở Nhà Mình cách đó 174 m.
+PHO_CENTER = {"latitude": 10.7757, "longitude": 106.7009, "radius": 3000}
+
+
+def _search_at(center: dict, query: str, limit: int = 10) -> list[dict]:
+    response = httpx.post(
+        f"{API_BASE_URL}/api/v1/search",
+        timeout=15,
+        json={**center, "query": query, "limit": limit},
+    )
+    assert response.status_code == 200
+    return response.json()["results"]
+
+
+def _words(name: str) -> set[str]:
+    return set(unicodedata.normalize("NFC", name).lower().split())
+
+
+def test_quan_pho_khong_tra_pho_va_quan_sai_dau() -> None:
+    """Lỗi đã đo: "quán phở" trả Quán Phở 32 (1 km) rồi "Nhà Hát Thành Phố",
+    "Phố Nhật Quán", "Nhà Hàng Quán Bar Góc Phố", "Phòng Quản lý xuất nhập
+    cảnh..." — còn "Phở Nhà Mình" 174 m thì không có mặt.
+
+    Hai nguyên nhân (xem `search.query._token_gate`): ``vi_folded`` gộp
+    phở/phố và quán/quản về cùng token mà ``.strict`` chỉ cộng điểm chứ không
+    loại; và "2<70%" bắt buộc cả chữ "quán", loại mọi quán tên "Phở ..."."""
+    results = _search_at(PHO_CENTER, "quán phở")
+
+    names = [poi["name"] for poi in results]
+    assert "Phở Nhà Mình" in names
+    for name in names:
+        words = _words(name)
+        assert "phố" not in words and "quản" not in words, name
+        assert "phở" in words or "pho" in words, name
+
+
+def test_pho_co_dau_khong_tra_thanh_pho() -> None:
+    """Trước khi sửa, "phở" đơn lẻ vẫn lẫn "Bảo tàng Thành phố" (hạng 3) và
+    "Nhà Hát Thành Phố" — cùng một lỗi fold phở/phố."""
+    results = _search_at(PHO_CENTER, "phở")
+
+    assert results[0]["name"] == "Phở Nhà Mình"
+    assert all("phố" not in _words(poi["name"]) for poi in results)
+
+
+def test_quan_pho_khong_dau_van_tim_duoc_quan_pho() -> None:
+    """Gõ không dấu thì không phân biệt được phở/phố — chỉ khoá rằng quán phở
+    thật vẫn có mặt (trước khi sửa, Phở Nhà Mình vắng mặt vì "quan" bắt buộc)."""
+    names = {poi["name"] for poi in _search_at(PHO_CENTER, "quan pho")}
+
+    assert {"Phở Nhà Mình", "Quán Phở 32"} <= names
