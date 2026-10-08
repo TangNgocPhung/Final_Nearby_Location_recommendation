@@ -21,6 +21,8 @@ import {
   Cake,
   Camera,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Church,
   CircleParking,
   Clock,
@@ -54,6 +56,8 @@ import {
   Mic,
   Moon,
   Navigation,
+  PanelLeftClose,
+  PanelLeftOpen,
   PartyPopper,
   PawPrint,
   Plane,
@@ -538,6 +542,39 @@ function pointColorExpression(
 // Mức zoom tối đa khi khung bản đồ theo tuyến đường — xem effect vẽ tuyến.
 const ROUTE_MAX_ZOOM = 16;
 
+function lineBounds(coordinates: number[][]) {
+  const bounds = new maplibregl.LngLatBounds();
+  for (const point of coordinates) {
+    bounds.extend(point as [number, number]);
+  }
+  return bounds;
+}
+
+// Khoảng đệm khi khung tuyến đường: chừa chỗ cho các lớp phủ đang che bản đồ,
+// nếu không tuyến vẽ sát mép sẽ nằm dưới lớp phủ. Thẻ chỉ đường đầy đủ rộng
+// 360px ở góc trái dưới (sm+) hoặc chiếm đáy bản đồ (điện thoại); thu gọn thì
+// chỉ còn một dải mỏng. Bảng debug (nếu bật) nằm góc phải trên.
+function routeFitPadding(
+  map: MapLibreMap,
+  cardCollapsed: boolean,
+  debugPanel: boolean,
+) {
+  const { clientWidth: width, clientHeight: height } = map.getContainer();
+  if (width < 640) {
+    return {
+      top: 70,
+      bottom: cardCollapsed ? 90 : Math.round(height * 0.45),
+      left: 40,
+      right: 40,
+    };
+  }
+  const right = debugPanel && width >= 1280 ? 330 : 60;
+  // Chỉ chừa chỗ cho thẻ khi bản đồ đủ rộng; hẹp quá thì fitBounds không xếp
+  // vừa và MapLibre bỏ qua cả lệnh.
+  const left = !cardCollapsed && width - right >= 700 ? 400 : 60;
+  return { top: 80, bottom: cardCollapsed ? 90 : 60, left, right };
+}
+
 function fitMapToResults(
   map: MapLibreMap | null,
   position: Position,
@@ -793,6 +830,11 @@ export function LocationExplorer() {
   const [transportMode, setTransportMode] =
     useState<TransportMode>('motorbike');
   const [showSteps, setShowSteps] = useState(false);
+  // Thu thẻ chỉ đường thành một dải nhỏ để tuyến trên bản đồ không bị che.
+  // Mỗi lần bấm "Chỉ đường" mở lại thẻ đầy đủ (xem startNavigation).
+  const [directionsCollapsed, setDirectionsCollapsed] = useState(false);
+  // Desktop: ẩn cột tìm kiếm bên trái để bản đồ chiếm hết chiều ngang.
+  const [mapExpanded, setMapExpanded] = useState(false);
   // POI mà người dùng ĐÃ BẤM "Chỉ đường". Tách khỏi selectedPoiId giống Google
   // Maps: chọn một địa điểm chỉ hiện thông tin, tuyến đường chỉ được tính và
   // vẽ khi người dùng chủ động yêu cầu. Chỉ có hiệu lực khi trùng POI đang chọn
@@ -1168,22 +1210,28 @@ export function LocationExplorer() {
       features: [{ type: 'Feature', properties: {}, geometry: route.geometry }],
     });
 
-    const bounds = new maplibregl.LngLatBounds();
-    for (const point of route.geometry.coordinates) {
-      bounds.extend(point as [number, number]);
-    }
-    // padding phải to hơn bình thường: thẻ POI và bảng điều khiển che mất hai
-    // góc bản đồ, nên tuyến vẽ sát mép sẽ nằm dưới lớp phủ.
-    // maxZoom bắt buộc: POI đầu tiên được tự chọn có thể cách người dùng chỉ
-    // vài mét (đo được 10 m ở Quận 11) — tuyến ngắn như vậy mà không kẹp zoom
-    // thì fitBounds đẩy bản đồ tới mức sát nóc nhà, khung nhìn còn vài chục mét
-    // và mọi POI khác rơi ra ngoài: người dùng thấy "quanh tôi không có gì".
-    map.fitBounds(bounds, {
-      padding: { top: 90, bottom: 190, left: 60, right: 330 },
-      maxZoom: ROUTE_MAX_ZOOM,
-      duration: 700,
-    });
   }, [route]);
+
+  // Lùi khung nhìn cho vừa cả tuyến — chạy lại khi thu/mở thẻ chỉ đường hoặc
+  // phóng to bản đồ, vì vùng bản đồ thực sự nhìn thấy đã đổi.
+  // maxZoom bắt buộc: POI đầu tiên được tự chọn có thể cách người dùng chỉ
+  // vài mét (đo được 10 m ở Quận 11) — tuyến ngắn như vậy mà không kẹp zoom
+  // thì fitBounds đẩy bản đồ tới mức sát nóc nhà, khung nhìn còn vài chục mét
+  // và mọi POI khác rơi ra ngoài: người dùng thấy "quanh tôi không có gì".
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current || !route) return;
+    // Đợi một khung hình để lưới bố cục đổi cột xong rồi mới đo kích thước.
+    const frame = requestAnimationFrame(() => {
+      map.resize();
+      map.fitBounds(lineBounds(route.geometry.coordinates), {
+        padding: routeFitPadding(map, directionsCollapsed, showDebugPanel),
+        maxZoom: ROUTE_MAX_ZOOM,
+        duration: 700,
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [route, directionsCollapsed, mapExpanded, showDebugPanel]);
 
   // Thời tiết là tín hiệu CẤP TRUY VẤN: backend lấy một lần cho cả lượt tìm rồi
   // gắn cùng một object vào mọi ứng viên. Đọc từ kết quả đầu tiên là đủ.
@@ -2574,17 +2622,13 @@ export function LocationExplorer() {
       setSelectedPoiId(poi.id);
     }
     setDirectionsPoiId(poi.id);
+    setDirectionsCollapsed(false);
     if (inAppRoute) {
       const map = mapRef.current;
       if (map) {
-        const bounds = new maplibregl.LngLatBounds();
-        for (const point of inAppRoute.geometry.coordinates) {
-          bounds.extend(point as [number, number]);
-        }
-        // Cùng padding với effect vẽ tuyến — thẻ POI và bảng điều khiển che
-        // hai góc bản đồ.
-        map.fitBounds(bounds, {
-          padding: { top: 90, bottom: 190, left: 60, right: 330 },
+        // Cùng padding với effect khung tuyến — thẻ chỉ đường vừa mở đầy đủ.
+        map.fitBounds(lineBounds(inAppRoute.geometry.coordinates), {
+          padding: routeFitPadding(map, false, showDebugPanel),
           maxZoom: ROUTE_MAX_ZOOM,
           duration: 700,
         });
@@ -2705,9 +2749,16 @@ export function LocationExplorer() {
         className={cn(
           'explorer-layout mx-auto grid max-w-[1500px] grid-cols-[minmax(0,1fr)] gap-3 p-3 sm:gap-4 sm:p-4 lg:h-[calc(100dvh-65px)] lg:grid-cols-[430px_minmax(0,1fr)] lg:p-5',
           chatOpen && 'xl:grid-cols-[390px_minmax(0,1fr)_360px]',
+          mapExpanded && 'lg:grid-cols-[minmax(0,1fr)]',
+          mapExpanded && chatOpen && 'xl:grid-cols-[minmax(0,1fr)_360px]',
         )}
       >
-        <aside className="contents lg:flex lg:min-h-0 lg:min-w-0 lg:flex-col lg:gap-4 lg:overflow-y-auto">
+        <aside
+          className={cn(
+            'contents lg:flex lg:min-h-0 lg:min-w-0 lg:flex-col lg:gap-4 lg:overflow-y-auto',
+            mapExpanded && 'lg:hidden',
+          )}
+        >
           <Card id="nearby-search" className="order-1 min-w-0 shrink-0 scroll-mt-20 border-0 shadow-[0_12px_40px_rgb(14_68_48/8%)] ring-emerald-950/10 lg:order-none lg:max-h-[50%] lg:overflow-y-auto">
             <CardHeader className="px-5 pt-5 pb-3">
               <div className="flex items-center justify-between gap-3">
@@ -3345,7 +3396,7 @@ export function LocationExplorer() {
             className="map-canvas-host absolute inset-0"
             aria-label="Bản đồ địa điểm"
           />
-          <div className="pointer-events-none absolute left-2 right-14 top-2 z-10 rounded-xl border border-white/70 bg-white/90 px-2 py-2 text-[10px] shadow-lg backdrop-blur-md sm:left-4 sm:right-auto sm:top-4 sm:px-3 sm:text-xs dark:border-white/10 dark:bg-card/90">
+          <div className="pointer-events-none absolute left-2 right-14 top-2 z-10 rounded-xl border border-white/70 bg-white/90 px-2 py-2 text-[10px] shadow-lg backdrop-blur-md sm:left-4 sm:right-auto sm:top-4 sm:px-3 sm:text-xs lg:left-16 dark:border-white/10 dark:bg-card/90">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
               <span className="size-2 rounded-full bg-sky-500" /> Vị trí của bạn
               <span className="ml-2 size-2 rounded-full bg-orange-500" /> POI
@@ -3354,8 +3405,23 @@ export function LocationExplorer() {
               H3
             </div>
           </div>
+          {/* Chỉ desktop: trên điện thoại cột trái đã nằm dưới bản đồ. */}
+          <button
+            type="button"
+            aria-label={mapExpanded ? 'Hiện bảng bên trái' : 'Ẩn bảng bên trái'}
+            title={mapExpanded ? 'Hiện bảng bên trái' : 'Ẩn bảng bên trái để bản đồ to hơn'}
+            aria-expanded={!mapExpanded}
+            onClick={() => setMapExpanded((current) => !current)}
+            className="absolute left-4 top-4 z-10 hidden size-10 place-items-center rounded-xl border border-white/70 bg-white/90 text-foreground shadow-lg backdrop-blur-md transition-colors hover:bg-white lg:grid dark:border-white/10 dark:bg-card/90 dark:hover:bg-card"
+          >
+            {mapExpanded ? (
+              <PanelLeftOpen className="size-5" />
+            ) : (
+              <PanelLeftClose className="size-5" />
+            )}
+          </button>
           {showDebugPanel && (
-          <div className="absolute right-4 top-4 z-10 hidden w-[300px] rounded-2xl border border-white/75 bg-slate-950/88 p-4 text-white shadow-2xl backdrop-blur-xl xl:block">
+          <div className="absolute right-4 top-16 z-10 hidden w-[300px] rounded-2xl border border-white/75 bg-slate-950/88 p-4 text-white shadow-2xl backdrop-blur-xl xl:block">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-300">
@@ -3427,11 +3493,55 @@ export function LocationExplorer() {
           </div>
           )}
           {selectedPoi && (
-            <div className="absolute bottom-3 left-3 right-3 z-10 max-h-[42%] overflow-y-auto rounded-2xl border border-white/70 bg-white/92 p-3 shadow-xl backdrop-blur-xl sm:bottom-5 sm:left-5 sm:right-auto sm:max-h-none sm:w-[360px] sm:overflow-visible sm:p-4 dark:border-white/10 dark:bg-card/95">
+            <div
+              className={cn(
+                'absolute bottom-3 left-3 right-3 z-10 max-h-[42%] overflow-y-auto rounded-2xl border border-white/70 bg-white/92 p-3 shadow-xl backdrop-blur-xl sm:bottom-5 sm:left-5 sm:right-auto sm:max-h-none sm:w-[360px] sm:overflow-visible sm:p-4 dark:border-white/10 dark:bg-card/95',
+                directionsActive && directionsCollapsed && 'p-2 sm:w-[320px] sm:p-2.5',
+              )}
+            >
               {/* Hai chế độ tách hẳn nhau như Google Maps: chọn POI chỉ hiện
                   THÔNG TIN; bấm "Chỉ đường" (hoặc nút biểu tượng tuyến) mới
                   sang chế độ CHỈ ĐƯỜNG — chọn phương tiện, tính và vẽ tuyến. */}
-              {directionsActive ? (
+              {directionsActive && directionsCollapsed ? (
+                <div className="flex items-center gap-2">
+                  <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+                    <Route className="size-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold">
+                      {route && route.poiId === selectedPoi.id
+                        ? `${route.durationMinutes} phút · ${formatDistance(route.distanceMeters)}`
+                        : routeStatus === 'loading'
+                          ? 'Đang tính đường đi…'
+                          : 'Chỉ đường'}
+                    </p>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      Tới {selectedPoi.name}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Mở rộng thẻ chỉ đường"
+                    title="Mở rộng"
+                    aria-expanded={false}
+                    onClick={() => setDirectionsCollapsed(false)}
+                    className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <ChevronUp className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Đóng chỉ đường"
+                    onClick={() => {
+                      setDirectionsPoiId(null);
+                      setSelectedPoiId(null);
+                    }}
+                    className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+              ) : directionsActive ? (
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-start gap-2">
                     <button
@@ -3451,17 +3561,29 @@ export function LocationExplorer() {
                       <h2 className="text-lg font-bold">{selectedPoi.name}</h2>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    aria-label="Đóng chỉ đường"
-                    onClick={() => {
-                      setDirectionsPoiId(null);
-                      setSelectedPoiId(null);
-                    }}
-                    className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  >
-                    <X className="size-4" />
-                  </button>
+                  <div className="flex shrink-0 items-start gap-1">
+                    <button
+                      type="button"
+                      aria-label="Thu gọn thẻ chỉ đường"
+                      title="Thu gọn để xem bản đồ"
+                      aria-expanded
+                      onClick={() => setDirectionsCollapsed(true)}
+                      className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <ChevronDown className="size-4" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Đóng chỉ đường"
+                      onClick={() => {
+                        setDirectionsPoiId(null);
+                        setSelectedPoiId(null);
+                      }}
+                      className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <X className="size-4" />
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -3506,7 +3628,7 @@ export function LocationExplorer() {
                   </div>
                 </>
               )}
-              {directionsActive && (
+              {directionsActive && !directionsCollapsed && (
                 <>
                   {/* Chọn phương tiện — mỗi phương tiện gọi một đồ thị OSRM
                       riêng (car / foot / motorbike, xem docker-compose.yml). Đổi
