@@ -291,6 +291,22 @@ def compass_word(degrees: float) -> str:
     return _COMPASS[int(((degrees % 360) + 22.5) // 45) % 8]
 
 
+_CLOCK_WORDS = {0: "ở ngay phía trước", 3: "ở bên tay phải", 6: "ở phía sau lưng", 9: "ở bên tay trái"}
+
+
+def say_direction(target_bearing: float, heading: float | None) -> str:
+    """Hướng tới điểm đến, nói sao cho người khiếm thị dùng được.
+
+    Biết người dùng đang quay mặt về đâu (``heading``, la bàn điện thoại) thì nói
+    theo MẶT ĐỒNG HỒ — "hướng 2 giờ", 12 giờ là trước mặt; không biết thì đành
+    nói theo la bàn ("về hướng đông bắc").
+    """
+    if heading is None:
+        return f"về hướng {compass_word(target_bearing)}"
+    hour = int(((target_bearing - heading) % 360 + 15) // 30) % 12
+    return _CLOCK_WORDS.get(hour, f"ở hướng {hour} giờ")
+
+
 def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     radius = 6_371_000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -305,7 +321,9 @@ HELP_TEXT = (
     "Bạn có thể nói tên loại địa điểm cần tìm, ví dụ: “quán phở”, “nhà thuốc”, "
     "hay “cà phê gần Bến Thành”. Khi nghe danh sách, nói số để chọn, “thêm” để nghe tiếp. "
     "Sau khi chọn, nói “dẫn đường” để đi. Lúc nào cũng có thể nói “nhắc lại”, "
-    "“tôi đang ở đâu”, “dừng”, hoặc “thoát” để tắt chế độ giọng nói."
+    "“tôi đang ở đâu”, “dừng”, hoặc “thoát” để tắt chế độ giọng nói. "
+    "Hướng được chỉ theo mặt đồng hồ: 12 giờ là trước mặt, 3 giờ bên phải, 9 giờ bên trái. "
+    "Nói “đọc nhanh hơn” hoặc “đọc chậm lại” để đổi tốc độ đọc."
 )
 GREETING = "Chế độ giọng nói đã bật. Bạn muốn tìm gì? " + (
     "Ví dụ: “quán phở gần đây”. Nói “trợ giúp” để nghe hướng dẫn."
@@ -355,8 +373,12 @@ def respond(
     search: SearchFn,
     has_story: StoryFn,
     where: WhereFn,
+    heading: float | None = None,
 ) -> dict[str, Any]:
     """Một lượt: câu người dùng vừa nói → ``{speech, state, action}``.
+
+    ``heading`` (độ, 0 = bắc) là hướng người dùng đang quay mặt nếu điện thoại
+    có la bàn — để chỉ hướng theo mặt đồng hồ thay vì đông/tây/nam/bắc.
 
     ``action`` (có thể None) là việc client phải làm ngoài việc đọc câu trả
     lời: ``navigate`` (bắt đầu dẫn đường), ``stop_navigation``, ``narrate``,
@@ -397,10 +419,12 @@ def respond(
         distance = haversine_m(latitude, longitude, target["latitude"], target["longitude"])
         if distance < 25:
             return reply(f"Bạn đã tới {target['name']}.")
-        direction = compass_word(bearing_degrees(latitude, longitude, target["latitude"], target["longitude"]))
+        direction = say_direction(
+            bearing_degrees(latitude, longitude, target["latitude"], target["longitude"]), heading
+        )
         return reply(
             f"Còn khoảng {say_distance(distance)} đường chim bay tới {target['name']}, "
-            f"về hướng {direction}, chừng {walk_minutes(distance)} phút đi bộ."
+            f"{direction}, chừng {walk_minutes(distance)} phút đi bộ."
         )
     if intent == "stop":
         if stage == "navigating":

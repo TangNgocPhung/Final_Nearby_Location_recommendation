@@ -1,10 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Keyboard, Mic, MicOff, Volume2, VolumeX, X } from 'lucide-react';
+import { Gauge, Keyboard, Mic, MicOff, Volume2, VolumeX, X } from 'lucide-react';
 
+import { useHeading } from '@/hooks/use-heading';
+import { useWakeLock } from '@/hooks/use-wake-lock';
 import { NarrationPlayer, distanceMeters, type AssistantOverlay } from '@/lib/assistant';
 import { cn } from '@/lib/utils';
+import { VoiceCues, type Cue } from '@/lib/voice-cues';
 
 /**
  * Chế độ giọng nói cho người khiếm thị: tìm, chọn và đi tới địa điểm hoàn toàn
@@ -20,6 +23,11 @@ import { cn } from '@/lib/utils';
  *
  * Người dùng trình đọc màn hình (NVDA, TalkBack) có thể tắt "Tự đọc to": câu
  * trả lời vẫn vào vùng `aria-live` để trình đọc màn hình đọc, không bị nói chồng.
+ *
+ * Hỗ trợ thêm cho người không nhìn màn hình: âm báo + rung (lib/voice-cues.ts),
+ * hướng theo mặt đồng hồ khi biết người dùng quay mặt về đâu (hooks/use-heading.ts),
+ * giữ màn hình sáng khi dẫn đường, tự tìm đường mới khi đi lệch tuyến, và tốc độ
+ * đọc chỉnh được ("đọc nhanh hơn", phím +/−) — cài đặt nhớ trong localStorage.
  */
 
 type VoiceState = Record<string, unknown> | null;
@@ -55,6 +63,8 @@ type Navigation = {
   latitude: number;
   longitude: number;
   steps: RouteStep[];
+  /** Đường đi [lng, lat] — để biết người dùng có đi lệch tuyến không. */
+  line: [number, number][];
   nextStep: number;
   announcedAhead: number;
   lastProgressAt: number;
@@ -75,8 +85,100 @@ const TURN_NOW_METERS = 20;
 const TURN_AHEAD_METERS = 60;
 const PROGRESS_EVERY_MS = 60_000;
 const PROGRESS_EVERY_METERS = 150;
+// Lệch tuyến: xa đường đi hơn ngưỡng này ở 2 lần GPS liên tiếp (một lần có thể
+// chỉ là GPS nhảy) thì tìm đường mới; giữa hai lần tìm đường nghỉ một lúc.
+const OFF_ROUTE_METERS = 35;
+const OFF_ROUTE_HITS = 2;
+const REROUTE_COOLDOWN_MS = 20_000;
+
+const RATE_MIN = 0.75;
+const RATE_MAX = 2;
+const RATE_STEP = 0.25;
+const SETTINGS_KEY = 'nearby.voice.settings';
 
 const COMPASS = ['bắc', 'đông bắc', 'đông', 'đông nam', 'nam', 'tây nam', 'tây', 'tây bắc'];
+const CLOCK_WORDS: Record<number, string> = {
+  0: 'ở ngay phía trước',
+  3: 'ở bên tay phải',
+  6: 'ở phía sau lưng',
+  9: 'ở bên tay trái',
+};
+
+type VoiceSettings = { selfVoice: boolean; autoListen: boolean; rate: number };
+
+function clampRate(rate: number): number {
+  return Math.min(RATE_MAX, Math.max(RATE_MIN, Math.round(rate / RATE_STEP) * RATE_STEP));
+}
+
+function loadSettings(): VoiceSettings {
+  const fallback: VoiceSettings = { selfVoice: true, autoListen: true, rate: 1 };
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null') as Partial<VoiceSettings> | null;
+    if (!saved) return fallback;
+    return {
+      selfVoice: typeof saved.selfVoice === 'boolean' ? saved.selfVoice : fallback.selfVoice,
+      autoListen: typeof saved.autoListen === 'boolean' ? saved.autoListen : fallback.autoListen,
+      rate: typeof saved.rate === 'number' ? clampRate(saved.rate) : fallback.rate,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function sayRate(rate: number): string {
+  return rate === 1 ? 'bình thường' : `${String(rate).replace('.', ',')} lần`;
+}
+
+/** "đọc nhanh hơn" → +1, "nói chậm lại" → −1, "đọc bình thường" → 0; câu khác → null. */
+function parseRateCommand(text: string): -1 | 0 | 1 | null {
+  const folded = text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/đ/gi, 'd')
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\b(hay|ban|giup|toi|minh|di|a|nhe|oi|vay|nao|lam on)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/^(doc|noi|toc do)( doc)? (binh thuong|vua phai)$/.test(folded)) return 0;
+  const match = /^(?:(?:doc|noi) )?(nhanh|cham)(?: (?:hon|len|lai|thoi|nua|chut|mot chut))*$/.exec(folded);
+  if (!match) return null;
+  return match[1] === 'nhanh' ? 1 : -1;
+}
+
+/** Hướng tới điểm đến: mặt đồng hồ nếu biết người dùng quay mặt về đâu, không thì la bàn. */
+function sayDirection(
+  from: { latitude: number; longitude: number },
+  to: { latitude: number; longitude: number },
+  heading: number | null,
+): string {
+  const target = bearing(from, to);
+  if (heading == null) return `về hướng ${COMPASS[Math.round(target / 45) % 8]}`;
+  const hour = Math.floor((((target - heading) % 360) + 360 + 15) / 30) % 12;
+  return CLOCK_WORDS[hour] ?? `ở hướng ${hour} giờ`;
+}
+
+/** Khoảng cách (mét) từ một điểm tới đường gấp khúc [lng, lat] — chiếu phẳng quanh điểm, đủ chính xác trong vài km. */
+function distanceToLine(point: { latitude: number; longitude: number }, line: [number, number][]): number {
+  const metersPerLat = 111_320;
+  const metersPerLng = metersPerLat * Math.cos((point.latitude * Math.PI) / 180);
+  const xy = ([lng, lat]: [number, number]) => [
+    (lng - point.longitude) * metersPerLng,
+    (lat - point.latitude) * metersPerLat,
+  ];
+  let best = Infinity;
+  for (let index = 1; index < line.length; index += 1) {
+    const [ax, ay] = xy(line[index - 1]);
+    const [bx, by] = xy(line[index]);
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lengthSquared = dx * dx + dy * dy;
+    // Điểm cần đo nằm ở gốc toạ độ: tìm điểm gần gốc nhất trên đoạn AB.
+    const t = lengthSquared ? Math.min(1, Math.max(0, -(ax * dx + ay * dy) / lengthSquared)) : 0;
+    best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy));
+  }
+  return best;
+}
 
 function bearing(from: { latitude: number; longitude: number }, to: { latitude: number; longitude: number }) {
   const toRad = (value: number) => (value * Math.PI) / 180;
@@ -128,8 +230,10 @@ export function VoiceMode({
   const [phase, setPhase] = useState<Phase>('idle');
   const [lines, setLines] = useState<Line[]>([]);
   const [interim, setInterim] = useState('');
-  const [selfVoice, setSelfVoice] = useState(true);
-  const [autoListen, setAutoListen] = useState(true);
+  const [initialSettings] = useState(loadSettings);
+  const [selfVoice, setSelfVoice] = useState(initialSettings.selfVoice);
+  const [autoListen, setAutoListen] = useState(initialSettings.autoListen);
+  const [rate, setRate] = useState(initialSettings.rate);
   const [typed, setTyped] = useState('');
   const [recognitionSupported] = useState(() => getRecognition() !== null);
   const [navigation, setNavigation] = useState<Navigation | null>(null);
@@ -139,18 +243,44 @@ export function VoiceMode({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [player] = useState(() => new NarrationPlayer(apiBaseUrl));
+  const [cues] = useState(() => new VoiceCues());
+  const { read: readHeading, requestPermission: askCompass, reportGps } = useHeading();
   const selfVoiceRef = useRef(selfVoice);
   const autoListenRef = useRef(autoListen);
+  const rateRef = useRef(rate);
   const navigationRef = useRef<Navigation | null>(null);
   const busyRef = useRef(false);
   const closedRef = useRef(false);
+  const reroutingRef = useRef(false);
+  // Đếm số lần GPS liên tiếp thấy lệch tuyến; tách khỏi `navigation` vì đổi mỗi giây
+  // mà không cần vẽ lại giao diện.
+  const offRouteRef = useRef({ hits: 0, joined: false, latitude: NaN, longitude: NaN, reroutedAt: 0 });
+  const accuracyRef = useRef(0);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     selfVoiceRef.current = selfVoice;
     autoListenRef.current = autoListen;
+    rateRef.current = rate;
     navigationRef.current = navigation;
-  }, [autoListen, navigation, selfVoice]);
+  }, [autoListen, navigation, rate, selfVoice]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ selfVoice, autoListen, rate }));
+    } catch {
+      // Chế độ riêng tư / bộ nhớ bị chặn: lần sau dùng lại mặc định.
+    }
+  }, [autoListen, rate, selfVoice]);
+
+  useWakeLock(navigation !== null);
+
+  // Âm tích tắc khi đang tìm — người không nhìn màn hình biết máy chưa treo.
+  useEffect(() => {
+    if (phase !== 'thinking') return;
+    const timer = setInterval(() => cues.play('tick'), 700);
+    return () => clearInterval(timer);
+  }, [cues, phase]);
 
   // Vị trí: GPS thật nếu được cấp quyền, không thì vị trí đang dùng trên bản đồ
   // (kể cả vị trí mô phỏng khi trình diễn trên máy tính).
@@ -164,13 +294,17 @@ export function VoiceMode({
     if (typeof navigator === 'undefined' || !navigator.geolocation) return;
     const id = navigator.geolocation.watchPosition(
       ({ coords }) => {
-        if (coords.accuracy <= 100) setLivePosition({ latitude: coords.latitude, longitude: coords.longitude });
+        if (coords.accuracy <= 100) {
+          setLivePosition({ latitude: coords.latitude, longitude: coords.longitude });
+          accuracyRef.current = coords.accuracy;
+        }
+        reportGps(coords.heading, coords.speed);
       },
       () => undefined,
       { enableHighAccuracy: true, maximumAge: 3000 },
     );
     return () => navigator.geolocation.clearWatch(id);
-  }, []);
+  }, [reportGps]);
 
   const addLine = useCallback((line: Line) => {
     setLines((prev) => [...prev.slice(-30), line]);
@@ -189,7 +323,7 @@ export function VoiceMode({
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'vi-VN';
       if (voice) utterance.voice = voice;
-      utterance.rate = 1.05;
+      utterance.rate = rateRef.current;
       utterance.onend = () => resolve(true);
       utterance.onerror = () => resolve(true);
       window.speechSynthesis.cancel();
@@ -205,6 +339,7 @@ export function VoiceMode({
         const url = URL.createObjectURL(await res.blob());
         return await new Promise((resolve) => {
           const audio = new Audio(url);
+          audio.playbackRate = rateRef.current;
           audioRef.current = audio;
           const done = () => {
             URL.revokeObjectURL(url);
@@ -270,22 +405,27 @@ export function VoiceMode({
       }
     };
     recognition.onend = () => {
+      // Lượt nghe cũ bị `abort()` để mở lượt mới: đừng đè trạng thái của lượt mới.
+      if (recognitionRef.current !== recognition) return;
+      recognitionRef.current = null;
       setInterim('');
-      if (recognitionRef.current === recognition) recognitionRef.current = null;
       if (closedRef.current) return;
       if (finalText.trim()) {
+        cues.play('heard');
         void handleUtteranceRef.current(finalText.trim());
       } else {
+        cues.play('nothing');
         setPhase('idle');
       }
     };
     setPhase('listening');
     try {
       recognition.start();
+      cues.play('listen');
     } catch {
       setPhase('idle');
     }
-  }, [say, stopSpeaking]);
+  }, [cues, say, stopSpeaking]);
 
   const afterSpeech = useCallback(() => {
     if (autoListenRef.current && recognitionSupported && !closedRef.current) listen();
@@ -300,9 +440,10 @@ export function VoiceMode({
   }, [onMapOverlay]);
 
   const startNavigation = useCallback(
-    async (target: { poiId: string; name: string; latitude: number; longitude: number }) => {
+    async (target: { poiId: string; name: string; latitude: number; longitude: number }, reroute = false) => {
       const from = hereRef.current;
       let steps: RouteStep[] = [];
+      let line: [number, number][] = [];
       let intro = '';
       try {
         const params = new URLSearchParams({
@@ -316,6 +457,7 @@ export function VoiceMode({
         const route = data?.route;
         if (route) {
           steps = (route.steps ?? []) as RouteStep[];
+          line = route.geometry.coordinates;
           onMapOverlay({
             line: route.geometry,
             points: [
@@ -330,23 +472,36 @@ export function VoiceMode({
               },
             ],
           });
-          intro =
-            `Quãng đường đi bộ ${sayMeters(route.distanceMeters)}, khoảng ${route.durationMinutes} phút` +
-            (route.approximate ? ', tính gần đúng' : '') +
-            '. ' +
+          const firstSteps =
             (steps[0]?.text ? `${steps[0].text}. ` : '') +
             (steps[1]?.text ? `Sau đó, ${steps[1].text.toLowerCase()} sau khoảng ${sayMeters(steps[0]?.distanceMeters ?? 0)}.` : '');
+          intro = reroute
+            ? `Đã có đường mới, còn ${sayMeters(route.distanceMeters)}. ${firstSteps}`
+            : `Quãng đường đi bộ ${sayMeters(route.distanceMeters)}, khoảng ${route.durationMinutes} phút` +
+              (route.approximate ? ', tính gần đúng' : '') +
+              `. ${firstSteps}`;
         }
       } catch {
         // rơi xuống chỉ hướng la bàn
       }
       if (!steps.length) {
-        const direction = COMPASS[Math.round(bearing(from, target) / 45) % 8];
-        intro = `Chưa có tuyến đường đi bộ. Điểm đến ở hướng ${direction}, cách ${sayMeters(distanceMeters(from, target))} đường chim bay. Tôi sẽ báo khoảng cách khi bạn di chuyển.`;
+        line = [];
+        const direction = sayDirection(from, target, readHeading());
+        intro =
+          `${reroute ? 'Chưa tìm được đường mới' : 'Chưa có tuyến đường đi bộ'}. ` +
+          `Điểm đến ${direction}, cách ${sayMeters(distanceMeters(from, target))} đường chim bay. Tôi sẽ báo khoảng cách khi bạn di chuyển.`;
       }
+      offRouteRef.current = {
+        hits: 0,
+        joined: false,
+        latitude: NaN,
+        longitude: NaN,
+        reroutedAt: reroute ? Date.now() : 0,
+      };
       const nav: Navigation = {
         ...target,
         steps,
+        line,
         nextStep: 1,
         announcedAhead: 0,
         lastProgressAt: Date.now(),
@@ -356,32 +511,71 @@ export function VoiceMode({
       navigationRef.current = nav;
       await say(intro);
     },
-    [apiBaseUrl, onMapOverlay, say],
+    [apiBaseUrl, onMapOverlay, readHeading, say],
   );
 
-  // Mỗi lần vị trí đổi: tới nơi chưa, sắp tới chỗ rẽ chưa, báo tiến độ.
+  const reroute = useCallback(async () => {
+    const nav = navigationRef.current;
+    if (!nav || reroutingRef.current) return;
+    reroutingRef.current = true;
+    cues.play('offRoute');
+    await say('Bạn đã đi lệch tuyến. Đang tìm đường mới.');
+    // Trong lúc đọc, người dùng có thể đã nói "dừng" hoặc thoát.
+    if (navigationRef.current?.poiId === nav.poiId && !closedRef.current) {
+      const { poiId, name, latitude, longitude } = nav;
+      await startNavigation({ poiId, name, latitude, longitude }, true);
+    }
+    reroutingRef.current = false;
+  }, [cues, say, startNavigation]);
+
+  // Mỗi lần vị trí đổi: tới nơi chưa, lệch tuyến chưa, sắp tới chỗ rẽ chưa, báo tiến độ.
   useEffect(() => {
     const nav = navigationRef.current;
     // Đang nghe/đang đọc thì chờ: effect chạy lại khi `phase` về idle, chỉ dẫn
     // không bị mất mà cũng không cắt ngang câu đang đọc dở.
-    if (!nav || busyRef.current || phase === 'listening' || phase === 'speaking') return;
+    if (!nav || busyRef.current || reroutingRef.current || phase === 'listening' || phase === 'speaking') return;
     const remaining = distanceMeters(here, nav);
     let message: string | null = null;
+    let cue: Cue | null = null;
     let next = { ...nav };
 
     if (remaining <= ARRIVE_METERS) {
-      message = `Bạn đã tới ${nav.name}. Đã kết thúc dẫn đường.`;
+      const facing = readHeading();
+      message = `Bạn đã tới ${nav.name}${facing == null ? '' : `, ${sayDirection(here, nav, facing)}`}. Đã kết thúc dẫn đường.`;
+      cue = 'arrive';
       stateRef.current = { ...stateRef.current, stage: 'selected' };
       stopNavigation();
     } else {
+      // Lệch tuyến — chỉ đếm khi GPS báo vị trí MỚI (effect còn chạy lại khi
+      // `phase` đổi), và chỉ sau khi người dùng đã vào tới tuyến: lúc xuất phát
+      // trong hẻm/toà nhà, điểm đầu tuyến OSRM có thể cách vài chục mét.
+      const track = offRouteRef.current;
+      if (nav.line.length > 1 && (here.latitude !== track.latitude || here.longitude !== track.longitude)) {
+        track.latitude = here.latitude;
+        track.longitude = here.longitude;
+        const off = distanceToLine(here, nav.line) > Math.max(OFF_ROUTE_METERS, accuracyRef.current);
+        if (!off) {
+          track.joined = true;
+          track.hits = 0;
+        } else if (track.joined) {
+          track.hits += 1;
+        }
+        if (track.hits >= OFF_ROUTE_HITS && Date.now() - track.reroutedAt > REROUTE_COOLDOWN_MS) {
+          track.hits = 0;
+          void reroute();
+          return;
+        }
+      }
       const step = nav.steps[nav.nextStep];
       if (step?.location) {
         const toTurn = distanceMeters(here, { latitude: step.location[1], longitude: step.location[0] });
         if (toTurn <= TURN_NOW_METERS) {
           message = `${step.text}.`;
+          cue = 'turnNow';
           next = { ...next, nextStep: nav.nextStep + 1, lastProgressAt: Date.now(), lastProgressMeters: remaining };
         } else if (toTurn <= TURN_AHEAD_METERS && nav.announcedAhead !== nav.nextStep) {
           message = `Khoảng ${sayMeters(toTurn)} nữa, ${step.text.toLowerCase()}.`;
+          cue = 'turnAhead';
           next = { ...next, announcedAhead: nav.nextStep };
         }
       }
@@ -390,8 +584,8 @@ export function VoiceMode({
         (Date.now() - nav.lastProgressAt > PROGRESS_EVERY_MS ||
           nav.lastProgressMeters - remaining > PROGRESS_EVERY_METERS)
       ) {
-        const direction = COMPASS[Math.round(bearing(here, nav) / 45) % 8];
-        message = `Còn khoảng ${sayMeters(remaining)} tới ${nav.name}${nav.steps.length ? '' : `, về hướng ${direction}`}.`;
+        const direction = nav.steps.length ? '' : `, ${sayDirection(here, nav, readHeading())}`;
+        message = `Còn khoảng ${sayMeters(remaining)} tới ${nav.name}${direction}.`;
         next = { ...next, lastProgressAt: Date.now(), lastProgressMeters: remaining };
       }
       if (message) {
@@ -399,16 +593,41 @@ export function VoiceMode({
         navigationRef.current = next;
       }
     }
+    if (cue) cues.play(cue);
     // Phản ứng với GPS (hệ thống bên ngoài) bằng giọng nói — đúng việc của effect.
     // oxlint-disable-next-line react/react-compiler
     if (message) void say(message);
-  }, [here, phase, say, stopNavigation]);
+  }, [cues, here, phase, readHeading, reroute, say, stopNavigation]);
+
+  // --- Tốc độ đọc ------------------------------------------------------------------
+
+  /** Đổi tốc độ rồi đọc thử ngay bằng tốc độ mới để người dùng nghe được khác biệt. */
+  const changeRate = useCallback(
+    (wanted: number) => {
+      const value = clampRate(wanted);
+      const unchanged = value === rateRef.current;
+      rateRef.current = value;
+      setRate(value);
+      if (unchanged && value === RATE_MAX) return say('Đây đã là tốc độ đọc nhanh nhất.');
+      if (unchanged && value === RATE_MIN) return say('Đây đã là tốc độ đọc chậm nhất.');
+      return say(`Tốc độ đọc ${sayRate(value)}.`);
+    },
+    [say],
+  );
 
   // --- Một lượt hội thoại ---------------------------------------------------------
 
   const handleUtterance = useCallback(
     async (text: string) => {
       if (busyRef.current) return;
+      // "Đọc nhanh hơn"/"chậm lại" là cài đặt của máy này, không cần hỏi máy chủ.
+      const rateStep = parseRateCommand(text);
+      if (rateStep !== null) {
+        addLine({ who: 'user', text });
+        await changeRate(rateStep === 0 ? 1 : rateRef.current + rateStep * RATE_STEP);
+        afterSpeech();
+        return;
+      }
       busyRef.current = true;
       addLine({ who: 'user', text });
       setPhase('thinking');
@@ -422,6 +641,7 @@ export function VoiceMode({
             latitude: hereRef.current.latitude,
             longitude: hereRef.current.longitude,
             state: stateRef.current,
+            heading: readHeading(),
           }),
         });
         if (res.ok) response = (await res.json()) as TurnResponse;
@@ -430,6 +650,7 @@ export function VoiceMode({
       }
       busyRef.current = false;
       if (!response) {
+        cues.play('error');
         await say('Xin lỗi, tôi không kết nối được máy chủ. Bạn thử lại nhé.');
         afterSpeech();
         return;
@@ -447,12 +668,14 @@ export function VoiceMode({
         await startNavigation(action);
       } else if (action?.type === 'narrate') {
         setPhase('speaking');
-        await player.play(action.poiId, 'vi', (narration) => addLine({ who: 'app', text: narration }));
+        await player.play(action.poiId, 'vi', (narration) => addLine({ who: 'app', text: narration }), {
+          rate: rateRef.current,
+        });
         setPhase('idle');
       }
       afterSpeech();
     },
-    [addLine, afterSpeech, apiBaseUrl, onClose, player, say, startNavigation, stopNavigation],
+    [addLine, afterSpeech, apiBaseUrl, changeRate, cues, onClose, player, readHeading, say, startNavigation, stopNavigation],
   );
 
   useEffect(() => {
@@ -482,13 +705,22 @@ export function VoiceMode({
         window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
       }
       audioRef.current?.pause();
+      cues.close();
       onMapOverlay(null);
     };
     // Chỉ chạy một lần khi mở chế độ giọng nói.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Phím tắt: Space = nói, Esc = thoát. Bỏ qua khi đang gõ trong ô nhập.
+  // Nút micro / phím cách: thao tác của người dùng — lúc duy nhất iOS cho xin
+  // quyền la bàn.
+  const toggleListening = useCallback(() => {
+    askCompass();
+    if (phase === 'listening') recognitionRef.current?.stop();
+    else listen();
+  }, [askCompass, listen, phase]);
+
+  // Phím tắt: Space = nói, Esc = thoát, +/− = tốc độ đọc. Bỏ qua khi đang gõ trong ô nhập.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -496,15 +728,22 @@ export function VoiceMode({
       if (event.key === 'Escape') {
         event.preventDefault();
         onClose();
-      } else if (event.code === 'Space' && !typing) {
+      } else if (typing) {
+        return;
+      } else if (event.code === 'Space') {
         event.preventDefault();
-        if (phase === 'listening') recognitionRef.current?.stop();
-        else listen();
+        toggleListening();
+      } else if (event.key === '+' || event.key === '=') {
+        event.preventDefault();
+        void changeRate(rateRef.current + RATE_STEP);
+      } else if (event.key === '-') {
+        event.preventDefault();
+        void changeRate(rateRef.current - RATE_STEP);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [listen, onClose, phase]);
+  }, [changeRate, onClose, toggleListening]);
 
   const lastApp = [...lines].reverse().find((line) => line.who === 'app');
   const phaseLabel = {
@@ -528,6 +767,17 @@ export function VoiceMode({
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 px-3 py-2 sm:px-4 sm:py-3">
         <p className="flex items-center gap-2 text-base font-bold sm:text-lg"><Mic className="size-5 shrink-0" aria-hidden /> Chế độ giọng nói</p>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            // Vòng qua các mức: tới nhanh nhất thì quay về chậm nhất.
+            onClick={() => void changeRate(rate >= RATE_MAX ? RATE_MIN : rate + RATE_STEP)}
+            aria-label={`Tốc độ đọc ${sayRate(rate)} — nhấn để đổi (phím + và −)`}
+            title="Tốc độ đọc (phím + và −)"
+            className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm tabular-nums hover:bg-white/10"
+          >
+            <Gauge className="size-4" aria-hidden />
+            <span>{String(rate).replace('.', ',')}×</span>
+          </button>
           <button
             type="button"
             onClick={() => setSelfVoice((value) => !value)}
@@ -564,7 +814,7 @@ export function VoiceMode({
       <div className="voice-content flex min-h-0 flex-1 flex-col items-center gap-4 overflow-y-auto overscroll-contain px-4 py-4 sm:gap-6 sm:py-6">
         <button
           type="button"
-          onClick={() => (phase === 'listening' ? recognitionRef.current?.stop() : listen())}
+          onClick={toggleListening}
           disabled={!recognitionSupported}
           aria-label={phase === 'listening' ? 'Đang nghe — nhấn để dừng' : 'Nhấn để nói'}
           className={cn(

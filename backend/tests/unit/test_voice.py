@@ -22,7 +22,10 @@ PHO = [
 ]
 
 
-def _turn(text: str, state: dict | None = None, results: list | None = None, story: bool = False):
+def _turn(
+    text: str, state: dict | None = None, results: list | None = None, story: bool = False,
+    heading: float | None = None,
+):
     return voice.respond(
         text,
         *HERE,
@@ -30,6 +33,7 @@ def _turn(text: str, state: dict | None = None, results: list | None = None, sto
         search=lambda _q, _lat, _lng: list(results if results is not None else PHO),
         has_story=lambda _id: story,
         where=lambda _lat, _lng: {"match": {"name": "Chợ Bến Thành", "address": "Lê Lợi, Q.1", "distanceMeters": 12}},
+        heading=heading,
     )
 
 
@@ -104,6 +108,17 @@ def test_huong_la_ban() -> None:
     assert voice.compass_word(95) == "đông"
     assert voice.compass_word(225) == "tây nam"
     assert voice.compass_word(350) == "bắc"
+
+
+def test_huong_mat_dong_ho_theo_huong_nguoi_dung_quay_mat() -> None:
+    assert voice.say_direction(90, None) == "về hướng đông"  # không có la bàn
+    assert voice.say_direction(90, 90) == "ở ngay phía trước"
+    assert voice.say_direction(90, 0) == "ở bên tay phải"
+    assert voice.say_direction(0, 90) == "ở bên tay trái"
+    assert voice.say_direction(270, 90) == "ở phía sau lưng"
+    assert voice.say_direction(60, 0) == "ở hướng 2 giờ"
+    assert voice.say_direction(10, 340) == "ở hướng 1 giờ"  # qua mốc 0 độ
+    assert voice.say_direction(350, 0) == "ở ngay phía trước"
 
 
 # --- Cả luồng hội thoại -------------------------------------------------------------
@@ -181,6 +196,10 @@ def test_con_bao_xa_khi_dang_dan_duong() -> None:
     go = _turn("dẫn đường", _turn("số một", _turn("phở")["state"])["state"])
     reply = _turn("còn bao xa", go["state"])
     assert "Còn khoảng" in reply["speech"] and "Phở Nhà Mình" in reply["speech"]
+    assert "về hướng" in reply["speech"]
+    # Có la bàn: Phở Nhà Mình ở phía tây nam (~235°), người dùng quay mặt hướng nam.
+    facing_south = _turn("còn bao xa", go["state"], heading=180)
+    assert "ở hướng 2 giờ" in facing_south["speech"]
 
 
 def test_thoat() -> None:

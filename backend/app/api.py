@@ -724,6 +724,7 @@ def post_voice_turn(payload: VoiceTurnRequest) -> dict[str, Any]:
         search=_voice_search,
         has_story=_has_story,
         where=lambda lat, lng: reverse_geocode(DATABASE_URL, lat, lng),
+        heading=payload.heading,
     )
 
 
