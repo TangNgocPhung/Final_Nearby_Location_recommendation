@@ -22,6 +22,7 @@ Trung thực về dữ liệu (cùng nguyên tắc với nhãn "Ảnh khu vực"
 from __future__ import annotations
 
 import math
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -44,6 +45,22 @@ MAX_EVENT_SUGGESTIONS = 4
 # hiện khi đã trong khoảng này — 20/11 còn 43 ngày đứng cạnh 20/10 chỉ làm dài
 # danh sách gợi ý.
 EXTRA_EVENT_DAYS = 30
+
+# Hai lần gọi Open-Meteo (thời tiết hiện tại + dự báo mưa) cho chip gợi ý chạy
+# song song với nhau và với phần đọc DB: khi cache trống, gọi nối tiếp mất
+# ~3,1s (đo 2026-10-08) — gần hết thời gian tải lần đầu của khung trợ lý.
+_WEATHER_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="assistant-weather")
+
+
+def _weather_result(future: Future[Any] | None) -> Any:
+    """Kết quả một lần gọi thời tiết; lỗi bất ngờ = không có tín hiệu, như
+    mọi lỗi mạng đã được ``app/weather.py`` xử lý."""
+    if future is None:
+        return None
+    try:
+        return future.result()
+    except Exception:  # noqa: BLE001 - thời tiết chỉ là gia vị, không được làm hỏng gợi ý
+        return None
 
 
 def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -464,6 +481,13 @@ def suggestions(
     today = now.date()
     vietnam = in_vietnam(lat, lng)
     chips: list[dict[str, Any]] = []
+    # Bắt đầu gọi thời tiết ngay, đọc kết quả ở bước 2. Dự báo được gọi luôn
+    # dù có thể không cần (đang mưa thì chỉ dùng thời tiết hiện tại): chờ biết
+    # trời có mưa không rồi mới gọi là quay lại cảnh nối tiếp.
+    current_future = forecast_future = None
+    if settings.weather_enabled:
+        current_future = _WEATHER_POOL.submit(weather.current_weather, lat, lng)
+        forecast_future = _WEATHER_POOL.submit(weather.rain_forecast, lat, lng)
 
     # 1) Lễ / sự kiện sắp tới (chỉ Việt Nam).
     if vietnam:
@@ -537,7 +561,7 @@ def suggestions(
                 )
 
     # 2) Thời tiết: đang mưa hoặc sắp mưa.
-    current = weather.current_weather(lat, lng) if settings.weather_enabled else None
+    current = _weather_result(current_future)
     if current and current.get("isWet"):
         chips.append(
             {
@@ -551,8 +575,8 @@ def suggestions(
                 ),
             }
         )
-    elif settings.weather_enabled:
-        forecast = weather.rain_forecast(lat, lng)
+    else:
+        forecast = _weather_result(forecast_future)
         if forecast and forecast.get("time"):
             chips.append(
                 {
