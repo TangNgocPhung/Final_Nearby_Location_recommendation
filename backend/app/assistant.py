@@ -40,6 +40,10 @@ VIETNAM_BBOX = (8.0, 102.0, 23.5, 110.0)  # south, west, north, east
 
 EVENT_HORIZON_DAYS = 60
 MAX_EVENT_SUGGESTIONS = 4
+# Lễ gần nhất luôn hiện (dù còn xa vẫn là thông tin có ích); các lễ sau chỉ
+# hiện khi đã trong khoảng này — 20/11 còn 43 ngày đứng cạnh 20/10 chỉ làm dài
+# danh sách gợi ý.
+EXTRA_EVENT_DAYS = 30
 
 
 def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -380,13 +384,13 @@ TOUR_SEARCH_RADIUS_METERS = 6_000
 
 
 # (giờ bắt đầu, giờ kết thúc, biểu tượng, tiêu đề, câu hỏi cho chatbot,
-#  category khi tìm trực tiếp, nhãn bữa)
+#  category khi tìm trực tiếp, nhãn bữa, danh từ bữa cho "Gợi ý cho …")
 _MEAL_SLOTS = (
-    (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi", "restaurant", "Ăn sáng"),
-    (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi", "restaurant", "Ăn trưa"),
-    (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi", "cafe", "Cà phê chiều"),
-    (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi", "restaurant", "Ăn tối"),
-    (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi", "restaurant", "Ăn khuya"),
+    (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi", "restaurant", "Ăn sáng", "bữa sáng"),
+    (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi", "restaurant", "Ăn trưa", "bữa trưa"),
+    (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi", "cafe", "Cà phê chiều", "trà chiều"),
+    (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi", "restaurant", "Ăn tối", "bữa tối"),
+    (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi", "restaurant", "Ăn khuya", "bữa khuya"),
 )
 
 
@@ -416,7 +420,7 @@ def _meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str, Any] | 
     slot = _meal_slot(now)
     if slot is None:
         return None
-    _start, _end, icon, title, prompt, category, label = slot
+    _start, _end, icon, title, prompt, category, label, _meal = slot
     return {
         "id": "meal",
         "kind": "time",
@@ -436,13 +440,13 @@ def _upcoming_meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str
     tomorrow = upcoming is None
     if upcoming is None:
         upcoming = _MEAL_SLOTS[0]
-    start, _end, icon, _title, prompt, category, label = upcoming
+    start, _end, icon, _title, prompt, category, label, meal = upcoming
     when = "sáng mai" if tomorrow else f"{int(start):02d}:{int((start % 1) * 60):02d} hôm nay"
     return {
         "id": "meal:next",
         "kind": "time",
         "icon": icon,
-        "title": f"Gợi ý cho {label.lower()}",
+        "title": f"Gợi ý cho {meal}",
         "subtitle": f"Sắp tới · {when}",
         "action": _meal_search_action(label, prompt, category, lat, lng),
     }
@@ -465,7 +469,9 @@ def suggestions(
     if vietnam:
         with _connect() as connection:
             shop_chips: list[dict[str, Any]] = []
-            for event in upcoming_events(today)[:MAX_EVENT_SUGGESTIONS]:
+            events = upcoming_events(today)[:MAX_EVENT_SUGGESTIONS]
+            events = events[:1] + [event for event in events[1:] if event["daysUntil"] <= EXTRA_EVENT_DAYS]
+            for event in events:
                 places = resolve_places(tuple(event.get("places", ())), lat, lng, connection)
                 shop_action = (
                     shop_search(event["shop"], lat, lng, connection) if event.get("shop") else None

@@ -423,6 +423,17 @@ def chat_turn_stream(payload: ChatRequest) -> StreamingResponse:
     )
 
 
+@app.delete("/api/v1/chat/history", status_code=204)
+def delete_chat_history(request: Request) -> Response:
+    """Bắt đầu cuộc trò chuyện mới: xoá lịch sử hội thoại của phiên trong
+    ``X-Session-ID`` (middleware đã kiểm tra là UUID)."""
+    owner_id = _owner_id(request)
+    if not owner_id:
+        return JSONResponse(status_code=400, content={"detail": "Thiếu X-Session-ID"})
+    chat.clear_history(owner_id)
+    return Response(status_code=204)
+
+
 def is_postgres_uuid(value: str) -> bool:
     """Chốt chặt hơn `geofence.is_uuid` cho hai endpoint đẩy thẳng chuỗi vào cột ``uuid``.
 

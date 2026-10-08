@@ -165,6 +165,6 @@ def test_goi_y_moc_thoi_gian_tiep_theo():
     chip = assistant._upcoming_meal_suggestion(
         datetime(2026, 9, 28, 10, 0), 10.7757, 106.7009
     )
-    assert chip["title"] == "Gợi ý cho ăn trưa"
+    assert chip["title"] == "Gợi ý cho bữa trưa"
     assert "11:00 hôm nay" in chip["subtitle"]
     assert chip["action"]["type"] == "search"

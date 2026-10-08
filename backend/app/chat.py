@@ -335,6 +335,18 @@ def get_history(session_id: str) -> list[dict[str, str]]:
         return []
 
 
+def clear_history(session_id: str) -> None:
+    """Nút "Cuộc trò chuyện mới": xoá ngữ cảnh để câu hỏi sau không bị hiểu
+    như câu hỏi nối tiếp cuộc trò chuyện cũ."""
+    client = geo_cache.get_client()
+    if client is None:
+        return
+    try:
+        client.delete(_history_key(session_id))
+    except Exception:  # noqa: BLE001 - xoá hụt thì lịch sử tự hết hạn sau HISTORY_TTL_SECONDS
+        logger.warning("Không xoá được lịch sử chat cho session %s", session_id)
+
+
 def _append_history(session_id: str, user_message: str, assistant_reply: str) -> None:
     client = geo_cache.get_client()
     if client is None:
