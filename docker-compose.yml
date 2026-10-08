@@ -24,6 +24,9 @@ x-backend-environment: &backend-environment
   #   docker compose --env-file config/development.env --env-file .env ...
   MAPILLARY_CLIENT_TOKEN: ${MAPILLARY_CLIENT_TOKEN:-}
   MAPILLARY_TILE_DIR: /app/mapillary_cache
+  # Trạm sạc xe điện từ Open Charge Map (app/charging_import.py) — chỉ cần khi
+  # chạy `python -m scripts.import_parking --openchargemap`; rỗng thì bỏ qua.
+  OPENCHARGEMAP_API_KEY: ${OPENCHARGEMAP_API_KEY:-}
   OVERPASS_URL: ${OVERPASS_URL:-https://overpass-api.de/api/interpreter}
   OSM_BBOX: ${OSM_BBOX:-10.70,106.60,10.90,106.82}
   OSM_MAX_POIS: ${OSM_MAX_POIS:-3000}
