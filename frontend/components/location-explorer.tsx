@@ -53,11 +53,11 @@ import {
   type LucideIcon,
   Mailbox,
   MapPin,
-  Maximize2,
   Mic,
-  Minimize2,
   Moon,
   Navigation,
+  PanelLeftClose,
+  PanelLeftOpen,
   PartyPopper,
   PawPrint,
   Plane,
@@ -3396,7 +3396,7 @@ export function LocationExplorer() {
             className="map-canvas-host absolute inset-0"
             aria-label="Bản đồ địa điểm"
           />
-          <div className="pointer-events-none absolute left-2 right-14 top-2 z-10 rounded-xl border border-white/70 bg-white/90 px-2 py-2 text-[10px] shadow-lg backdrop-blur-md sm:left-4 sm:right-auto sm:top-4 sm:px-3 sm:text-xs dark:border-white/10 dark:bg-card/90">
+          <div className="pointer-events-none absolute left-2 right-14 top-2 z-10 rounded-xl border border-white/70 bg-white/90 px-2 py-2 text-[10px] shadow-lg backdrop-blur-md sm:left-4 sm:right-auto sm:top-4 sm:px-3 sm:text-xs lg:left-16 dark:border-white/10 dark:bg-card/90">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
               <span className="size-2 rounded-full bg-sky-500" /> Vị trí của bạn
               <span className="ml-2 size-2 rounded-full bg-orange-500" /> POI
@@ -3408,16 +3408,16 @@ export function LocationExplorer() {
           {/* Chỉ desktop: trên điện thoại cột trái đã nằm dưới bản đồ. */}
           <button
             type="button"
-            aria-label={mapExpanded ? 'Thu nhỏ bản đồ' : 'Phóng to bản đồ'}
-            title={mapExpanded ? 'Thu nhỏ bản đồ' : 'Phóng to bản đồ'}
-            aria-pressed={mapExpanded}
+            aria-label={mapExpanded ? 'Hiện bảng bên trái' : 'Ẩn bảng bên trái'}
+            title={mapExpanded ? 'Hiện bảng bên trái' : 'Ẩn bảng bên trái để bản đồ to hơn'}
+            aria-expanded={!mapExpanded}
             onClick={() => setMapExpanded((current) => !current)}
-            className="absolute right-4 top-4 z-10 hidden size-10 place-items-center rounded-xl border border-white/70 bg-white/90 text-foreground shadow-lg backdrop-blur-md transition-colors hover:bg-white lg:grid dark:border-white/10 dark:bg-card/90 dark:hover:bg-card"
+            className="absolute left-4 top-4 z-10 hidden size-10 place-items-center rounded-xl border border-white/70 bg-white/90 text-foreground shadow-lg backdrop-blur-md transition-colors hover:bg-white lg:grid dark:border-white/10 dark:bg-card/90 dark:hover:bg-card"
           >
             {mapExpanded ? (
-              <Minimize2 className="size-4" />
+              <PanelLeftOpen className="size-5" />
             ) : (
-              <Maximize2 className="size-4" />
+              <PanelLeftClose className="size-5" />
             )}
           </button>
           {showDebugPanel && (
