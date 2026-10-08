@@ -46,6 +46,7 @@ REQUEST_TIMEOUT_SECONDS = 90.0
 HISTORY_KEY_PREFIX = "nearby:chat:history"
 HISTORY_TTL_SECONDS = 30 * 60
 HISTORY_MAX_TURNS = 6  # 6 cặp user/assistant gần nhất — đủ ngữ cảnh, không phình prompt
+CHAT_RESULT_CARDS = 5  # số thẻ địa điểm khung chat hiện (MAX_RESULT_CARDS ở chat-widget.tsx)
 
 _EXPLAIN_SYSTEM_PROMPT = """Bạn là trợ lý của app tìm địa điểm gần đây tên Nearby.
 Bạn sẽ nhận được câu hỏi của người dùng và một danh sách POI (địa điểm) THẬT do hệ thống tìm kiếm trả về.
@@ -555,8 +556,12 @@ def summarize_results_fast(session_id: str, user_message: str, results: list[dic
     if not results:
         reply = "Mình chưa tìm thấy địa điểm phù hợp gần bạn. Hãy thử đổi từ khóa hoặc mở rộng bán kính nhé."
     else:
+        # Không nêu len(results): đó là trần truy vấn (20), không phải số địa
+        # điểm có thật, và khung chat chỉ hiện CHAT_RESULT_CARDS thẻ. Kết quả
+        # xếp theo độ phù hợp nên không gọi là "gần nhất".
+        shown = min(len(results), CHAT_RESULT_CARDS)
         names = ", ".join(poi.get("name", "") for poi in results[:3] if poi.get("name"))
-        reply = f"Mình tìm thấy {len(results)} địa điểm phù hợp. Gần nhất có {names}."
+        reply = f"Đây là {shown} chỗ hợp nhất gần bạn, nổi bật: {names}."
     _append_history(session_id, user_message, reply)
     return reply
 
