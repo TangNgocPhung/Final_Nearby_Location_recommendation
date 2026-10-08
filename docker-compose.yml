@@ -319,7 +319,11 @@ services:
       - ./osrm:/data:ro
     ports:
       - "${OSRM_PORT:-5001}:5000"
-    restart: "no"
+    # on-failure chứ không phải "no": tắt/khởi động lại Docker làm container
+    # thoát mã 255, và với "no" thì OSRM nằm chết luôn — mọi tuyến đường trả
+    # no-route sau 8–21 s chờ DNS. Giới hạn 5 lần để máy CHƯA dựng file .osrm
+    # không bị khởi động lại vô tận (thiếu file thì thoát lỗi ngay lập tức).
+    restart: "on-failure:5"
     healthcheck:
       # Image osrm/osrm-backend KHONG co wget cung KHONG co curl (`command -v
       # wget curl` tra rong), nen healthcheck cu thoat 127 moi lan va container
@@ -354,7 +358,8 @@ services:
       - ./osrm:/data:ro
     ports:
       - "${OSRM_FOOT_PORT:-5002}:5000"
-    restart: "no"
+    # Cùng lý do với service `osrm` ở trên.
+    restart: "on-failure:5"
     healthcheck:
       test:
         - CMD
@@ -380,7 +385,8 @@ services:
       - ./osrm:/data:ro
     ports:
       - "${OSRM_MOTORBIKE_PORT:-5003}:5000"
-    restart: "no"
+    # Cùng lý do với service `osrm` ở trên.
+    restart: "on-failure:5"
     healthcheck:
       # Cùng cách gọi HTTP bằng /dev/tcp của bash như hai service OSRM kia —
       # ảnh này không có wget lẫn curl, và /bin/sh là dash nên phải gọi `bash`
