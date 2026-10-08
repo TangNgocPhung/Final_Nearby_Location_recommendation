@@ -1,7 +1,19 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Home, MapPin, MessageCircle, RotateCw, Search, Send, Sparkles, Star, Users, X } from 'lucide-react';
+import {
+  Home,
+  MapPin,
+  MessageCircle,
+  RotateCw,
+  Search,
+  Send,
+  Sparkles,
+  SquarePen,
+  Star,
+  Users,
+  X,
+} from 'lucide-react';
 
 import { AssistantExplore } from '@/components/assistant-explore';
 import { AssistantMeetup } from '@/components/assistant-meetup';
@@ -383,6 +395,19 @@ export function ChatWidget({
     return () => controller.abort();
   }, [apiBaseUrl, open, position, sessionId, suggestionsVersion]);
 
+  /** Xoá cả lịch sử phía backend: không xoá thì câu hỏi đầu của cuộc mới vẫn
+   * bị hiểu như câu nối tiếp ("còn chỗ nào khác không?"). Chỉ bấm được khi
+   * không có lượt nào đang stream — stream sẽ ghi vào lượt cuối của danh sách. */
+  const newConversation = () => {
+    setTurns([]);
+    void fetch(`${apiBaseUrl}/api/v1/chat/history`, {
+      method: 'DELETE',
+      headers: { 'X-Session-ID': sessionId },
+    }).catch(() => {
+      // Xoá hụt thì lịch sử tự hết hạn sau 30 phút — không chặn người dùng.
+    });
+  };
+
   const retrySuggestions = () => {
     setSuggestionsFailed(false);
     suggestedAtRef.current = null;
@@ -537,23 +562,41 @@ export function ChatWidget({
         )}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-          <div>
-            <p className="text-sm font-semibold">Trợ lý Nearby</p>
-            <p className="text-xs text-muted-foreground">
-              {suggestions?.lunarDate
-                ? `Âm lịch ${suggestions.lunarDate}`
-                : 'Hỏi bằng lời — mình tìm địa điểm thật gần bạn'}
+          <div className="min-w-0">
+            <p className="flex items-baseline gap-2 text-sm font-semibold">
+              Trợ lý Nearby
+              {suggestions?.lunarDate && (
+                <span className="truncate text-[11px] font-normal text-muted-foreground">
+                  Âm lịch {suggestions.lunarDate}
+                </span>
+              )}
             </p>
+            <p className="text-xs text-muted-foreground">Hỏi bằng lời — mình tìm địa điểm thật gần bạn</p>
           </div>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            onClick={() => changeOpen(false)}
-            aria-label="Đóng"
-          >
-            <X className="size-4" />
-          </Button>
+          <div className="flex shrink-0 items-center">
+            {view === 'chat' && turns.length > 0 && (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={newConversation}
+                disabled={loading}
+                aria-label="Cuộc trò chuyện mới"
+                title="Cuộc trò chuyện mới"
+              >
+                <SquarePen className="size-4" />
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={() => changeOpen(false)}
+              aria-label="Đóng"
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
         </div>
 
         {view === 'tour' ? (
@@ -784,7 +827,6 @@ export function ChatWidget({
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 placeholder="Bạn muốn tìm gì gần đây?"
-                disabled={loading}
               />
               <Button type="submit" size="icon" aria-label="Gửi tin nhắn" disabled={loading || !input.trim()}>
                 <Send className="size-4" />
