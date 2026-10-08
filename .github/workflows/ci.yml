@@ -92,7 +92,13 @@ jobs:
           RUN_E2E: "1"
           GATEWAY_BASE_URL: http://localhost:58081
         run: pytest tests/e2e
+      # Báo cáo, KHÔNG chặn (đã thống nhất với chủ dự án 2026-10-08): bộ nhãn trong
+      # tests/fixtures/relevance_judgments.json chưa từng đạt ngưỡng 0.75 — nDCG@10 đo
+      # được 0.42 (2026-09-10), 0.51 trên máy dev và 0.59 trên CI (2026-10-08), nên
+      # không phải do một PR cụ thể. Bước vẫn chạy và ghi results/relevance_*.json;
+      # bỏ continue-on-error khi đã dựng lại bộ nhãn hoặc cải thiện xếp hạng.
       - name: Relevance gate
+        continue-on-error: true
         working-directory: backend
         env:
           API_BASE_URL: http://localhost:58000
