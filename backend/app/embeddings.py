@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import urllib.error
 import urllib.request
 from typing import Any
@@ -40,9 +41,12 @@ EMBEDDING_DIMENSION = 1024
 EMBEDDING_MODEL = "bge-m3"
 
 REQUEST_TIMEOUT_SECONDS = 10.0
+# Chỉ cho lần nạp sẵn lúc khởi động: nạp bge-m3 từ đĩa mất ~10.6s, vượt
+# REQUEST_TIMEOUT_SECONDS. Chạy ở thread nền nên chờ lâu không chặn ai.
+WARMUP_TIMEOUT_SECONDS = 120.0
 
 
-def semantic_embedding(text: str) -> list[float] | None:
+def semantic_embedding(text: str, *, timeout: float = REQUEST_TIMEOUT_SECONDS) -> list[float] | None:
     """Vector ngữ nghĩa cho MỘT chuỗi văn bản, hoặc ``None`` nếu Ollama không
     tới được / model chưa có / văn bản rỗng.
 
@@ -54,7 +58,11 @@ def semantic_embedding(text: str) -> list[float] | None:
         return None
 
     body = json.dumps(
-        {"model": settings.ollama_embedding_model, "input": cleaned}
+        {
+            "model": settings.ollama_embedding_model,
+            "input": cleaned,
+            "keep_alive": settings.ollama_embedding_keep_alive,
+        }
     ).encode("utf-8")
     url = f"{settings.ollama_url.rstrip('/')}/api/embed"
     request = urllib.request.Request(
@@ -64,7 +72,7 @@ def semantic_embedding(text: str) -> list[float] | None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload: dict[str, Any] = json.load(response)
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as error:
         logger.warning("Không lấy được semantic embedding qua Ollama: %s", error)
@@ -75,6 +83,21 @@ def semantic_embedding(text: str) -> list[float] | None:
         logger.warning("Ollama trả response không có embeddings: %r", payload)
         return None
     return [float(value) for value in embeddings[0]]
+
+
+def start_warmup() -> None:
+    """Nạp sẵn bge-m3 ở thread nền lúc khởi động, để lượt tìm kiếm đầu tiên
+    không bị timeout và mất kênh vector (chỉ còn BM25 — câu mô tả dài như
+    "chỗ nào yên tĩnh để ngồi làm việc" khi đó chỉ ra 1 kết quả)."""
+    if not settings.ollama_url:
+        return
+    threading.Thread(
+        target=semantic_embedding,
+        args=("khởi động",),
+        kwargs={"timeout": WARMUP_TIMEOUT_SECONDS},
+        name="embedding-warmup",
+        daemon=True,
+    ).start()
 
 
 def available() -> bool:

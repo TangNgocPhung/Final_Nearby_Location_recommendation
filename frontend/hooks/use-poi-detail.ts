@@ -156,9 +156,10 @@ export function usePoiDetail(
     void (async () => {
       try {
         const response = await fetch(
-          `${apiBaseUrl}/api/v1/pois/${poiId}/photos?limit=8`,
+          `${apiBaseUrl}/api/v1/pois/${poiId}/photos?limit=8&confidence=place`,
           {
             signal: controller.signal,
+            cache: 'no-store',
           },
         );
         if (controller.signal.aborted) return;

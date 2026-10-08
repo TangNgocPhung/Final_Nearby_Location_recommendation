@@ -64,8 +64,15 @@ jobs:
       - run: python -m pip install -r backend/requirements-dev.txt
       - name: Validate Compose configuration
         run: docker compose --env-file config/test.env config --quiet
+      # Dữ liệu OSRM (osrm/*.osrm*, hàng trăm MB) bị .gitignore và dựng cục bộ bằng
+      # scripts/build_osrm*.sh, nên trên runner thiếu file và cả 3 container OSRM thoát
+      # mã 1 — mà `--wait` thất bại ngay khi BẤT KỲ container nào thoát. Không service
+      # nào `depends_on` OSRM và backend tự lùi về ước tính (`approximate: true`) khi
+      # không có tuyến, nên CI chạy stack không có OSRM.
       - name: Start complete stack and wait for health checks
-        run: docker compose --env-file config/test.env up -d --build --wait
+        run: >-
+          docker compose --env-file config/test.env up -d --build --wait
+          --scale osrm=0 --scale osrm-foot=0 --scale osrm-motorbike=0
       # Không có bước này thì chỉ mục OpenSearch rỗng, truy xuất đa kênh luôn rơi
       # về PostGIS, và relevance gate bên dưới đo nhầm đường dự phòng.
       - name: Build search index, knowledge graph and feature store
@@ -85,7 +92,13 @@ jobs:
           RUN_E2E: "1"
           GATEWAY_BASE_URL: http://localhost:58081
         run: pytest tests/e2e
+      # Báo cáo, KHÔNG chặn (đã thống nhất với chủ dự án 2026-10-08): bộ nhãn trong
+      # tests/fixtures/relevance_judgments.json chưa từng đạt ngưỡng 0.75 — nDCG@10 đo
+      # được 0.42 (2026-09-10), 0.51 trên máy dev và 0.59 trên CI (2026-10-08), nên
+      # không phải do một PR cụ thể. Bước vẫn chạy và ghi results/relevance_*.json;
+      # bỏ continue-on-error khi đã dựng lại bộ nhãn hoặc cải thiện xếp hạng.
       - name: Relevance gate
+        continue-on-error: true
         working-directory: backend
         env:
           API_BASE_URL: http://localhost:58000

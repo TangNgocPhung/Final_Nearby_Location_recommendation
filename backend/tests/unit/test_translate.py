@@ -47,6 +47,15 @@ def test_khong_cache_ban_dich_thieu_hoac_rac(monkeypatch, tmp_path):
     assert translate.cached_translations("fr") == {"Lưu": "FR:Lưu"}
 
 
+def test_chi_liet_ke_ngon_ngu_co_cache_san(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(chat, "_ollama_chat", _fake_ollama([]))
+
+    translate.translate_texts(["Bán kính"], "fr")
+
+    assert translate.cached_language_codes() == {"fr"}
+
+
 def test_ngon_ngu_goc_va_ngon_ngu_la_khong_dich(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     calls = []

@@ -22,6 +22,7 @@ Trung thực về dữ liệu (cùng nguyên tắc với nhãn "Ảnh khu vực"
 from __future__ import annotations
 
 import math
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -38,8 +39,28 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 # Khung bao Việt Nam (xấp xỉ, gồm cả Phú Quốc). Ngoài khung thì không có lịch.
 VIETNAM_BBOX = (8.0, 102.0, 23.5, 110.0)  # south, west, north, east
 
-EVENT_HORIZON_DAYS = 30
-MAX_EVENT_SUGGESTIONS = 3
+EVENT_HORIZON_DAYS = 60
+MAX_EVENT_SUGGESTIONS = 4
+# Lễ gần nhất luôn hiện (dù còn xa vẫn là thông tin có ích); các lễ sau chỉ
+# hiện khi đã trong khoảng này — 20/11 còn 43 ngày đứng cạnh 20/10 chỉ làm dài
+# danh sách gợi ý.
+EXTRA_EVENT_DAYS = 30
+
+# Hai lần gọi Open-Meteo (thời tiết hiện tại + dự báo mưa) cho chip gợi ý chạy
+# song song với nhau và với phần đọc DB: khi cache trống, gọi nối tiếp mất
+# ~3,1s (đo 2026-10-08) — gần hết thời gian tải lần đầu của khung trợ lý.
+_WEATHER_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="assistant-weather")
+
+
+def _weather_result(future: Future[Any] | None) -> Any:
+    """Kết quả một lần gọi thời tiết; lỗi bất ngờ = không có tín hiệu, như
+    mọi lỗi mạng đã được ``app/weather.py`` xử lý."""
+    if future is None:
+        return None
+    try:
+        return future.result()
+    except Exception:  # noqa: BLE001 - thời tiết chỉ là gia vị, không được làm hỏng gợi ý
+        return None
 
 
 def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -380,13 +401,13 @@ TOUR_SEARCH_RADIUS_METERS = 6_000
 
 
 # (giờ bắt đầu, giờ kết thúc, biểu tượng, tiêu đề, câu hỏi cho chatbot,
-#  category khi tìm trực tiếp, nhãn bữa)
+#  category khi tìm trực tiếp, nhãn bữa, danh từ bữa cho "Gợi ý cho …")
 _MEAL_SLOTS = (
-    (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi", "restaurant", "Ăn sáng"),
-    (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi", "restaurant", "Ăn trưa"),
-    (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi", "cafe", "Cà phê chiều"),
-    (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi", "restaurant", "Ăn tối"),
-    (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi", "restaurant", "Ăn khuya"),
+    (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi", "restaurant", "Ăn sáng", "bữa sáng"),
+    (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi", "restaurant", "Ăn trưa", "bữa trưa"),
+    (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi", "cafe", "Cà phê chiều", "trà chiều"),
+    (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi", "restaurant", "Ăn tối", "bữa tối"),
+    (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi", "restaurant", "Ăn khuya", "bữa khuya"),
 )
 
 
@@ -398,18 +419,53 @@ def _meal_slot(now: datetime) -> tuple[Any, ...] | None:
     return None
 
 
-def _meal_suggestion(now: datetime) -> dict[str, Any] | None:
+def _meal_search_action(
+    title: str, prompt: str, category: str, lat: float, lng: float
+) -> dict[str, Any]:
+    return {
+        "type": "search",
+        "title": title,
+        "query": prompt,
+        "category": category,
+        "latitude": lat,
+        "longitude": lng,
+        "radius": 3_000,
+    }
+
+
+def _meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str, Any] | None:
     slot = _meal_slot(now)
     if slot is None:
         return None
-    _start, _end, icon, title, prompt, _category, _label = slot
+    _start, _end, icon, title, prompt, category, label, _meal = slot
     return {
         "id": "meal",
         "kind": "time",
         "icon": icon,
         "title": title,
-        "subtitle": now.strftime("Bây giờ %H:%M"),
-        "action": {"type": "ask", "prompt": prompt},
+        # f-string chứ không phải strftime("Bây giờ %H:%M"): strftime trên Windows
+        # từ chối chữ không phải ASCII trong chuỗi định dạng (UnicodeEncodeError).
+        "subtitle": f"Bây giờ {now:%H:%M}",
+        "action": _meal_search_action(label, prompt, category, lat, lng),
+    }
+
+
+def _upcoming_meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str, Any]:
+    """Gợi ý mốc ăn uống kế tiếp để người dùng lên kế hoạch trước."""
+    hour = now.hour + now.minute / 60
+    upcoming = next((slot for slot in _MEAL_SLOTS if slot[0] > hour), None)
+    tomorrow = upcoming is None
+    if upcoming is None:
+        upcoming = _MEAL_SLOTS[0]
+    start, _end, icon, _title, prompt, category, label, meal = upcoming
+    when = "sáng mai" if tomorrow else f"{int(start):02d}:{int((start % 1) * 60):02d} hôm nay"
+    return {
+        "id": "meal:next",
+        "kind": "time",
+        "icon": icon,
+        "title": f"Gợi ý cho {meal}",
+        "subtitle": f"Sắp tới · {when}",
+        "action": _meal_search_action(label, prompt, category, lat, lng),
     }
 
 
@@ -425,12 +481,21 @@ def suggestions(
     today = now.date()
     vietnam = in_vietnam(lat, lng)
     chips: list[dict[str, Any]] = []
+    # Bắt đầu gọi thời tiết ngay, đọc kết quả ở bước 2. Dự báo được gọi luôn
+    # dù có thể không cần (đang mưa thì chỉ dùng thời tiết hiện tại): chờ biết
+    # trời có mưa không rồi mới gọi là quay lại cảnh nối tiếp.
+    current_future = forecast_future = None
+    if settings.weather_enabled:
+        current_future = _WEATHER_POOL.submit(weather.current_weather, lat, lng)
+        forecast_future = _WEATHER_POOL.submit(weather.rain_forecast, lat, lng)
 
     # 1) Lễ / sự kiện sắp tới (chỉ Việt Nam).
     if vietnam:
         with _connect() as connection:
             shop_chips: list[dict[str, Any]] = []
-            for event in upcoming_events(today)[:MAX_EVENT_SUGGESTIONS]:
+            events = upcoming_events(today)[:MAX_EVENT_SUGGESTIONS]
+            events = events[:1] + [event for event in events[1:] if event["daysUntil"] <= EXTRA_EVENT_DAYS]
+            for event in events:
                 places = resolve_places(tuple(event.get("places", ())), lat, lng, connection)
                 shop_action = (
                     shop_search(event["shop"], lat, lng, connection) if event.get("shop") else None
@@ -496,7 +561,7 @@ def suggestions(
                 )
 
     # 2) Thời tiết: đang mưa hoặc sắp mưa.
-    current = weather.current_weather(lat, lng) if settings.weather_enabled else None
+    current = _weather_result(current_future)
     if current and current.get("isWet"):
         chips.append(
             {
@@ -505,11 +570,13 @@ def suggestions(
                 "icon": "🌧️",
                 "title": "Mưa to" if current.get("isHeavyRain") else "Đang mưa",
                 "subtitle": "Tìm chỗ trong nhà gần bạn",
-                "action": {"type": "ask", "prompt": "Quán cà phê trong nhà gần tôi để trú mưa"},
+                "action": _meal_search_action(
+                    "Chỗ trú mưa", "Quán cà phê trong nhà gần tôi để trú mưa", "cafe", lat, lng
+                ),
             }
         )
-    elif settings.weather_enabled:
-        forecast = weather.rain_forecast(lat, lng)
+    else:
+        forecast = _weather_result(forecast_future)
         if forecast and forecast.get("time"):
             chips.append(
                 {
@@ -518,14 +585,17 @@ def suggestions(
                     "icon": "🌦️",
                     "title": f"Có thể mưa lúc {forecast['time']}",
                     "subtitle": f"Khả năng {forecast['probability']}% — nên chọn chỗ trong nhà",
-                    "action": {"type": "ask", "prompt": "Quán cà phê trong nhà gần tôi"},
+                    "action": _meal_search_action(
+                        "Chỗ trong nhà", "Quán cà phê trong nhà gần tôi", "cafe", lat, lng
+                    ),
                 }
             )
 
     # 3) Giờ ăn — quanh chỗ đang đứng, rồi quanh NHÀ nếu đã lưu.
-    meal = _meal_suggestion(now)
+    meal = _meal_suggestion(now, lat, lng)
     if meal:
         chips.append(meal)
+    chips.append(_upcoming_meal_suggestion(now, lat, lng))
     if vietnam:
         home_chip = home_meal_chip(home_place(owner_id), lat, lng, now)
         if home_chip:

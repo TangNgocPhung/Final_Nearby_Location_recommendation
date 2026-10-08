@@ -114,6 +114,8 @@ class VoiceTurnRequest(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     state: dict[str, Any] | None = None
+    # Hướng người dùng đang quay mặt (la bàn điện thoại), độ từ bắc theo chiều kim đồng hồ.
+    heading: float | None = Field(default=None, ge=0, lt=360)
 
 
 class SearchRequest(BaseModel):

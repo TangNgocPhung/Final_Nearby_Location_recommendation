@@ -548,7 +548,10 @@ def _row_to_photo(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def cached_photos(
-    poi_id: str, limit: int = MAX_PHOTOS, database_url: str | None = None
+    poi_id: str,
+    limit: int = MAX_PHOTOS,
+    database_url: str | None = None,
+    confidence: str = "all",
 ) -> dict[str, Any] | None:
     """Kết quả đã dò trước đó. ``None`` nghĩa là CHƯA dò (hoặc đã quá hạn).
 
@@ -571,22 +574,31 @@ def cached_photos(
             if fetch["fetched_at"] < expiry:
                 return None
 
+            confidence_clause = ""
+            params: tuple[Any, ...] = (poi_id, limit)
+            if confidence != "all":
+                confidence_clause = "AND confidence = %s"
+                params = (poi_id, confidence, limit)
             cursor.execute(
-                """
+                f"""
                 SELECT id, url, thumb_url, width, height, title, confidence,
                        distance_meters, source, source_url, license, attribution
                 FROM poi_photos
-                WHERE poi_id = %s
+                WHERE poi_id = %s {confidence_clause}
                 ORDER BY position ASC, id ASC
                 LIMIT %s
                 """,
-                (poi_id, limit),
+                params,
             )
             photos = [_row_to_photo(row) for row in cursor.fetchall()]
 
+    status = fetch["status"]
+    if confidence != "all" and status == "ready" and not photos:
+        status = "empty"
+
     return {
         "poiId": poi_id,
-        "status": fetch["status"],
+        "status": status,
         "fetchedAt": fetch["fetched_at"].isoformat(),
         "photos": photos,
     }
@@ -775,6 +787,7 @@ def poi_photo_context(poi_id: str, database_url: str | None = None) -> dict[str,
             cursor.execute(
                 """
                 SELECT
+                    p.name,
                     ST_Y(p.location::geometry) AS latitude,
                     ST_X(p.location::geometry) AS longitude,
                     (
@@ -793,6 +806,7 @@ def poi_photo_context(poi_id: str, database_url: str | None = None) -> dict[str,
     if row is None:
         return None
     return {
+        "name": row["name"],
         "latitude": float(row["latitude"]),
         "longitude": float(row["longitude"]),
         "tags": row["tags"] if isinstance(row["tags"], dict) else {},

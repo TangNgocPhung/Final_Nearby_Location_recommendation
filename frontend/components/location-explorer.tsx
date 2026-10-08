@@ -8,6 +8,7 @@ import maplibregl, {
 } from 'maplibre-gl';
 import {
   Activity,
+  ArrowLeft,
   Baby,
   BatteryCharging,
   Bell,
@@ -106,6 +107,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { useAutoTranslate } from '@/hooks/use-auto-translate';
 import { getTelemetry, type TelemetryState } from '@/lib/telemetry';
 import type { AssistantOverlay } from '@/lib/assistant';
+import { cn } from '@/lib/utils';
 
 type Poi = {
   id: string;
@@ -221,6 +223,8 @@ const DEFAULT_POSITION: Position = {
   longitude: 106.7009,
 };
 const MAX_USABLE_ACCURACY_METERS = 5_000;
+const LAST_LOCATION_STORAGE_KEY = 'nearby-last-location';
+const LAST_LOCATION_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 const SAMPLE_POIS: Poi[] = [
   {
@@ -303,7 +307,16 @@ const SAMPLE_POIS: Poi[] = [
   },
 ];
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8081';
+const API_BASE_URL = (() => {
+  const configured = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8081';
+  if (typeof window === 'undefined' || !configured) return configured;
+  const apiUrl = new URL(configured, window.location.origin);
+  // A phone must reach the computer's API, rather than its own localhost.
+  if (['localhost', '127.0.0.1', '[::1]'].includes(apiUrl.hostname)) {
+    apiUrl.hostname = window.location.hostname;
+  }
+  return apiUrl.href.replace(/\/$/, '');
+})();
 const SELECTED_POINT_COLOR = '#0f8a62';
 // POI thật mang UUID từ database; POI mẫu hard-code mang id dạng 'poi-001'.
 const UUID_PATTERN =
@@ -539,14 +552,6 @@ function fitMapToResults(
   map.fitBounds(bounds, { padding: 72, maxZoom: 15, duration: 600 });
 }
 
-// Mốc lọc theo số sao. 0 = không lọc. POI chưa có rating (null) bị loại khi
-// bật lọc — không có dữ liệu thì không thể khẳng định nó đạt ngưỡng.
-const MIN_RATING_OPTIONS = [0, 3, 3.5, 4, 4.5] as const;
-
-function meetsMinRating(poi: Poi, minRating: number) {
-  return minRating <= 0 || (poi.rating !== null && poi.rating >= minRating);
-}
-
 // Biểu tượng của từng chip danh mục.
 //
 // Tra theo NHÃN tiếng Việt, không theo mã `category`: `/api/v1/categories` gom
@@ -640,14 +645,25 @@ export function LocationExplorer() {
     (callback: ((latitude: number, longitude: number) => void) | null) => {
       mapPickRef.current = callback;
       setMapPicking(callback !== null);
+      if (callback && window.innerWidth < 1024) {
+        requestAnimationFrame(() => mapSectionRef.current?.scrollIntoView({ block: 'start' }));
+      }
     },
     [],
   );
   const { theme, toggleTheme } = useTheme();
   const about = useAboutDialog();
+  const [chatOpen, setChatOpen] = useState(false);
   const mapContainerRef = useRef<HTMLDivElement>(null);
+  // Trên điện thoại bản đồ nằm trên danh sách: bấm một địa điểm trong danh sách
+  // thì cuộn lên bản đồ để thấy nó, nếu không người dùng chọn xong mà không thấy gì đổi.
+  const mapSectionRef = useRef<HTMLElement>(null);
+  const skipFirstSelectScrollRef = useRef(true);
   const mapRef = useRef<MapLibreMap | null>(null);
   const mapLoadedRef = useRef(false);
+  // GPS có thể trả về trước khi MapLibre dựng xong. Giữ lại tâm cần bay tới
+  // để lúc bản đồ sẵn sàng không quay về DEFAULT_POSITION ở Quận 1.
+  const pendingLocationCenterRef = useRef<Position | null>(null);
   const userMarkerRef = useRef<Marker | null>(null);
   // Pin đỏ đánh dấu POI đang chọn — kiểu ghim của Google Maps. Tách khỏi lớp
   // circle 'unclustered-point': lớp đó vẫn tô màu mọi POI, còn pin chỉ có MỘT
@@ -723,7 +739,6 @@ export function LocationExplorer() {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const [radius, setRadius] = useState(3_000);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [minRating, setMinRating] = useState(0);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [trending, setTrending] = useState<TrendingResponse | null>(null);
   // Metadata CẤP TRUY VẤN: đường truy xuất đã chạy, vành H3 đã quét, thời tiết
@@ -778,6 +793,11 @@ export function LocationExplorer() {
   const [transportMode, setTransportMode] =
     useState<TransportMode>('motorbike');
   const [showSteps, setShowSteps] = useState(false);
+  // POI mà người dùng ĐÃ BẤM "Chỉ đường". Tách khỏi selectedPoiId giống Google
+  // Maps: chọn một địa điểm chỉ hiện thông tin, tuyến đường chỉ được tính và
+  // vẽ khi người dùng chủ động yêu cầu. Chỉ có hiệu lực khi trùng POI đang chọn
+  // (xem `directionsActive`), nên chọn sang POI khác là tự thoát chế độ chỉ đường.
+  const [directionsPoiId, setDirectionsPoiId] = useState<string | null>(null);
   const [parserStatus, setParserStatus] = useState(
     'Sẵn sàng hiểu “gần Bến Thành”',
   );
@@ -967,26 +987,14 @@ export function LocationExplorer() {
     };
   }, [telemetryState.sessionId]);
 
-  // Lọc rating chạy phía client trên kết quả đã có: đổi mốc sao không cần gọi
-  // lại API, và danh sách lẫn bản đồ luôn khớp nhau.
-  const ratedPois = useMemo(
-    () => pois.filter((poi) => meetsMinRating(poi, minRating)),
-    [pois, minRating],
-  );
-
   // Kết quả tìm kiếm đứng trước và thắng khi trùng id: chúng mang request_id
   // và rank phục vụ telemetry, còn bản ghi từ /api/pois/nearby thì không.
   // Khai báo TRƯỚC effect lấy tuyến ngay dưới — deps của effect được đánh giá
   // lúc render, đặt sau là ReferenceError (temporal dead zone).
   const visiblePois = useMemo(() => {
-    const seen = new Set(ratedPois.map((poi) => poi.id));
-    return [
-      ...ratedPois,
-      ...areaPois.filter(
-        (poi) => !seen.has(poi.id) && meetsMinRating(poi, minRating),
-      ),
-    ];
-  }, [ratedPois, areaPois, minRating]);
+    const seen = new Set(pois.map((poi) => poi.id));
+    return [...pois, ...areaPois.filter((poi) => !seen.has(poi.id))];
+  }, [pois, areaPois]);
 
   // POI đang chọn. Khai báo PHẢI nằm trên effect lấy tuyến bên dưới: mảng
   // dependency của effect đó đọc `selectedPoi?.id` NGAY TRONG LÚC RENDER, nên
@@ -999,14 +1007,26 @@ export function LocationExplorer() {
     () => visiblePois.find((item) => item.id === selectedPoiId) ?? null,
     [visiblePois, selectedPoiId],
   );
+  useEffect(() => {
+    // Bỏ lần chạy đầu: 'poi-001' được chọn sẵn lúc mở trang, không phải thao tác của người dùng.
+    if (skipFirstSelectScrollRef.current) {
+      skipFirstSelectScrollRef.current = false;
+      return;
+    }
+    if (!selectedPoiId || typeof window === 'undefined' || window.innerWidth >= 1024) return;
+    mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [selectedPoiId]);
   // Giá trị nguyên thuỷ tách riêng để effect lấy tuyến đường bên dưới KHÔNG
   // bao giờ đóng gói tham chiếu tới `selectedPoi`/`visiblePois` — xem lý do
   // (179 request/lượt xem, đo được thật) ngay tại effect đó.
   const selectedPoiLatitude = selectedPoi?.latitude ?? null;
   const selectedPoiLongitude = selectedPoi?.longitude ?? null;
   const selectedPoiName = selectedPoi?.name ?? null;
+  const directionsActive =
+    directionsPoiId !== null && directionsPoiId === selectedPoiId;
 
-  // Lấy tuyến đường mỗi khi đổi POI đang chọn hoặc đổi vị trí người dùng.
+  // Lấy tuyến đường khi người dùng bật chỉ đường cho POI đang chọn, và tính lại
+  // khi đổi vị trí người dùng hoặc phương tiện. Chỉ CHỌN POI thì không gọi gì.
   //
   // Huỷ bằng AbortController: chọn nhanh ba POI liên tiếp thì ba yêu cầu cùng
   // bay, và nếu không huỷ thì cái nào về SAU sẽ ghi đè — người dùng thấy tuyến
@@ -1022,12 +1042,13 @@ export function LocationExplorer() {
     // Đây là điểm mấu chốt để effect không phải liệt kê `selectedPoi` vào
     // deps, xem giải thích đầy đủ ở deps bên dưới.
     if (
+      !directionsActive ||
       !selectedPoiId ||
       selectedPoiLatitude === null ||
       selectedPoiLongitude === null ||
       selectedPoiName === null
     ) {
-      // Reset có chủ đích khi bỏ chọn POI.
+      // Reset có chủ đích khi bỏ chọn POI hoặc thoát chế độ chỉ đường.
       // oxlint-disable-next-line react/react-compiler
       setRoute(null);
       setRouteStatus('idle');
@@ -1103,6 +1124,7 @@ export function LocationExplorer() {
     // Toạ độ và id là thứ thực sự quyết định tuyến đường; định danh của mảng
     // chứa chúng thì không.
   }, [
+    directionsActive,
     selectedPoiId,
     selectedPoiLatitude,
     selectedPoiLongitude,
@@ -1242,6 +1264,9 @@ export function LocationExplorer() {
         },
       });
       selectedSinceRef.current = Date.now();
+      // Chọn POI khác thì về lại chế độ xem thông tin. Bấm lại đúng POI đang
+      // chỉ đường thì giữ nguyên tuyến.
+      setDirectionsPoiId((current) => (current === poi.id ? current : null));
       setSelectedPoiId(poi.id);
       mapRef.current?.flyTo({
         center: [poi.longitude, poi.latitude],
@@ -1439,6 +1464,9 @@ export function LocationExplorer() {
         metadata: { source },
       });
       selectedSinceRef.current = Date.now();
+      setDirectionsPoiId((current) =>
+        current === enriched.id ? current : null,
+      );
       setSelectedPoiId(enriched.id);
       mapRef.current?.flyTo({
         center: [enriched.longitude, enriched.latitude],
@@ -1612,6 +1640,14 @@ export function LocationExplorer() {
       'bottom-left',
     );
     mapRef.current = map;
+    const pendingCenter = pendingLocationCenterRef.current;
+    if (pendingCenter) {
+      map.jumpTo({
+        center: [pendingCenter.longitude, pendingCenter.latitude],
+        zoom: 14,
+      });
+      pendingLocationCenterRef.current = null;
+    }
 
     // MapLibre chỉ phát `load` khi MỌI source trong style báo đã tải xong. Style
     // Streets của MapTiler có source `maptiler_attribution` kiểu vector nhưng không
@@ -2090,6 +2126,8 @@ export function LocationExplorer() {
           })),
         );
       }
+      // Kết quả đầu tiên được chọn sẵn để xem thông tin, KHÔNG tự chỉ đường.
+      setDirectionsPoiId(null);
       setSelectedPoiId(data.results[0]?.id ?? null);
       setGatewayStatus(`Gateway OK · ${data.requestId.slice(0, 8)}`);
       if (data.parsedLocation.matched && data.parsedLocation.bestMatch) {
@@ -2139,6 +2177,7 @@ export function LocationExplorer() {
       // Xoá metadata: giữ lại thì bảng tín hiệu vẫn khoe "truy xuất đa kênh"
       // trong khi màn hình đang là 6 POI mẫu bịa sẵn.
       setSearchMeta(null);
+      setDirectionsPoiId(null);
       setSelectedPoiId(fallback[0]?.id ?? null);
       setStatus(
         `${fallback.length} kết quả mẫu · khởi động backend để dùng PostGIS`,
@@ -2166,50 +2205,113 @@ export function LocationExplorer() {
       return;
     }
     setStatus('Đang lấy vị trí của bạn…');
-    navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        // Máy bàn/laptop không có GPS: trình duyệt trả vị trí đoán theo IP với
-        // accuracy hàng chục-trăm km. Tin tọa độ đó là bay bản đồ về một huyện
-        // ngẫu nhiên và tìm kiếm 0 kết quả — tệ hơn hẳn đứng yên ở trung tâm
-        // TP.HCM. Quá ngưỡng thì coi như KHÔNG định vị được, nói rõ sai số.
-        if (coords.accuracy > MAX_USABLE_ACCURACY_METERS) {
-          setGpsStatus(
-            `Vị trí quá mờ (±${Math.round(coords.accuracy / 1000)} km) · dùng vị trí mặc định`,
-          );
-          setStatus(
-            'Máy không định vị chính xác được — đang dùng trung tâm TP.HCM',
-          );
-          return;
-        }
-        const nextPosition = {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        };
-        setPosition(nextPosition);
-        setHasLocationConsent(true);
-        setGpsStatus(`GPS chính xác ±${Math.round(coords.accuracy)} m`);
-        telemetry.capture({
-          event_type: 'location_ping',
-          location: { ...nextPosition, accuracy_meters: coords.accuracy },
-          location_consent: true,
-          metadata: { source: 'browser-geolocation', high_accuracy: true },
-        });
-        mapRef.current?.flyTo({
+
+    const acceptLocation = (
+      { coords }: GeolocationPosition,
+      source: 'gps' | 'network',
+    ) => {
+      // Máy bàn/laptop không có GPS: trình duyệt trả vị trí đoán theo IP với
+      // accuracy hàng chục-trăm km. Tin tọa độ đó là bay bản đồ về một huyện
+      // ngẫu nhiên và tìm kiếm 0 kết quả — tệ hơn hẳn đứng yên ở trung tâm
+      // TP.HCM. Quá ngưỡng thì coi như KHÔNG định vị được, nói rõ sai số.
+      if (coords.accuracy > MAX_USABLE_ACCURACY_METERS) {
+        setGpsStatus(
+          `Vị trí quá mờ (±${Math.round(coords.accuracy / 1000)} km) · dùng vị trí mặc định`,
+        );
+        setStatus(
+          'Máy không định vị chính xác được — đang dùng trung tâm TP.HCM',
+        );
+        return false;
+      }
+      const nextPosition = {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      };
+      positionRef.current = nextPosition;
+      setPosition(nextPosition);
+      setHasLocationConsent(true);
+      setGpsStatus(
+        `${source === 'gps' ? 'GPS' : 'Vị trí mạng'} chính xác ±${Math.round(coords.accuracy)} m`,
+      );
+      setStatus('Đã dùng vị trí hiện tại của bạn');
+      try {
+        window.localStorage.setItem(
+          LAST_LOCATION_STORAGE_KEY,
+          JSON.stringify({
+            ...nextPosition,
+            accuracy: coords.accuracy,
+            savedAt: Date.now(),
+          }),
+        );
+      } catch {
+        // Chế độ riêng tư có thể chặn localStorage; GPS vẫn dùng bình thường.
+      }
+      telemetry.capture({
+        event_type: 'location_ping',
+        location: { ...nextPosition, accuracy_meters: coords.accuracy },
+        location_consent: true,
+        metadata: {
+          source: 'browser-geolocation',
+          high_accuracy: source === 'gps',
+        },
+      });
+      const map = mapRef.current;
+      if (map) {
+        map.flyTo({
           center: [nextPosition.longitude, nextPosition.latitude],
           zoom: 14,
+          essential: true,
         });
-        // Trước đây chỗ này nạp SAMPLE_POIS — 6 địa điểm hard-code quanh Quận 1.
-        // Người dùng ở Thủ Đức hay Hà Nội bấm "Vị trí của tôi" vẫn nhận đúng 6 POI
-        // đó, kèm khoảng cách tính từ toạ độ thật tới chúng: giao diện trông như
-        // đang chạy, số liệu thì vô nghĩa. Hỏi lại backend quanh toạ độ mới, truyền
-        // thẳng nextPosition vì setPosition chưa kịp vào state.
-        void runSearch(query, selectedCategory, nextPosition);
+        pendingLocationCenterRef.current = null;
+      } else {
+        pendingLocationCenterRef.current = nextPosition;
+      }
+      // Trước đây chỗ này nạp SAMPLE_POIS — 6 địa điểm hard-code quanh Quận 1.
+      // Người dùng ở Thủ Đức hay Hà Nội bấm "Vị trí của tôi" vẫn nhận đúng 6 POI
+      // đó, kèm khoảng cách tính từ toạ độ thật tới chúng: giao diện trông như
+      // đang chạy, số liệu thì vô nghĩa. Hỏi lại backend quanh toạ độ mới, truyền
+      // thẳng nextPosition vì setPosition chưa kịp vào state.
+      void runSearch(query, selectedCategory, nextPosition);
+      return true;
+    };
+
+    const handleFinalError = (error: GeolocationPositionError) => {
+      if (error.code === error.PERMISSION_DENIED) {
+        setGpsStatus('Quyền vị trí đang bị chặn trong trình duyệt');
+        setStatus('Hãy cho phép quyền vị trí rồi tải lại trang');
+      } else {
+        setGpsStatus('Không lấy được vị trí từ thiết bị hoặc mạng');
+        setStatus(
+          'Không thể lấy vị trí — đang dùng vị trí gần nhất hoặc trung tâm TP.HCM',
+        );
+      }
+    };
+
+    navigator.geolocation.getCurrentPosition(
+      (location) => {
+        acceptLocation(location, 'gps');
       },
-      () => {
-        setGpsStatus('GPS bị từ chối hoặc không khả dụng');
-        setStatus('Không thể lấy vị trí — đang dùng trung tâm TP.HCM');
+      (error) => {
+        if (error.code === error.PERMISSION_DENIED) {
+          handleFinalError(error);
+          return;
+        }
+        // Laptop thường không có cảm biến GPS. Nếu độ chính xác cao timeout,
+        // thử Wi-Fi/IP cache để vẫn có tâm gần người dùng thay vì cố định Q.1.
+        setGpsStatus('GPS chưa phản hồi · đang thử vị trí mạng…');
+        navigator.geolocation.getCurrentPosition(
+          (location) => {
+            acceptLocation(location, 'network');
+          },
+          handleFinalError,
+          {
+            enableHighAccuracy: false,
+            timeout: 12_000,
+            maximumAge: 5 * 60_000,
+          },
+        );
       },
-      { enableHighAccuracy: true, timeout: 8_000 },
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 60_000 },
     );
   }
   // `requestCurrentLocation` đọc `query`/`selectedCategory`/`runSearch` — cả
@@ -2270,6 +2372,40 @@ export function LocationExplorer() {
   useEffect(() => {
     if (autoLocatedRef.current) return;
     autoLocatedRef.current = true;
+    try {
+      const stored = JSON.parse(
+        window.localStorage.getItem(LAST_LOCATION_STORAGE_KEY) ?? 'null',
+      ) as (Position & { accuracy: number; savedAt: number }) | null;
+      const fresh =
+        stored && Date.now() - stored.savedAt <= LAST_LOCATION_MAX_AGE_MS;
+      const valid =
+        fresh &&
+        Number.isFinite(stored.latitude) &&
+        Number.isFinite(stored.longitude) &&
+        stored.accuracy <= MAX_USABLE_ACCURACY_METERS;
+      if (valid) {
+        const restored = {
+          latitude: stored.latitude,
+          longitude: stored.longitude,
+        };
+        pendingLocationCenterRef.current = restored;
+        window.queueMicrotask(() => {
+          positionRef.current = restored;
+          setPosition(restored);
+          setHasLocationConsent(true);
+          setGpsStatus(
+            `Vị trí gần nhất ±${Math.round(stored.accuracy)} m · đang cập nhật…`,
+          );
+          mapRef.current?.jumpTo({
+            center: [restored.longitude, restored.latitude],
+            zoom: 14,
+          });
+          void runSearchRef.current('', null, restored);
+        });
+      }
+    } catch {
+      // Dữ liệu cũ hỏng hoặc storage bị chặn: bỏ qua và xin GPS mới bên dưới.
+    }
     requestCurrentLocationRef.current();
   }, []);
 
@@ -2402,11 +2538,15 @@ export function LocationExplorer() {
     }
   }
 
+  /** Bật chế độ chỉ đường cho một POI — cách DUY NHẤT để tuyến được tính.
+   *  Effect lấy tuyến tự chạy khi `directionsActive` bật; effect vẽ tuyến tự
+   *  lùi khung nhìn cho vừa tuyến khi dữ liệu về. */
   function startNavigation(poi: Poi) {
     // Nút chính luôn ở trong ứng dụng. Trước đây khi route chưa kịp tải hoặc
     // POI mẫu không có UUID, nhánh cuối tự mở Google Maps — đúng cú nhảy trang
     // mà người dùng không mong đợi.
-    const inAppRoute = route && route.poiId === poi.id ? route : null;
+    const inAppRoute =
+      directionsActive && route && route.poiId === poi.id ? route : null;
     telemetry.capture({
       event_type: 'navigation_start',
       poi_id: poi.id,
@@ -2416,8 +2556,25 @@ export function LocationExplorer() {
         route_ready: Boolean(inAppRoute),
       },
     });
+    setShowSteps(true);
+    if (selectedPoiId !== poi.id) {
+      // "Chỉ đường" trong panel chi tiết có thể thuộc một POI chưa được chọn
+      // (deep link, địa điểm tương tự). Tuyến chỉ tính cho POI đang chọn, nên
+      // chọn nó trước — thêm vào danh sách nếu nó chưa có ở đó.
+      if (!visiblePois.some((item) => item.id === poi.id)) {
+        setPois((current) => [
+          {
+            ...poi,
+            distanceMeters:
+              poi.distanceMeters ?? distanceInMeters(position, poi),
+          },
+          ...current,
+        ]);
+      }
+      setSelectedPoiId(poi.id);
+    }
+    setDirectionsPoiId(poi.id);
     if (inAppRoute) {
-      setShowSteps(true);
       const map = mapRef.current;
       if (map) {
         const bounds = new maplibregl.LngLatBounds();
@@ -2432,21 +2589,13 @@ export function LocationExplorer() {
           duration: 700,
         });
       }
-      return;
-    }
-    if (routeStatus === 'loading') {
-      setStatus('Đang tính tuyến đường trong ứng dụng…');
-    } else if (routeStatus === 'off') {
-      setStatus('Chưa khởi động dịch vụ định tuyến OSRM');
-    } else {
-      setStatus('Không tìm được đường bộ tới địa điểm này');
     }
   }
 
   return (
-    <main className="min-h-screen bg-transparent text-foreground">
-      <header className="border-b border-emerald-950/10 bg-white/90 px-4 py-3 backdrop-blur-xl sm:px-6 dark:border-white/10 dark:bg-slate-950/80">
-        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4">
+    <main className="nearby-app min-h-dvh bg-transparent text-foreground">
+      <header className="app-header border-b border-emerald-950/10 bg-white/90 px-3 py-3 backdrop-blur-xl sm:px-6 dark:border-white/10 dark:bg-slate-950/80">
+        <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <div className="flex items-center gap-3">
             <div className="grid size-10 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-sm">
               <Compass className="size-5" />
@@ -2454,14 +2603,14 @@ export function LocationExplorer() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-lg font-bold tracking-tight">Nearby</span>
-                <Badge variant="secondary">Tầng 1-3 · Live</Badge>
+                <Badge variant="secondary" className="hidden sm:inline-flex">Tầng 1-3 · Live</Badge>
               </div>
               <p className="hidden text-xs text-muted-foreground sm:block">
                 Tìm kiếm địa điểm theo vị trí
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="header-actions flex w-full flex-wrap items-center gap-2 text-xs text-muted-foreground sm:w-auto">
             <span className="hidden sm:inline">TP. Hồ Chí Minh</span>
             {/* translate="no": tên ngôn ngữ đã là tên bản ngữ, không dịch. */}
             <label className="flex items-center gap-1" translate="no">
@@ -2470,7 +2619,7 @@ export function LocationExplorer() {
               <select
                 value={uiLanguage.language}
                 onChange={(event) => uiLanguage.setLanguage(event.target.value)}
-                className="h-8 max-w-[9.5rem] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                className="h-8 max-w-[7.5rem] rounded-md sm:max-w-[9.5rem] border border-input bg-background px-2 text-xs text-foreground"
                 aria-label="Ngôn ngữ / Language"
               >
                 {uiLanguage.languages.map((item) => (
@@ -2518,7 +2667,7 @@ export function LocationExplorer() {
               <Mic data-icon="inline-start" />
               <span className="hidden sm:inline">Giọng nói</span>
             </Button>
-            <Button variant="outline" size="sm" onClick={requestCurrentLocation}>
+            <Button variant="outline" size="sm" onClick={requestCurrentLocation} aria-label="Vị trí của tôi" title="Vị trí của tôi">
               <LocateFixed data-icon="inline-start" />
               Vị trí của tôi
             </Button>
@@ -2527,19 +2676,39 @@ export function LocationExplorer() {
               size="sm"
               onClick={() => (isWatching ? stopWatching() : startWatching())}
               title={watchStatus}
+              aria-label={isWatching ? 'Đang theo dõi vị trí' : 'Theo dõi vị trí'}
               aria-pressed={isWatching}
             >
               <Route data-icon="inline-start" />
-              {isWatching ? 'Đang theo dõi' : 'Theo dõi vị trí'}
+              <span className="hidden sm:inline">
+                {isWatching ? 'Đang theo dõi' : 'Theo dõi vị trí'}
+              </span>
             </Button>
           </div>
         </div>
       </header>
       <AboutDialog open={about.open} onOpenChange={about.onOpenChange} />
 
-      <section className="mx-auto grid max-w-[1500px] gap-4 p-4 lg:h-[calc(100vh-65px)] lg:grid-cols-[430px_minmax(0,1fr)] lg:p-5">
-        <aside className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto">
-          <Card className="shrink-0 border-0 shadow-[0_12px_40px_rgb(14_68_48/8%)] ring-emerald-950/10 lg:max-h-[50%] lg:overflow-y-auto">
+      <nav aria-label="Điều hướng trên điện thoại" className="mobile-navigation sticky top-0 z-20 flex gap-2 border-b border-border bg-background/95 px-3 py-2 backdrop-blur-lg lg:hidden">
+        <Button variant="outline" className="flex-1" onClick={() => document.getElementById('nearby-search')?.scrollIntoView({ block: 'start' })}>
+          <Search aria-hidden /> Tìm kiếm
+        </Button>
+        <Button variant="outline" className="flex-1" onClick={() => mapSectionRef.current?.scrollIntoView({ block: 'start' })}>
+          <MapPin aria-hidden /> Bản đồ
+        </Button>
+        <Button variant="outline" className="flex-1" onClick={() => document.getElementById('nearby-results')?.scrollIntoView({ block: 'start' })}>
+          <LayoutGrid aria-hidden /> Kết quả
+        </Button>
+      </nav>
+
+      <section
+        className={cn(
+          'explorer-layout mx-auto grid max-w-[1500px] grid-cols-[minmax(0,1fr)] gap-3 p-3 sm:gap-4 sm:p-4 lg:h-[calc(100dvh-65px)] lg:grid-cols-[430px_minmax(0,1fr)] lg:p-5',
+          chatOpen && 'xl:grid-cols-[390px_minmax(0,1fr)_360px]',
+        )}
+      >
+        <aside className="contents lg:flex lg:min-h-0 lg:min-w-0 lg:flex-col lg:gap-4 lg:overflow-y-auto">
+          <Card id="nearby-search" className="order-1 min-w-0 shrink-0 scroll-mt-20 border-0 shadow-[0_12px_40px_rgb(14_68_48/8%)] ring-emerald-950/10 lg:order-none lg:max-h-[50%] lg:overflow-y-auto">
             <CardHeader className="px-5 pt-5 pb-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -2563,7 +2732,7 @@ export function LocationExplorer() {
                   void searchNearby();
                 }}
               >
-                <div className="relative flex-1">
+                <div className="relative min-w-0 flex-1">
                   <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     className="h-11 rounded-xl bg-white pl-9 dark:bg-input/40"
@@ -2645,7 +2814,7 @@ export function LocationExplorer() {
                           // của input, và preventDefault chặn luôn blur đó —
                           // không thì onBlur đóng dropdown trước khi click
                           // kịp đăng ký, và cú bấm coi như không xảy ra.
-                          onMouseDown={(event) => {
+                          onPointerDown={(event) => {
                             event.preventDefault();
                             selectSuggestion(suggestion);
                           }}
@@ -2708,42 +2877,6 @@ export function LocationExplorer() {
                   <option value={5_000}>5 km</option>
                   <option value={10_000}>10 km</option>
                 </select>
-              </div>
-              <div className="flex flex-col gap-2 rounded-xl bg-muted/65 px-3 py-2.5">
-                <div className="flex items-center gap-2 text-sm">
-                  <Star className="size-4 fill-amber-400 text-amber-500" />
-                  <span>Đánh giá tối thiểu</span>
-                </div>
-                <div
-                  className="flex flex-wrap gap-1.5"
-                  role="radiogroup"
-                  aria-label="Lọc theo đánh giá tối thiểu"
-                >
-                  {MIN_RATING_OPTIONS.map((value) => (
-                    // <input type="radio"> sẽ phá layout chip (icon sao, bo
-                    // tròn, không có <label> đi kèm) — role="radio" trên
-                    // <button> là mẫu ARIA hợp lệ khi cần dáng chip nhưng vẫn
-                    // giữ đúng ngữ nghĩa radio group (đã có role="radiogroup"
-                    // + aria-checked ở trên/dưới).
-                    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
-                    <button role="radio"
-                      key={value}
-                      type="button"
-                      aria-checked={minRating === value}
-                      onClick={() => setMinRating(value)}
-                      className={`inline-flex items-center gap-1 ${chipClass(minRating === value)}`}
-                    >
-                      {value === 0 ? (
-                        'Tất cả'
-                      ) : (
-                        <>
-                          {value.toLocaleString('vi-VN')}
-                          <Star className="size-3 fill-current" />+
-                        </>
-                      )}
-                    </button>
-                  ))}
-                </div>
               </div>
               {categoryOptions.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
@@ -2859,6 +2992,7 @@ export function LocationExplorer() {
               </div>
             </CardContent>
           </Card>
+          <div className="order-2 min-w-0 shrink-0 lg:order-none">
           {parkingOpen ? (
             <ParkingFinder
               apiBaseUrl={API_BASE_URL}
@@ -2891,7 +3025,7 @@ export function LocationExplorer() {
                 type="button"
                 variant="outline"
                 onClick={() => setParkingOpen(true)}
-                className="h-11 justify-start gap-2 rounded-2xl border-emerald-950/10 bg-white/80 px-4 text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
+                className="h-auto min-h-11 min-w-0 justify-start gap-2 whitespace-normal rounded-2xl border-emerald-950/10 bg-white/80 px-3 py-2 text-left text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
               >
                 <CircleParking className="size-5 text-primary" aria-hidden />
                 Tìm chỗ gửi xe
@@ -2900,15 +3034,16 @@ export function LocationExplorer() {
                 type="button"
                 variant="outline"
                 onClick={() => setChargingOpen(true)}
-                className="h-11 justify-start gap-2 rounded-2xl border-emerald-950/10 bg-white/80 px-4 text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
+                className="h-auto min-h-11 min-w-0 justify-start gap-2 whitespace-normal rounded-2xl border-emerald-950/10 bg-white/80 px-3 py-2 text-left text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
               >
                 <Zap className="size-5 text-sky-600" aria-hidden />
                 Trạm sạc xe điện
               </Button>
             </div>
           )}
+          </div>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1 lg:min-h-60">
+          <div id="nearby-results" className="order-4 flex min-w-0 flex-col gap-4 scroll-mt-20 lg:order-none lg:min-h-60 lg:flex-1 lg:overflow-y-auto lg:pr-1">
             {showDiscovery &&
               trending &&
               (trending.pois.length > 0 || trending.queries.length > 0) && (
@@ -3048,9 +3183,7 @@ export function LocationExplorer() {
             <div className="shrink-0 flex items-center justify-between px-1">
               <h2 className="font-semibold">Địa điểm gần bạn</h2>
               <span className="text-xs text-muted-foreground">
-                {minRating > 0 && ratedPois.length !== pois.length
-                  ? `${ratedPois.length}/${pois.length} kết quả`
-                  : `${pois.length} kết quả`}
+                {pois.length} kết quả
               </span>
             </div>
             <div className="grid shrink-0 gap-3">
@@ -3060,7 +3193,7 @@ export function LocationExplorer() {
                   hai dòng cùng số 1. Thứ hạng server vẫn được ghi riêng vào
                   telemetry lúc impression — đó mới là số dùng để phân tích
                   position bias, và nó không cần khớp với số đang hiển thị. */}
-              {ratedPois.map((poi, index) => (
+              {pois.map((poi, index) => (
                 <button
                   type="button"
                   key={poi.id}
@@ -3077,8 +3210,8 @@ export function LocationExplorer() {
                       {index + 1}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1 basis-32 break-words">
                           <h3 className="font-semibold leading-tight">
                             {poi.name}
                           </h3>
@@ -3096,7 +3229,7 @@ export function LocationExplorer() {
                       <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
                         {poi.description}
                       </p>
-                      <div className="mt-3 flex items-center gap-3 text-xs">
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                         {poi.rating === null ? (
                           <span className="text-muted-foreground">
                             Chưa có đánh giá
@@ -3192,14 +3325,12 @@ export function LocationExplorer() {
                   </div>
                 </button>
               ))}
-              {ratedPois.length === 0 && (
+              {pois.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-border bg-white/70 p-8 text-center dark:bg-card/70">
                   <MapPin className="mx-auto size-8 text-muted-foreground" />
                   <p className="mt-3 font-medium">Chưa có địa điểm phù hợp</p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {minRating > 0 && pois.length > 0
-                      ? `Không có địa điểm nào đạt từ ${minRating.toLocaleString('vi-VN')}★ — hãy hạ mức đánh giá tối thiểu.`
-                      : 'Thử từ khóa khác hoặc tăng bán kính tìm kiếm.'}
+                    Thử từ khóa khác hoặc tăng bán kính tìm kiếm.
                   </p>
                 </div>
               )}
@@ -3207,15 +3338,15 @@ export function LocationExplorer() {
           </div>
         </aside>
 
-        <section className="relative min-h-[520px] overflow-hidden rounded-[26px] border border-emerald-950/10 bg-slate-100 shadow-[0_18px_60px_rgb(14_68_48/12%)] lg:min-h-0">
+        <section ref={mapSectionRef} className="nearby-map relative order-3 h-[65svh] min-h-[360px] min-w-0 scroll-mt-20 overflow-hidden rounded-2xl border border-emerald-950/10 bg-slate-100 shadow-[0_18px_60px_rgb(14_68_48/12%)] lg:order-none lg:h-auto lg:min-h-0 lg:rounded-[26px]">
           <div className="map-fallback absolute inset-0" aria-hidden="true" />
           <div
             ref={mapContainerRef}
             className="map-canvas-host absolute inset-0"
             aria-label="Bản đồ địa điểm"
           />
-          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-xl border border-white/70 bg-white/90 px-3 py-2 text-xs shadow-lg backdrop-blur-md dark:border-white/10 dark:bg-card/90">
-            <div className="flex items-center gap-2 font-medium">
+          <div className="pointer-events-none absolute left-2 right-14 top-2 z-10 rounded-xl border border-white/70 bg-white/90 px-2 py-2 text-[10px] shadow-lg backdrop-blur-md sm:left-4 sm:right-auto sm:top-4 sm:px-3 sm:text-xs dark:border-white/10 dark:bg-card/90">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
               <span className="size-2 rounded-full bg-sky-500" /> Vị trí của bạn
               <span className="ml-2 size-2 rounded-full bg-orange-500" /> POI
               <span className="ml-2 size-2 rounded-full bg-emerald-500" /> Cụm
@@ -3296,212 +3427,265 @@ export function LocationExplorer() {
           </div>
           )}
           {selectedPoi && (
-            <div className="absolute bottom-5 left-5 right-5 z-10 rounded-2xl border border-white/70 bg-white/92 p-4 shadow-xl backdrop-blur-xl sm:right-auto sm:w-[360px] dark:border-white/10 dark:bg-card/95">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <Badge variant="secondary">Đang chọn</Badge>
-                  <h2 className="mt-2 text-lg font-bold">{selectedPoi.name}</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {selectedPoi.address}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-start gap-1.5">
-                  <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
-                    <MapPin className="size-5" />
+            <div className="absolute bottom-3 left-3 right-3 z-10 max-h-[42%] overflow-y-auto rounded-2xl border border-white/70 bg-white/92 p-3 shadow-xl backdrop-blur-xl sm:bottom-5 sm:left-5 sm:right-auto sm:max-h-none sm:w-[360px] sm:overflow-visible sm:p-4 dark:border-white/10 dark:bg-card/95">
+              {/* Hai chế độ tách hẳn nhau như Google Maps: chọn POI chỉ hiện
+                  THÔNG TIN; bấm "Chỉ đường" (hoặc nút biểu tượng tuyến) mới
+                  sang chế độ CHỈ ĐƯỜNG — chọn phương tiện, tính và vẽ tuyến. */}
+              {directionsActive ? (
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-2">
+                    <button
+                      type="button"
+                      aria-label="Quay lại thông tin địa điểm"
+                      title="Quay lại thông tin địa điểm"
+                      onClick={() => setDirectionsPoiId(null)}
+                      className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <ArrowLeft className="size-4" />
+                    </button>
+                    <div className="min-w-0">
+                      <Badge variant="secondary">Chỉ đường</Badge>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Từ vị trí của bạn tới
+                      </p>
+                      <h2 className="text-lg font-bold">{selectedPoi.name}</h2>
+                    </div>
                   </div>
                   <button
                     type="button"
-                    aria-label="Đóng thẻ địa điểm"
-                    onClick={() => setSelectedPoiId(null)}
-                    className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    aria-label="Đóng chỉ đường"
+                    onClick={() => {
+                      setDirectionsPoiId(null);
+                      setSelectedPoiId(null);
+                    }}
+                    className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   >
                     <X className="size-4" />
                   </button>
                 </div>
-              </div>
-              <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm">
-                <span className="font-medium text-amber-600">
-                  {selectedPoi.rating === null
-                    ? 'Chưa có đánh giá'
-                    : `★ ${selectedPoi.rating.toFixed(1)}`}
-                </span>
-                <span>{formatDistance(selectedPoi.distanceMeters)}</span>
-                <Button size="sm" onClick={() => startNavigation(selectedPoi)}>
-                  Chỉ đường
-                </Button>
-              </div>
-              {/* Chọn phương tiện — mỗi phương tiện gọi một đồ thị OSRM
-                  riêng (car / foot / motorbike, xem docker-compose.yml). Đổi
-                  lựa chọn tự kích hoạt lại effect tính tuyến ở trên
-                  (transportMode nằm trong deps). */}
-              <div className="mt-3 flex gap-1.5 border-t border-border pt-3">
-                {TRANSPORT_MODES.map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    onClick={() => setTransportMode(item.value)}
-                    className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
-                      transportMode === item.value
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-border text-muted-foreground hover:bg-muted'
-                    }`}
-                  >
-                    {item.icon} {item.label}
-                  </button>
-                ))}
-              </div>
-              {/* Tuyến đường thật từ OSRM tự dựng. Ba trạng thái còn lại đều nói
-                  rõ VÌ SAO chưa có tuyến, thay vì để ô trống — người dùng không
-                  phân biệt được "đang tính" với "hỏng" nếu cả hai đều là khoảng
-                  trắng. */}
-              {routeStatus === 'loading' && (
-                <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-                  Đang tính đường đi…
-                </p>
-              )}
-              {routeStatus === 'off' && (
-                <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-                  Chưa khởi động dữ liệu định tuyến nội bộ.
-                </p>
-              )}
-              {routeStatus === 'none' && (
-                <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-                  Không tìm được đường bộ tới địa điểm này.
-                </p>
-              )}
-              {route && route.poiId === selectedPoi.id && (
-                <div className="mt-3 space-y-2 border-t border-border pt-3">
-                  <div className="flex items-center gap-3">
-                    <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
-                      <Route className="size-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold">
-                        {route.durationMinutes} phút ·{' '}
-                        {formatDistance(route.distanceMeters)}
-                      </p>
-                      {/* Nói rõ đây là ĐƯỜNG ĐI THẬT chứ không phải đường chim
-                          bay — con số cũ (etaMinutes) tính bằng khoảng cách
-                          thẳng chia vận tốc cố định nên luôn lạc quan.
-                          `approximate` (backend bật khi phải mượn đồ thị ô tô)
-                          xét TRƯỚC tên hồ sơ: im lặng ở đây là lừa người dùng
-                          rằng hệ thống đo đúng phương tiện họ chọn. Phải có
-                          nhánh 'motorbike' riêng — thiếu nó thì tuyến xe máy
-                          THẬT bị ghi nhãn "hồ sơ ô tô", sai theo hướng ngược
-                          lại với cảnh báo xấp xỉ. */}
-                      <p className="text-[11px] text-muted-foreground">
-                        {route.approximate
-                          ? 'Tuyến ô tô (xấp xỉ cho xe máy)'
-                          : route.mode === 'foot'
-                            ? 'Theo đường thật, hồ sơ đi bộ'
-                            : route.mode === 'motorbike'
-                              ? 'Theo đường thật, hồ sơ xe máy'
-                              : 'Theo đường thật, hồ sơ ô tô'}
-                        {route.cached ? ' · từ cache' : ''}
+              ) : (
+                <>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <Badge variant="secondary">Đang chọn</Badge>
+                      <h2 className="mt-2 text-lg font-bold">{selectedPoi.name}</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {selectedPoi.address}
                       </p>
                     </div>
-                    {route.steps.length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setShowSteps((current) => !current)}
+                    <div className="flex shrink-0 items-start gap-1.5">
+                      <button
+                        type="button"
+                        aria-label={`Chỉ đường tới ${selectedPoi.name}`}
+                        title="Chỉ đường"
+                        onClick={() => startNavigation(selectedPoi)}
+                        className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
                       >
-                        {showSteps ? 'Ẩn' : `${route.steps.length} bước`}
-                      </Button>
-                    )}
+                        <Route className="size-5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Đóng thẻ địa điểm"
+                        onClick={() => setSelectedPoiId(null)}
+                        className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
                   </div>
-                  {showSteps && (
-                    <ol className="max-h-44 space-y-1.5 overflow-y-auto pr-1 text-xs">
-                      {route.steps.map((step, index) => (
-                        <li
-                          key={`${index}-${step.text}`}
-                          className="flex items-start gap-2 rounded-lg bg-muted/60 px-2.5 py-1.5"
-                        >
-                          <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-primary/15 text-[9px] font-bold text-primary">
-                            {index + 1}
-                          </span>
-                          <span className="min-w-0 flex-1">{step.text}</span>
-                          <span className="shrink-0 tabular-nums text-muted-foreground">
-                            {formatDistance(step.distanceMeters)}
-                          </span>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
+                  <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm">
+                    <span className="font-medium text-amber-600">
+                      {selectedPoi.rating === null
+                        ? 'Chưa có đánh giá'
+                        : `★ ${selectedPoi.rating.toFixed(1)}`}
+                    </span>
+                    <span>{formatDistance(selectedPoi.distanceMeters)}</span>
+                    <Button size="sm" onClick={() => startNavigation(selectedPoi)}>
+                      Chỉ đường
+                    </Button>
+                  </div>
+                </>
               )}
-              {/* flex-wrap vì hai nút đều whitespace-nowrap (cva gốc của Button)
-                  nên min-width:auto ghim sàn cả hàng ở ~263px, flex-1 co không
-                  nổi. Thẻ chỉ rộng "viewport - 104px", tức máy 320-360px còn
-                  216-256px: không cho xuống dòng là nút thò ra ngoài viền thẻ,
-                  đè lên bản đồ rồi bị overflow-hidden của khung bản đồ cắt cụt
-                  chữ. Từ ~367px trở lên vẫn nằm gọn một hàng như cũ. */}
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => openDetail(selectedPoi.id, 'overlay')}
-                >
-                  <Info data-icon="inline-start" />
-                  Xem chi tiết
-                </Button>
-                <Button
-                  variant={
-                    savedByPoi.has(selectedPoi.id) ? 'default' : 'outline'
-                  }
-                  size="sm"
-                  className="shrink-0"
-                  title={
-                    savedByPoi.has(selectedPoi.id)
-                      ? 'Bỏ khỏi danh sách đã lưu'
-                      : 'Lưu địa điểm này'
-                  }
-                  onClick={() => void toggleSaved(selectedPoi)}
-                >
-                  {savedByPoi.has(selectedPoi.id) ? (
-                    <BookmarkCheck data-icon="inline-start" />
-                  ) : (
-                    <Bookmark data-icon="inline-start" />
+              {directionsActive && (
+                <>
+                  {/* Chọn phương tiện — mỗi phương tiện gọi một đồ thị OSRM
+                      riêng (car / foot / motorbike, xem docker-compose.yml). Đổi
+                      lựa chọn tự kích hoạt lại effect tính tuyến ở trên
+                      (transportMode nằm trong deps). */}
+                  <div className="mt-3 flex gap-1.5 border-t border-border pt-3">
+                    {TRANSPORT_MODES.map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => setTransportMode(item.value)}
+                        className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
+                          transportMode === item.value
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-border text-muted-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {item.icon} {item.label}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Tuyến đường thật từ OSRM tự dựng. Ba trạng thái còn lại đều nói
+                      rõ VÌ SAO chưa có tuyến, thay vì để ô trống — người dùng không
+                      phân biệt được "đang tính" với "hỏng" nếu cả hai đều là khoảng
+                      trắng. */}
+                  {routeStatus === 'loading' && (
+                    <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                      Đang tính đường đi…
+                    </p>
                   )}
-                  {savedByPoi.has(selectedPoi.id) ? 'Đã lưu' : 'Lưu'}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  title="Đặt địa điểm này làm nhà"
-                  onClick={() => void toggleSaved(selectedPoi, 'home')}
-                >
-                  <Home data-icon="inline-start" />
-                  Đặt làm nhà
-                </Button>
-                <Button
-                  variant={
-                    geofences.has(selectedPoi.id) ? 'default' : 'outline'
-                  }
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => void toggleGeofence(selectedPoi)}
-                >
-                  {geofences.has(selectedPoi.id) ? (
-                    <BellRing data-icon="inline-start" />
-                  ) : (
-                    <Bell data-icon="inline-start" />
+                  {routeStatus === 'off' && (
+                    <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                      Chưa khởi động dữ liệu định tuyến nội bộ.
+                    </p>
                   )}
-                  {geofences.has(selectedPoi.id)
-                    ? 'Đang nhắc · 300 m'
-                    : 'Nhắc tôi khi tới gần'}
-                </Button>
-              </div>
-              {geofences.size > 0 && (
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  {proximity.connected
-                    ? `Đang chờ thông báo · ${geofences.size} địa điểm`
-                    : 'Kênh thông báo chưa kết nối'}
-                  {proximity.permission === 'denied' &&
-                    ' · trình duyệt đang chặn quyền thông báo'}
-                </p>
+                  {routeStatus === 'none' && (
+                    <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                      Không tìm được đường bộ tới địa điểm này.
+                    </p>
+                  )}
+                  {route && route.poiId === selectedPoi.id && (
+                    <div className="mt-3 space-y-2 border-t border-border pt-3">
+                      <div className="flex items-center gap-3">
+                        <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+                          <Route className="size-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold">
+                            {route.durationMinutes} phút ·{' '}
+                            {formatDistance(route.distanceMeters)}
+                          </p>
+                          {/* Nói rõ đây là ĐƯỜNG ĐI THẬT chứ không phải đường chim
+                              bay — con số cũ (etaMinutes) tính bằng khoảng cách
+                              thẳng chia vận tốc cố định nên luôn lạc quan.
+                              `approximate` (backend bật khi phải mượn đồ thị ô tô)
+                              xét TRƯỚC tên hồ sơ: im lặng ở đây là lừa người dùng
+                              rằng hệ thống đo đúng phương tiện họ chọn. Phải có
+                              nhánh 'motorbike' riêng — thiếu nó thì tuyến xe máy
+                              THẬT bị ghi nhãn "hồ sơ ô tô", sai theo hướng ngược
+                              lại với cảnh báo xấp xỉ. */}
+                          <p className="text-[11px] text-muted-foreground">
+                            {route.approximate
+                              ? 'Tuyến ô tô (xấp xỉ cho xe máy)'
+                              : route.mode === 'foot'
+                                ? 'Theo đường thật, hồ sơ đi bộ'
+                                : route.mode === 'motorbike'
+                                  ? 'Theo đường thật, hồ sơ xe máy'
+                                  : 'Theo đường thật, hồ sơ ô tô'}
+                            {route.cached ? ' · từ cache' : ''}
+                          </p>
+                        </div>
+                        {route.steps.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowSteps((current) => !current)}
+                          >
+                            {showSteps ? 'Ẩn' : `${route.steps.length} bước`}
+                          </Button>
+                        )}
+                      </div>
+                      {showSteps && (
+                        <ol className="max-h-44 space-y-1.5 overflow-y-auto pr-1 text-xs">
+                          {route.steps.map((step, index) => (
+                            <li
+                              key={`${index}-${step.text}`}
+                              className="flex items-start gap-2 rounded-lg bg-muted/60 px-2.5 py-1.5"
+                            >
+                              <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-primary/15 text-[9px] font-bold text-primary">
+                                {index + 1}
+                              </span>
+                              <span className="min-w-0 flex-1">{step.text}</span>
+                              <span className="shrink-0 tabular-nums text-muted-foreground">
+                                {formatDistance(step.distanceMeters)}
+                              </span>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+              {!directionsActive && (
+                <>
+                  {/* flex-wrap vì hai nút đều whitespace-nowrap (cva gốc của Button)
+                      nên min-width:auto ghim sàn cả hàng ở ~263px, flex-1 co không
+                      nổi. Thẻ chỉ rộng "viewport - 104px", tức máy 320-360px còn
+                      216-256px: không cho xuống dòng là nút thò ra ngoài viền thẻ,
+                      đè lên bản đồ rồi bị overflow-hidden của khung bản đồ cắt cụt
+                      chữ. Từ ~367px trở lên vẫn nằm gọn một hàng như cũ. */}
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => openDetail(selectedPoi.id, 'overlay')}
+                    >
+                      <Info data-icon="inline-start" />
+                      Xem chi tiết
+                    </Button>
+                    <Button
+                      variant={
+                        savedByPoi.has(selectedPoi.id) ? 'default' : 'outline'
+                      }
+                      size="sm"
+                      className="shrink-0"
+                      title={
+                        savedByPoi.has(selectedPoi.id)
+                          ? 'Bỏ khỏi danh sách đã lưu'
+                          : 'Lưu địa điểm này'
+                      }
+                      onClick={() => void toggleSaved(selectedPoi)}
+                    >
+                      {savedByPoi.has(selectedPoi.id) ? (
+                        <BookmarkCheck data-icon="inline-start" />
+                      ) : (
+                        <Bookmark data-icon="inline-start" />
+                      )}
+                      {savedByPoi.has(selectedPoi.id) ? 'Đã lưu' : 'Lưu'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      title="Đặt địa điểm này làm nhà"
+                      onClick={() => void toggleSaved(selectedPoi, 'home')}
+                    >
+                      <Home data-icon="inline-start" />
+                      Đặt làm nhà
+                    </Button>
+                    <Button
+                      variant={
+                        geofences.has(selectedPoi.id) ? 'default' : 'outline'
+                      }
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => void toggleGeofence(selectedPoi)}
+                    >
+                      {geofences.has(selectedPoi.id) ? (
+                        <BellRing data-icon="inline-start" />
+                      ) : (
+                        <Bell data-icon="inline-start" />
+                      )}
+                      {geofences.has(selectedPoi.id)
+                        ? 'Đang nhắc · 300 m'
+                        : 'Nhắc tôi khi tới gần'}
+                    </Button>
+                  </div>
+                  {geofences.size > 0 && (
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      {proximity.connected
+                        ? `Đang chờ thông báo · ${geofences.size} địa điểm`
+                        : 'Kênh thông báo chưa kết nối'}
+                      {proximity.permission === 'denied' &&
+                        ' · trình duyệt đang chặn quyền thông báo'}
+                    </p>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -3514,7 +3698,7 @@ export function LocationExplorer() {
               chuyển sang một trang khác và người dùng đi tìm nút Lùi thay vì
               nút đóng ngay trên đầu panel. */}
           {detailPoiId && (
-            <div className="poi-detail-slide absolute inset-y-0 right-0 z-30 w-[92%] border-l border-emerald-950/10 bg-white shadow-[-20px_0_60px_rgb(14_68_48/18%)] sm:w-[420px] dark:border-white/10 dark:bg-card">
+            <div className="poi-detail-slide poi-detail-mobile fixed inset-y-0 right-0 z-50 w-full border-l border-emerald-950/10 bg-white shadow-[-20px_0_60px_rgb(14_68_48/18%)] sm:absolute sm:z-30 sm:w-[420px] sm:max-w-full dark:border-white/10 dark:bg-card">
               <PoiDetailPanel
                 key={detailPoiId}
                 detail={poiDetail}
@@ -3583,24 +3767,26 @@ export function LocationExplorer() {
             </div>
           )}
         </section>
+        {telemetryState.sessionId && (
+          <ChatWidget
+            apiBaseUrl={API_BASE_URL}
+            sessionId={telemetryState.sessionId}
+            position={position}
+            language={uiLanguage.language}
+            onViewPoi={(poiId) => openDetail(poiId, 'chat')}
+            onFocusLocation={(latitude, longitude) => {
+              mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 17, essential: true });
+              if (window.innerWidth < 1024) mapSectionRef.current?.scrollIntoView({ block: 'start' });
+            }}
+            onMapOverlay={setAssistantOverlay}
+            onPickOnMap={requestMapPick}
+            onOpenVoice={() => setVoiceOpen(true)}
+            onSimulatePosition={simulatePosition}
+            onSavedChanged={() => void reloadSavedPlaces()}
+            onOpenChange={setChatOpen}
+          />
+        )}
       </section>
-      {telemetryState.sessionId && (
-        <ChatWidget
-          apiBaseUrl={API_BASE_URL}
-          sessionId={telemetryState.sessionId}
-          position={position}
-          language={uiLanguage.language}
-          onViewPoi={(poiId) => openDetail(poiId, 'chat')}
-          onFocusLocation={(latitude, longitude) =>
-            mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 17, essential: true })
-          }
-          onMapOverlay={setAssistantOverlay}
-          onPickOnMap={requestMapPick}
-          onOpenVoice={() => setVoiceOpen(true)}
-          onSimulatePosition={simulatePosition}
-          onSavedChanged={() => void reloadSavedPlaces()}
-        />
-      )}
       {voiceOpen && (
         <VoiceMode
           apiBaseUrl={API_BASE_URL}
@@ -3610,7 +3796,7 @@ export function LocationExplorer() {
         />
       )}
       {mapPicking && (
-        <div className="fixed left-1/2 top-24 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full bg-slate-900/90 px-4 py-2 text-sm font-medium text-white shadow-lg">
+        <div className="fixed left-1/2 top-24 z-50 flex w-[calc(100%-2rem)] max-w-md -translate-x-1/2 items-center justify-between gap-3 rounded-xl bg-slate-900/90 px-4 py-2 text-sm font-medium text-white shadow-lg">
           Chạm lên bản đồ để đặt vị trí
           <button
             type="button"

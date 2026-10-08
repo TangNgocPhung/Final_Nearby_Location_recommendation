@@ -172,6 +172,106 @@ body {
   min-height: 100%;
 }
 
+/* Keep full-screen tools clear of phone notches and the home indicator. */
+.voice-mode {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.voice-content::before,
+.voice-content::after {
+  content: '';
+  flex: 1 0 0;
+}
+
+@media (max-width: 1023px) {
+  .nearby-app button,
+  .voice-mode button,
+  [data-slot='dialog-content'] button {
+    min-height: 44px;
+    min-width: 44px;
+    touch-action: manipulation;
+  }
+
+  .nearby-app input:not([type='radio']):not([type='checkbox']),
+  .nearby-app select,
+  .nearby-app textarea,
+  [data-slot='dialog-content'] input,
+  [data-slot='dialog-content'] select,
+  [data-slot='dialog-content'] textarea {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .maplibregl-ctrl-group button {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (max-width: 639px) {
+  .nearby-app {
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+    overflow-wrap: anywhere;
+  }
+
+  .header-actions {
+    gap: 6px;
+  }
+
+  .header-actions label {
+    flex: 1 1 100%;
+  }
+
+  .header-actions select {
+    flex: 1;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .chat-panel,
+  .poi-detail-mobile {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .chat-launcher {
+    bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  .nearby-app:has(.chat-panel:not(.hidden)) .chat-launcher {
+    display: none;
+  }
+
+  .voice-mode button[aria-pressed='true'] {
+    border-color: #6ee7b7;
+    background-color: rgb(16 185 129 / 15%);
+  }
+}
+
+@media (max-height: 500px) and (max-width: 900px) {
+  .chat-panel {
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
+    border-radius: 0;
+  }
+
+  .nearby-app:has(.chat-panel:not(.hidden)) .chat-launcher {
+    display: none;
+  }
+
+  .voice-mode .voice-mic {
+    width: 80px;
+    height: 80px;
+  }
+
+  .voice-mode .voice-mic svg {
+    width: 40px;
+    height: 40px;
+  }
+}
+
 body {
   background:
     radial-gradient(circle at 10% 0%, oklch(0.94 0.055 154 / 45%), transparent 34rem),

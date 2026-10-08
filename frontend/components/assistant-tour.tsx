@@ -140,8 +140,8 @@ export function AssistantTour({
   useEffect(() => {
     const controller = new AbortController();
     fetch(`${apiBaseUrl}/api/v1/languages`, { signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { languages: LanguageOption[] } | null) => {
+      .then((res): Promise<{ languages: LanguageOption[] }> | null => (res.ok ? res.json() : null))
+      .then((data) => {
         if (data?.languages?.length) setLanguages(data.languages);
       })
       .catch(() => undefined);

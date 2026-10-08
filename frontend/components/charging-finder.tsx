@@ -149,6 +149,9 @@ export function ChargingFinder({
             <button
               key={value}
               type="button"
+              // Chip dáng nút nhưng giữ ngữ nghĩa radio group (role="radiogroup" ở trên
+              // + aria-checked); <input type="radio"> sẽ phá layout chip.
+              // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
               role="radio"
               aria-checked={vehicle === value}
               onClick={() => setVehicle(value)}

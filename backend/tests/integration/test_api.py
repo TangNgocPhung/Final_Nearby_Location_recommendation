@@ -23,7 +23,9 @@ def test_health_and_categories_use_migrated_database() -> None:
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
     assert categories.status_code == 200
-    assert any(item["category"] == "cafe" for item in categories.json())
+    # `/api/v1/categories` gom theo NHÃN hiển thị (category_label), không theo mã
+    # OSM chi tiết — xem `fetch_categories`; cột "category" chính là nhãn.
+    assert any(item["category"] == "Cà phê" for item in categories.json())
 
 
 def test_contextual_search_parses_location_and_returns_ranked_pois() -> None:

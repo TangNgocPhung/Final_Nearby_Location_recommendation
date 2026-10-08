@@ -152,3 +152,19 @@ def test_ngoai_gio_an_van_goi_y_quan_an_gan_nha():
     home = {"label": "Nhà", "latitude": 10.7757, "longitude": 106.7009}
     chip = assistant.home_meal_chip(home, 10.7757, 106.7009, datetime(2026, 9, 28, 3, 0))
     assert chip["title"] == "Quán ăn gần nhà"
+
+
+def test_goi_y_bua_hien_tai_tim_truc_tiep_khong_cho_llm():
+    chip = assistant._meal_suggestion(datetime(2026, 9, 28, 12, 0), 10.7757, 106.7009)
+    assert chip is not None
+    assert chip["action"]["type"] == "search"
+    assert chip["action"]["category"] == "restaurant"
+
+
+def test_goi_y_moc_thoi_gian_tiep_theo():
+    chip = assistant._upcoming_meal_suggestion(
+        datetime(2026, 9, 28, 10, 0), 10.7757, 106.7009
+    )
+    assert chip["title"] == "Gợi ý cho bữa trưa"
+    assert "11:00 hôm nay" in chip["subtitle"]
+    assert chip["action"]["type"] == "search"

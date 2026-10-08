@@ -20,8 +20,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from typing import Any
 
 import psycopg
@@ -31,7 +33,7 @@ from . import geo_cache
 from .config import settings
 from .languages import ENGLISH_NAMES, LANGUAGE_CODES
 from .poi_detail import fetch_knowledge_map
-from .poi_features import CATEGORY_KEYWORDS, normalize_text
+from .poi_features import categories_for_query, normalize_text
 
 logger = logging.getLogger("nearby-chat")
 
@@ -44,43 +46,7 @@ REQUEST_TIMEOUT_SECONDS = 90.0
 HISTORY_KEY_PREFIX = "nearby:chat:history"
 HISTORY_TTL_SECONDS = 30 * 60
 HISTORY_MAX_TURNS = 6  # 6 cặp user/assistant gần nhất — đủ ngữ cảnh, không phình prompt
-
-_VALID_CATEGORIES = sorted(CATEGORY_KEYWORDS)
-
-_INTENT_SYSTEM_PROMPT = f"""Bạn là bộ phân tích ý định cho một app tìm địa điểm gần đây tên Nearby.
-Nhiệm vụ DUY NHẤT: đọc câu hỏi của người dùng và trả về JSON mô tả họ đang tìm gì.
-Bạn KHÔNG được tự đề xuất địa điểm, tên quán, hay bịa ra kết quả — chỉ trích tham số tìm kiếm.
-
-Trả về CHÍNH XÁC một object JSON theo schema sau, không thêm chữ nào khác (không giải thích, không markdown code fence). KHÔNG chép lại câu của người dùng vào bất kỳ trường nào — hệ thống tìm kiếm phía sau tự đọc nguyên văn câu gốc, bạn chỉ suy ra các trường phân loại dưới đây:
-{{
-  "category": string hoặc null, // CHỈ chọn 1 giá trị trong danh sách sau nếu rất chắc chắn, không thì để null: {", ".join(_VALID_CATEGORIES)}
-  "radius_m": số nguyên hoặc null, // bán kính tìm kiếm mét nếu người dùng nói rõ (vd "trong 1km" -> 1000), không thì null
-  "needs_clarification": true/false, // true nếu câu hỏi quá mơ hồ để tìm (vd chỉ chào hỏi, hoặc thiếu hẳn nội dung tìm kiếm)
-  "clarifying_question": string hoặc null // câu hỏi lại bằng tiếng Việt (tự viết mới, không chép câu người dùng) nếu needs_clarification=true, không thì null
-}}
-
-Ví dụ:
-Người dùng: "tìm quán cà phê gần đây"
-{{"category": "cafe", "radius_m": null, "needs_clarification": false, "clarifying_question": null}}
-
-Người dùng: "chào bạn"
-{{"category": null, "radius_m": null, "needs_clarification": true, "clarifying_question": "Chào bạn! Bạn đang muốn tìm địa điểm gì gần đây?"}}
-
-Người dùng: "chỗ nào yên tĩnh để ngồi làm việc, có wifi, trong bán kính 1km"
-{{"category": null, "radius_m": 1000, "needs_clarification": false, "clarifying_question": null}}
-"""
-
-# Dùng khi lần gọi đầu KHÔNG ra JSON hợp lệ — đo được thật (2026-09-20): câu
-# hỏi nêu tên địa danh cụ thể (vd "Dinh Độc Lập có gì đặc biệt") khiến
-# llama3.2:3b BỎ QUA hẳn schema JSON, tự trả lời bằng văn xuôi kèm sự kiện
-# lịch sử BỊA (vd nói Dinh Độc Lập ở Hà Nội, xây năm 1837 — sai hoàn toàn).
-# Ngắn và cứng hơn hẳn prompt chính: không kèm few-shot, không nhắc gì tới
-# "địa điểm" để giảm khả năng model liên tưởng sang việc mô tả nó.
-_INTENT_RETRY_SYSTEM_PROMPT = """Bạn là một bộ trích xuất dữ liệu (data extractor), KHÔNG PHẢI trợ lý hội thoại.
-TUYỆT ĐỐI không trả lời câu hỏi của người dùng, không mô tả/giải thích bất kỳ điều gì.
-Chỉ xuất ra ĐÚNG MỘT object JSON, không kèm chữ nào khác trước hay sau:
-{"category": string hoặc null, "radius_m": số nguyên hoặc null, "needs_clarification": false, "clarifying_question": null}
-Nếu không chắc category là gì, để null. KHÔNG bao giờ đặt needs_clarification=true ở lần thử này."""
+CHAT_RESULT_CARDS = 5  # số thẻ địa điểm khung chat hiện (MAX_RESULT_CARDS ở chat-widget.tsx)
 
 _EXPLAIN_SYSTEM_PROMPT = """Bạn là trợ lý của app tìm địa điểm gần đây tên Nearby.
 Bạn sẽ nhận được câu hỏi của người dùng và một danh sách POI (địa điểm) THẬT do hệ thống tìm kiếm trả về.
@@ -369,6 +335,18 @@ def get_history(session_id: str) -> list[dict[str, str]]:
         return []
 
 
+def clear_history(session_id: str) -> None:
+    """Nút "Cuộc trò chuyện mới": xoá ngữ cảnh để câu hỏi sau không bị hiểu
+    như câu hỏi nối tiếp cuộc trò chuyện cũ."""
+    client = geo_cache.get_client()
+    if client is None:
+        return
+    try:
+        client.delete(_history_key(session_id))
+    except Exception:  # noqa: BLE001 - xoá hụt thì lịch sử tự hết hạn sau HISTORY_TTL_SECONDS
+        logger.warning("Không xoá được lịch sử chat cho session %s", session_id)
+
+
 def _append_history(session_id: str, user_message: str, assistant_reply: str) -> None:
     client = geo_cache.get_client()
     if client is None:
@@ -416,6 +394,8 @@ def _ollama_chat(
         "messages": messages,
         "stream": False,
     }
+    if model is None:
+        body["keep_alive"] = settings.ollama_chat_keep_alive
     options: dict[str, Any] = {}
     if deterministic:
         # temperature=0: đo được thật — llama3.2:3b lệch dấu tiếng Việt ngẫu
@@ -447,18 +427,73 @@ def _ollama_chat(
     return content if isinstance(content, str) and content.strip() else None
 
 
-_LITERAL_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+def _ollama_chat_stream(messages: list[dict[str, str]], *, max_tokens: int) -> Iterator[str]:
+    """Như ``_ollama_chat`` (model chat) nhưng ``stream: true`` — trả từng mẩu
+    chữ ngay khi model sinh ra. Trên CPU ~7-8 token/giây, đoạn diễn giải
+    220 token mất ~30s mới xong; stream cho người dùng thấy chữ đầu tiên sau
+    vài giây thay vì nhìn spinner suốt nửa phút.
+
+    Lỗi (Ollama tắt, timeout giữa hai mẩu) thì dừng im lặng — bên gọi tự
+    nhận ra khi chưa nhận được chữ nào và trả lời dự phòng. ``timeout`` của
+    ``urlopen`` áp cho TỪNG lần đọc socket, không phải cả request, nên câu dài
+    không bị cắt ngang miễn là model vẫn đang sinh chữ đều.
+    """
+    if not settings.ollama_url:
+        return
+    body = {
+        "model": settings.ollama_chat_model,
+        "messages": messages,
+        "stream": True,
+        "keep_alive": settings.ollama_chat_keep_alive,
+        "options": {"num_predict": max_tokens},
+    }
+    request = urllib.request.Request(
+        f"{settings.ollama_url.rstrip('/')}/api/chat",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            for line in response:
+                if not line.strip():
+                    continue
+                chunk = json.loads(line)
+                piece = chunk.get("message", {}).get("content")
+                if isinstance(piece, str) and piece:
+                    yield piece
+                if chunk.get("done"):
+                    return
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        logger.warning("Gọi Ollama chat (stream) thất bại: %s", error)
 
 
-def _fix_literal_unicode_escapes(text: str) -> str:
-    """Vá double-escape: llama3.2:3b đôi khi sinh chuỗi JSON chứa literal
-    ``\\u00f4`` (một dấu backslash THẬT trong nội dung chuỗi, đã tự escape
-    thành ``\\\\u00f4`` trong JSON gốc) thay vì trực tiếp ký tự "ô" — đo được
-    thật (2026-09-20, câu hỏi "tối nay đi đâu hẹn hò" ra clarifying_question
-    chứa nguyên văn ``"hẹn h\\u00f4?"``). ``json.loads`` giải mã đúng chuẩn
-    JSON nên KHÔNG tự sửa được trường hợp này — chuỗi kết quả vẫn còn nguyên
-    dạng chữ, phải tự thay bằng tay."""
-    return _LITERAL_UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+def warm_up_chat_model() -> None:
+    """Nạp sẵn model chat vào RAM: Ollama nhận ``messages`` rỗng là chỉ nạp
+    model rồi trả về ngay. Không có bước này thì lượt chat đầu tiên sau khi
+    khởi động phải chờ thêm thời gian nạp model."""
+    if not settings.ollama_url:
+        return
+    body = {
+        "model": settings.ollama_chat_model,
+        "messages": [],
+        "keep_alive": settings.ollama_chat_keep_alive,
+    }
+    request = urllib.request.Request(
+        f"{settings.ollama_url.rstrip('/')}/api/chat",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            response.read()
+    except (urllib.error.URLError, OSError) as error:
+        logger.info("Không nạp sẵn được model chat (Ollama chưa sẵn sàng?): %s", error)
+
+
+def start_warmup() -> None:
+    threading.Thread(target=warm_up_chat_model, name="chat-warmup", daemon=True).start()
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -492,87 +527,141 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
-_DEFAULT_INTENT = {
-    "search_query": "",
-    "category": None,
-    "radius_m": None,
-    "needs_clarification": True,
-    "clarifying_question": "Ollama hiện không phản hồi, bạn thử lại giúp mình sau ít phút nhé.",
-}
+_FAST_SEARCH_MARKERS = ("gan day", "gan toi", "quanh day", "quanh toi", "o dau gan")
+_FAST_SEARCH_PREFIXES = ("tim ", "quan ", "nha hang ", "ca phe ", "cafe ", "tiem ")
 
 
-def extract_search_intent(session_id: str, user_message: str) -> dict[str, Any]:
-    """Trích tham số tìm kiếm có cấu trúc từ câu hỏi tự nhiên.
+def quick_search_intent(user_message: str) -> dict[str, Any] | None:
+    """Nhận diện truy vấn tìm địa điểm rõ ràng mà không cần chờ LLM."""
+    normalized = normalize_text(user_message).strip()
+    if not normalized:
+        return None
+    if not (
+        any(marker in normalized for marker in _FAST_SEARCH_MARKERS)
+        or normalized.startswith(_FAST_SEARCH_PREFIXES)
+    ):
+        return None
 
-    Không lấy được phản hồi hợp lệ từ Ollama (chết) -> coi như cần hỏi lại,
-    KHÔNG được tự đoán tham số tìm kiếm khi không chắc.
-
-    JSON hỏng (Ollama CÓ trả lời, nhưng lệch schema — đo được thật: model
-    thấy tên địa danh trong câu hỏi thì bỏ hẳn JSON, tự trả lời văn xuôi kèm
-    sự kiện bịa) thì thử lại ĐÚNG MỘT LẦN với prompt ngắn/cứng hơn
-    (``_INTENT_RETRY_SYSTEM_PROMPT``, không few-shot, không nhắc "địa điểm").
-    KHÔNG retry khi Ollama không phản hồi được (timeout/mất kết nối) — lỗi đó
-    thử lại cũng vẫn lỗi, chỉ tốn thêm tới 60s cho một request đã chậm sẵn.
-    """
-    messages = [{"role": "system", "content": _INTENT_SYSTEM_PROMPT}]
-    messages.extend(get_history(session_id))
-    messages.append({"role": "user", "content": user_message})
-
-    content = _ollama_chat(messages, deterministic=True, max_tokens=300)
-    if content is None:
-        return dict(_DEFAULT_INTENT)
-    parsed = _extract_json_object(content)
-    if parsed is None:
-        logger.warning("intent_extract: invalid_json - %r", content)
-        logger.warning("intent_extract: retry=1")
-        retry_content = _ollama_chat(
-            [
-                {"role": "system", "content": _INTENT_RETRY_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            deterministic=True,
-            max_tokens=150,
-        )
-        parsed = _extract_json_object(retry_content) if retry_content else None
-        if parsed is None:
-            logger.warning("intent_extract: retry_failed")
-            logger.warning("intent_extract: fallback")
-            return dict(_DEFAULT_INTENT)
-        logger.info("intent_extract: retry_success")
-
-    category = parsed.get("category")
-    if category not in _VALID_CATEGORIES:
-        category = None
-    radius = parsed.get("radius_m")
-    if not isinstance(radius, (int, float)) or radius <= 0:
-        radius = None
-
-    # Dùng THẲNG câu gốc của người dùng làm search_query, không qua LLM chép
-    # lại — BM25/Vector vốn đã hiểu ngôn ngữ tự nhiên, và bắt model 3B chép
-    # nguyên văn tiếng Việt vào JSON là đúng chỗ nó lệch dấu (xem
-    # `_INTENT_SYSTEM_PROMPT`).
-    clarifying_question = parsed.get("clarifying_question") or None
-    if clarifying_question:
-        clarifying_question = _fix_literal_unicode_escapes(clarifying_question)
-
+    category = None
+    category_terms = {
+        "restaurant": ("quan an", "nha hang", "an sang", "an trua", "an toi", "an dem"),
+        "cafe": ("ca phe", "cafe", "tra sua"),
+        "hospital": ("benh vien",),
+        "pharmacy": ("nha thuoc", "hieu thuoc"),
+        "park": ("cong vien",),
+    }
+    for candidate, terms in category_terms.items():
+        if any(term in normalized for term in terms):
+            category = candidate
+            break
     return {
         "search_query": user_message.strip(),
         "category": category,
-        "radius_m": int(radius) if radius else None,
-        "needs_clarification": bool(parsed.get("needs_clarification", False)),
-        "clarifying_question": clarifying_question,
+        "radius_m": None,
+        "needs_clarification": False,
+        "clarifying_question": None,
     }
 
 
-def explain_results(session_id: str, user_message: str, results: list[dict[str, Any]]) -> str:
-    """Diễn giải bằng lời danh sách POI THẬT đã có sẵn — không gọi lại search.
+def summarize_results_fast(session_id: str, user_message: str, results: list[dict[str, Any]]) -> str:
+    """Phản hồi tức thì cho truy vấn rõ ràng; các thẻ POI mang phần chi tiết."""
+    if not results:
+        reply = "Mình chưa tìm thấy địa điểm phù hợp gần bạn. Hãy thử đổi từ khóa hoặc mở rộng bán kính nhé."
+    else:
+        # Không nêu len(results): đó là trần truy vấn (20), không phải số địa
+        # điểm có thật, và khung chat chỉ hiện CHAT_RESULT_CARDS thẻ. Kết quả
+        # xếp theo độ phù hợp nên không gọi là "gần nhất".
+        shown = min(len(results), CHAT_RESULT_CARDS)
+        names = ", ".join(poi.get("name", "") for poi in results[:3] if poi.get("name"))
+        reply = f"Đây là {shown} chỗ hợp nhất gần bạn, nổi bật: {names}."
+    _append_history(session_id, user_message, reply)
+    return reply
+
+
+# Câu chỉ chào hỏi/cảm ơn, không có nội dung tìm kiếm — hỏi lại thay vì chạy
+# search với chữ "chào bạn". So trên chuỗi đã chuẩn hoá (không dấu).
+_SMALL_TALK_REPLIES = {
+    "chao": "Chào bạn! Bạn đang muốn tìm địa điểm gì gần đây?",
+    "xin chao": "Chào bạn! Bạn đang muốn tìm địa điểm gì gần đây?",
+    "hello": "Chào bạn! Bạn đang muốn tìm địa điểm gì gần đây?",
+    "hi": "Chào bạn! Bạn đang muốn tìm địa điểm gì gần đây?",
+    "alo": "Chào bạn! Bạn đang muốn tìm địa điểm gì gần đây?",
+    "cam on": "Không có gì! Bạn cần tìm thêm địa điểm nào nữa không?",
+    "thanks": "Không có gì! Bạn cần tìm thêm địa điểm nào nữa không?",
+    "ok": "Bạn cần tìm thêm địa điểm nào nữa không?",
+}
+_SMALL_TALK_FILLERS = {"ban", "nhe", "nha", "a", "ad", "shop", "bot", "nhieu", "you", "there"}
+# Đọc trên chuỗi GỐC đã lower(), không phải `normalize_text`: chuẩn hoá biến
+# "1,5km" thành "1 5km" và mất phần thập phân.
+_RADIUS_RE = re.compile(r"\b(\d+(?:[.,]\d+)?)\s*(km|mét|met|m)\b")
+_MIN_RADIUS_M = 100
+_MAX_RADIUS_M = 50_000
+
+
+def _small_talk_reply(normalized: str) -> str | None:
+    words = normalized.split()
+    for size in (2, 1):
+        head = " ".join(words[:size])
+        if head in _SMALL_TALK_REPLIES and all(word in _SMALL_TALK_FILLERS for word in words[size:]):
+            return _SMALL_TALK_REPLIES[head]
+    return None
+
+
+def _radius_from_message(user_message: str) -> int | None:
+    match = _RADIUS_RE.search(user_message.lower())
+    if match is None:
+        return None
+    value = float(match.group(1).replace(",", "."))
+    meters = value * 1000 if match.group(2) == "km" else value
+    return int(min(max(meters, _MIN_RADIUS_M), _MAX_RADIUS_M))
+
+
+def rule_based_intent(user_message: str) -> dict[str, Any]:
+    """Trích tham số tìm kiếm bằng luật, KHÔNG gọi LLM.
+
+    Trước đây bước này gọi llama3.2:3b để ra JSON — đo được thật (2026-10-08):
+    tốn 20-40s trên CPU chỉ để lấy ra ba thứ mà luật làm được tức thì và ổn
+    định hơn: bán kính ("trong 1km"), category (``categories_for_query``, chỉ
+    dùng để hiển thị — search luôn đọc nguyên văn câu gốc qua BM25/Vector),
+    và câu chào hỏi cần hỏi lại. Model 3B còn hay đánh dấu nhầm câu tìm kiếm
+    rõ ràng ("chỗ nào yên tĩnh để ngồi làm việc") là cần hỏi lại rồi chép
+    nguyên câu người dùng làm câu hỏi lại.
+    """
+    normalized = normalize_text(user_message)
+    small_talk = _small_talk_reply(normalized) if normalized else None
+    if not normalized or small_talk:
+        return {
+            "search_query": "",
+            "category": None,
+            "radius_m": None,
+            "needs_clarification": True,
+            "clarifying_question": small_talk,
+        }
+    categories = categories_for_query(user_message)
+    return {
+        "search_query": user_message.strip(),
+        "category": categories[0] if len(categories) == 1 else None,
+        "radius_m": _radius_from_message(user_message),
+        "needs_clarification": False,
+        "clarifying_question": None,
+    }
+
+
+# Số POI đưa vào prompt diễn giải. Model chỉ được dặn nêu 3-5 kết quả đầu,
+# đưa 10 POI (kèm knowledge) chỉ làm prompt dài thêm — trên CPU, đọc prompt
+# cũng tốn thời gian đáng kể.
+_EXPLAIN_TOP_N = 5
+
+
+def _explain_messages(user_message: str, results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Dựng prompt diễn giải từ danh sách POI THẬT.
 
     Thời tiết/độ đông đã được tính sẵn trong từng candidate bởi
     ``spatio_temporal.enrich_candidates`` (chạy TRƯỚC khi tới đây, bên trong
     ``rank_pois_detailed``) — hàm này chỉ ĐỌC lại để mô tả bằng lời, không tự
     tính toán gì thêm.
     """
-    top_results = results[:10]
+    top_results = results[:_EXPLAIN_TOP_N]
     # Tra `poi_knowledge` cho ĐÚNG các POI đang định nhắc tới — không phải cả
     # 8891 POI. DB lỗi thì coi như không POI nào có knowledge (an toàn: LLM
     # đã được dặn không kể lịch sử khi thiếu field này), không được làm hỏng
@@ -583,45 +672,70 @@ def explain_results(session_id: str, user_message: str, results: list[dict[str, 
         logger.warning("Không tra được poi_knowledge cho lượt chat, bỏ qua ngữ cảnh lịch sử")
         knowledge_map = {}
 
+    # Bỏ field null: phần lớn POI không có rating/knowledge, giữ "null" chỉ
+    # tốn token mà model cũng không dùng được gì.
     summary = [
         {
-            "name": poi.get("name"),
-            "category": poi.get("categoryLabel") or poi.get("category"),
-            "distanceMeters": poi.get("distanceMeters"),
-            "rating": poi.get("rating"),
-            "busyness": poi.get("busyness"),
-            "knowledge": knowledge_map.get(poi["id"]),
+            key: value
+            for key, value in {
+                "name": poi.get("name"),
+                "category": poi.get("categoryLabel") or poi.get("category"),
+                "distanceMeters": poi.get("distanceMeters"),
+                "rating": poi.get("rating"),
+                "busyness": poi.get("busyness"),
+                "knowledge": knowledge_map.get(poi["id"]),
+            }.items()
+            if value is not None
         }
         for poi in top_results
     ]
     # Thời tiết là ngữ cảnh của CẢ lượt tìm kiếm (tính một lần ở tâm truy vấn),
     # không phải của riêng từng POI — lấy từ candidate đầu tiên nếu có.
     weather = results[0].get("weather") if results else None
-    messages = [
+    content = f"Câu hỏi của người dùng: {user_message!r}\n"
+    if weather is not None:
+        content += f"Thời tiết hiện tại (JSON): {json.dumps(weather, ensure_ascii=False)}\n"
+    content += f"Danh sách POI tìm được (JSON): {json.dumps(summary, ensure_ascii=False)}"
+    return [
         {"role": "system", "content": _EXPLAIN_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Câu hỏi của người dùng: {user_message!r}\n"
-                f"Thời tiết hiện tại (JSON, có thể null nếu tắt): {json.dumps(weather, ensure_ascii=False)}\n"
-                f"Danh sách POI tìm được (JSON): {json.dumps(summary, ensure_ascii=False)}"
-            ),
-        },
+        {"role": "user", "content": content},
     ]
-    content = _ollama_chat(messages, max_tokens=220)
-    if content is not None:
-        _append_history(session_id, user_message, content)
-        return content
 
+
+def _explain_fallback(results: list[dict[str, Any]]) -> str:
     # Ollama không tới được: vẫn trả lời có ích bằng cách liệt kê thẳng kết
     # quả thật, không bịa văn xuôi.
     if not results:
-        fallback = "Mình chưa tìm thấy địa điểm phù hợp gần bạn. Bạn thử đổi từ khoá hoặc mở rộng bán kính xem sao."
-    else:
-        names = ", ".join(poi.get("name", "") for poi in results[:5] if poi.get("name"))
-        fallback = f"Mình tìm được vài chỗ gần bạn: {names}."
-    _append_history(session_id, user_message, fallback)
-    return fallback
+        return "Mình chưa tìm thấy địa điểm phù hợp gần bạn. Bạn thử đổi từ khoá hoặc mở rộng bán kính xem sao."
+    names = ", ".join(poi.get("name", "") for poi in results[:5] if poi.get("name"))
+    return f"Mình tìm được vài chỗ gần bạn: {names}."
+
+
+def explain_results_stream(session_id: str, user_message: str, results: list[dict[str, Any]]) -> Iterator[str]:
+    """Diễn giải bằng lời danh sách POI THẬT đã có sẵn — không gọi lại search.
+    Trả từng mẩu chữ ngay khi LLM sinh ra (xem ``_ollama_chat_stream``)."""
+    if not results:
+        # Không có gì để diễn giải — câu xin lỗi cố định trả ngay, không chờ
+        # LLM nói lại đúng ý đó.
+        reply = _explain_fallback(results)
+        _append_history(session_id, user_message, reply)
+        yield reply
+        return
+
+    pieces: list[str] = []
+    for piece in _ollama_chat_stream(_explain_messages(user_message, results), max_tokens=220):
+        pieces.append(piece)
+        yield piece
+    reply = "".join(pieces).strip()
+    if not reply:
+        reply = _explain_fallback(results)
+        yield reply
+    _append_history(session_id, user_message, reply)
+
+
+def explain_results(session_id: str, user_message: str, results: list[dict[str, Any]]) -> str:
+    """Bản không stream của ``explain_results_stream`` (cho ``POST /api/v1/chat``)."""
+    return "".join(explain_results_stream(session_id, user_message, results)).strip()
 
 
 def record_clarification(session_id: str, user_message: str, clarifying_question: str) -> None:

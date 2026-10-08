@@ -239,6 +239,7 @@ export type PoiPhoto = {
   sourceUrl: string;
   license: string | null;
   attribution: string | null;
+  authorAttributions?: { displayName?: string; uri?: string; photoUri?: string }[];
 };
 
 export type PoiPhotos = {
@@ -585,6 +586,21 @@ function PhotoCaption({
   className?: string;
 }) {
   const isPlace = photo.confidence === 'place';
+  if (photo.source === 'google') {
+    return (
+      <div className={cn('space-y-1 text-xs text-muted-foreground', className)}>
+        <a href={photo.sourceUrl} translate="no" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 whitespace-nowrap font-normal text-[#5e5e5e] dark:text-white underline">
+          Google Maps <ExternalLink className="size-3" aria-hidden />
+        </a>
+        {photo.authorAttributions?.map((author, index) => (
+          <a key={index} href={author.uri} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
+            {author.photoUri && <img src={author.photoUri} alt="" className="size-6 rounded-full" referrerPolicy="no-referrer" />}
+            {author.displayName}
+          </a>
+        ))}
+      </div>
+    );
+  }
   return (
     <div className={cn('space-y-0.5 text-[11px] leading-snug', className)}>
       {/* data-tone là "móc" để chỗ gọi nhắm ĐÚNG dòng cảnh báo này. Nhắm theo

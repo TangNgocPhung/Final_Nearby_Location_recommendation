@@ -1,7 +1,19 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Home, MapPin, MessageCircle, Search, Send, Sparkles, Star, Users, X } from 'lucide-react';
+import {
+  Home,
+  MapPin,
+  MessageCircle,
+  RotateCw,
+  Search,
+  Send,
+  Sparkles,
+  SquarePen,
+  Star,
+  Users,
+  X,
+} from 'lucide-react';
 
 import { AssistantExplore } from '@/components/assistant-explore';
 import { AssistantMeetup } from '@/components/assistant-meetup';
@@ -54,16 +66,18 @@ type ChatPoiResult = {
   busyness?: ChatBusyness | null;
 };
 
-type ChatResponse = {
-  reply: string;
-  needsClarification: boolean;
-  searchParams: { query: string; category: string | null; radius: number } | null;
-  results: ChatPoiResult[];
-};
+// Từng dòng NDJSON của POST /api/v1/chat/stream: kết quả search tới trước
+// (~1s), lời diễn giải của LLM tới dần sau — xem `chat_turn_stream` (app/api.py).
+type ChatStreamEvent =
+  | { type: 'results'; needsClarification: boolean; results: ChatPoiResult[] }
+  | { type: 'delta'; text: string }
+  | { type: 'done'; reply: string };
 
 type ChatTurn = {
   role: 'user' | 'assistant';
   content: string;
+  /** câu trả lời đang được LLM viết dần (stream chưa xong) */
+  pending?: boolean;
   results?: ChatPoiResult[];
   /** địa điểm gắn với một gợi ý sự kiện (có thể là con phố, không có poiId) */
   places?: PlaceRef[];
@@ -78,6 +92,21 @@ type ChatTurn = {
 // Tải lại gợi ý khi người dùng đi xa hơn mức này, hoặc sau REFRESH_MS.
 const SUGGESTION_MOVE_METERS = 1000;
 const SUGGESTION_REFRESH_MS = 10 * 60 * 1000;
+// Số thẻ địa điểm hiện dưới mỗi câu trả lời — tìm trực tiếp cũng chỉ lấy
+// đúng chừng này để câu "N địa điểm…" khớp với số thẻ người dùng thấy.
+const MAX_RESULT_CARDS = 5;
+const SAMPLE_QUESTION = 'Quán cà phê yên tĩnh gần đây';
+
+// Tính năng của trợ lý luôn hiện sẵn, không chờ API gợi ý: API chậm (lần đầu
+// phải gọi dịch vụ thời tiết) hoặc lỗi thì các tính năng này vẫn mở được.
+// API trả chip cùng loại thì chỉ mượn dòng phụ có số liệu thật của nó.
+const FEATURE_CHIPS: Suggestion[] = [
+  { id: 'tour', kind: 'tour', icon: '🎧', title: 'Tour thuyết minh', subtitle: 'Đi bộ nghe kể chuyện di tích', action: { type: 'tour' } },
+  { id: 'explore', kind: 'explore', icon: '🗺️', title: 'Săn địa danh', subtitle: 'Khám phá địa danh quanh bạn', action: { type: 'explore' } },
+  { id: 'voice', kind: 'voice', icon: '🎙️', title: 'Giọng nói', subtitle: 'Tìm và đi tới chỉ bằng lời', action: { type: 'voice' } },
+  { id: 'meetup', kind: 'meetup', icon: '🤝', title: 'Hẹn nhóm', subtitle: 'Quán công bằng cho cả nhóm', action: { type: 'meetup' } },
+];
+const FEATURE_KINDS = new Set<Suggestion['kind']>(FEATURE_CHIPS.map((chip) => chip.kind));
 
 function SuggestionChip({
   suggestion,
@@ -202,6 +231,7 @@ export function ChatWidget({
   onOpenVoice,
   onSimulatePosition,
   onSavedChanged,
+  onOpenChange,
 }: {
   apiBaseUrl: string;
   sessionId: string;
@@ -218,10 +248,40 @@ export function ChatWidget({
   onSimulatePosition?: (latitude: number, longitude: number) => void;
   /** danh sách "Đã lưu" vừa đổi (vd vừa đặt nhà) — để thanh bên tải lại */
   onSavedChanged?: () => void;
+  /** Báo cho bố cục chính dành một cột riêng cho trợ lý trên màn hình rộng. */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const changeOpen = useCallback((next: boolean | ((current: boolean) => boolean)) => {
+    setOpen((current) => {
+      const value = typeof next === 'function' ? next(current) : next;
+      onOpenChange?.(value);
+      return value;
+    });
+  }, [onOpenChange]);
+  const viewPoi = (poiId: string) => {
+    if (window.innerWidth < 1280) changeOpen(false);
+    onViewPoi(poiId);
+  };
+  const focusLocation = (latitude: number, longitude: number) => {
+    if (window.innerWidth < 1280) changeOpen(false);
+    onFocusLocation(latitude, longitude);
+  };
+  const pickOnMap = (callback: ((latitude: number, longitude: number) => void) | null) => {
+    if (!callback) {
+      onPickOnMap(null);
+      return;
+    }
+    const restoreChat = window.innerWidth < 1280;
+    if (restoreChat) changeOpen(false);
+    onPickOnMap((latitude, longitude) => {
+      callback(latitude, longitude);
+      if (restoreChat) changeOpen(true);
+    });
+  };
   const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
+  const [suggestionsFailed, setSuggestionsFailed] = useState(false);
   const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
   // Tăng lên để buộc tải lại gợi ý (vd vừa lưu nhà → hiện chip "quán gần nhà").
   const [suggestionsVersion, setSuggestionsVersion] = useState(0);
@@ -241,8 +301,13 @@ export function ChatWidget({
     if (text === undefined) setInput('');
     setTurns((prev) => [...prev, { role: 'user', content: message }]);
     setLoading(true);
+    let started = false;
+    // Sửa lượt trợ lý cuối cùng — chính lượt đang được stream.
+    const updateReply = (patch: (turn: ChatTurn) => ChatTurn) =>
+      setTurns((prev) => [...prev.slice(0, -1), patch(prev[prev.length - 1])]);
+    const failMessage = 'Xin lỗi, trợ lý hiện không phản hồi được. Bạn thử lại sau ít phút nhé.';
     try {
-      const response = await fetch(`${apiBaseUrl}/api/v1/chat`, {
+      const response = await fetch(`${apiBaseUrl}/api/v1/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -252,22 +317,47 @@ export function ChatWidget({
           longitude: positionRef.current.longitude,
         }),
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data: ChatResponse = await response.json();
-      setTurns((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.reply, results: data.results },
-      ]);
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const handle = (event: ChatStreamEvent) => {
+        if (event.type === 'results') {
+          started = true;
+          setTurns((prev) => [
+            ...prev,
+            { role: 'assistant', content: '', results: event.results, pending: true },
+          ]);
+        } else if (event.type === 'delta') {
+          updateReply((turn) => ({ ...turn, content: turn.content + event.text }));
+        } else {
+          updateReply((turn) => ({ ...turn, content: event.reply || turn.content, pending: false }));
+        }
+      };
+      let chunk = await reader.read();
+      while (!chunk.done) {
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line) handle(JSON.parse(line) as ChatStreamEvent);
+          newline = buffer.indexOf('\n');
+        }
+        chunk = await reader.read();
+      }
+      if (!started) throw new Error('empty stream');
+      // Stream đứt giữa chừng (mất mạng) mà chưa có chữ nào thì báo lỗi thay
+      // vì để bong bóng trống mãi.
+      updateReply((turn) => ({ ...turn, content: turn.content || failMessage, pending: false }));
     } catch {
       // Backend/Ollama tạm không tới được — nói thẳng, không bịa câu trả lời
       // giả như đang tìm kiếm thành công.
-      setTurns((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Xin lỗi, trợ lý hiện không phản hồi được. Bạn thử lại sau ít phút nhé.',
-        },
-      ]);
+      if (started) {
+        updateReply((turn) => ({ ...turn, content: turn.content || failMessage, pending: false }));
+      } else {
+        setTurns((prev) => [...prev, { role: 'assistant', content: failMessage }]);
+      }
     } finally {
       setLoading(false);
     }
@@ -288,16 +378,49 @@ export function ChatWidget({
       signal: controller.signal,
       headers: { 'X-Session-ID': sessionId },
     })
-      .then((res) => (res.ok ? (res.json() as Promise<SuggestionsResponse>) : null))
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json() as Promise<SuggestionsResponse>;
+      })
       .then((data) => {
-        if (data) setSuggestions(data);
+        setSuggestions(data);
+        setSuggestionsFailed(false);
       })
       .catch(() => {
-        // Lỗi thì cho phép thử lại lần mở sau.
+        // Lỗi thì cho phép thử lại (nút "Thử lại" hoặc lần mở sau). Bị huỷ vì
+        // effect chạy lại thì không phải lỗi — lần tải mới đang chạy.
         suggestedAtRef.current = null;
+        if (!controller.signal.aborted) setSuggestionsFailed(true);
       });
     return () => controller.abort();
   }, [apiBaseUrl, open, position, sessionId, suggestionsVersion]);
+
+  /** Xoá cả lịch sử phía backend: không xoá thì câu hỏi đầu của cuộc mới vẫn
+   * bị hiểu như câu nối tiếp ("còn chỗ nào khác không?"). Chỉ bấm được khi
+   * không có lượt nào đang stream — stream sẽ ghi vào lượt cuối của danh sách. */
+  const newConversation = () => {
+    setTurns([]);
+    void fetch(`${apiBaseUrl}/api/v1/chat/history`, {
+      method: 'DELETE',
+      headers: { 'X-Session-ID': sessionId },
+    }).catch(() => {
+      // Xoá hụt thì lịch sử tự hết hạn sau 30 phút — không chặn người dùng.
+    });
+  };
+
+  const retrySuggestions = () => {
+    setSuggestionsFailed(false);
+    suggestedAtRef.current = null;
+    setSuggestionsVersion((value) => value + 1);
+  };
+
+  // Chip ngữ cảnh (lễ, mưa, giờ ăn, nhà) tách khỏi chip tính năng: tính năng
+  // đã có hàng cố định riêng, không lặp lại.
+  const contextChips = (suggestions?.suggestions ?? []).filter((chip) => !FEATURE_KINDS.has(chip.kind));
+  const featureChips = FEATURE_CHIPS.filter((chip) => chip.kind !== 'voice' || onOpenVoice).map((chip) => {
+    const live = suggestions?.suggestions.find((item) => item.kind === chip.kind);
+    return live ? { ...chip, subtitle: live.subtitle } : chip;
+  });
 
   /** Tìm trực tiếp theo category quanh một toạ độ (tiệm hoa, quán gần nhà) —
    * pipeline xếp hạng thật, không qua LLM nên chạy cả khi Ollama tắt. */
@@ -309,10 +432,12 @@ export function ChatWidget({
           lat: String(action.latitude),
           lng: String(action.longitude),
           radius: String(action.radius),
-          limit: '8',
+          limit: String(MAX_RESULT_CARDS),
         });
         if (action.category) params.set('category', action.category);
-        if (action.query) params.set('q', action.query);
+        // Category đã đủ để lọc trực tiếp. Chỉ gửi q khi không biết category;
+        // q kích hoạt semantic search/embedding và chậm hơn đáng kể.
+        if (action.query && !action.category) params.set('q', action.query);
         const res = await fetch(`${apiBaseUrl}/api/pois/nearby?${params}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const results = (await res.json()) as ChatPoiResult[];
@@ -421,9 +546,9 @@ export function ChatWidget({
       <Button
         type="button"
         size="icon"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => changeOpen((value) => !value)}
         aria-label={open ? 'Đóng trợ lý' : 'Mở trợ lý tìm kiếm'}
-        className="fixed right-4 bottom-4 z-40 size-12 rounded-full shadow-lg sm:right-6 sm:bottom-6"
+        className="chat-launcher fixed right-4 bottom-4 z-40 size-12 rounded-full shadow-lg sm:right-6 sm:bottom-6"
       >
         {open ? <X className="size-5" /> : <MessageCircle className="size-5" />}
       </Button>
@@ -432,28 +557,46 @@ export function ChatWidget({
           phải tiếp tục đọc khi người dùng thu nhỏ trợ lý để nhìn bản đồ. */}
       <div
         className={cn(
-          'fixed inset-x-4 bottom-20 z-40 flex h-[70vh] max-h-[600px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl sm:right-6 sm:bottom-24 sm:left-auto sm:w-96',
+          'chat-panel fixed inset-0 z-40 flex h-dvh min-h-0 flex-col overflow-hidden border border-border bg-card shadow-2xl sm:inset-x-auto sm:top-auto sm:right-6 sm:bottom-24 sm:h-[min(620px,calc(100dvh-8rem))] sm:w-96 sm:rounded-xl xl:static xl:z-auto xl:h-full xl:max-h-none xl:min-h-0 xl:w-full xl:rounded-[26px] xl:shadow-[0_18px_60px_rgb(14_68_48/12%)]',
           !open && 'hidden',
         )}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-          <div>
-            <p className="text-sm font-semibold">Trợ lý Nearby</p>
-            <p className="text-xs text-muted-foreground">
-              {suggestions?.lunarDate
-                ? `Âm lịch ${suggestions.lunarDate}`
-                : 'Hỏi bằng lời — mình tìm địa điểm thật gần bạn'}
+          <div className="min-w-0">
+            <p className="flex items-baseline gap-2 text-sm font-semibold">
+              Trợ lý Nearby
+              {suggestions?.lunarDate && (
+                <span className="truncate text-[11px] font-normal text-muted-foreground">
+                  Âm lịch {suggestions.lunarDate}
+                </span>
+              )}
             </p>
+            <p className="text-xs text-muted-foreground">Hỏi bằng lời — mình tìm địa điểm thật gần bạn</p>
           </div>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            onClick={() => setOpen(false)}
-            aria-label="Đóng"
-          >
-            <X className="size-4" />
-          </Button>
+          <div className="flex shrink-0 items-center">
+            {view === 'chat' && turns.length > 0 && (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={newConversation}
+                disabled={loading}
+                aria-label="Cuộc trò chuyện mới"
+                title="Cuộc trò chuyện mới"
+              >
+                <SquarePen className="size-4" />
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={() => changeOpen(false)}
+              aria-label="Đóng"
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
         </div>
 
         {view === 'tour' ? (
@@ -462,18 +605,18 @@ export function ChatWidget({
             position={position}
             language={language}
             onBack={() => setView('chat')}
-            onViewPoi={onViewPoi}
+            onViewPoi={viewPoi}
             onMapOverlay={onMapOverlay}
-            onFocusLocation={onFocusLocation}
+            onFocusLocation={focusLocation}
           />
         ) : view === 'meetup' ? (
           <AssistantMeetup
             apiBaseUrl={apiBaseUrl}
             position={position}
             onBack={() => setView('chat')}
-            onViewPoi={onViewPoi}
+            onViewPoi={viewPoi}
             onMapOverlay={onMapOverlay}
-            onPickOnMap={onPickOnMap}
+            onPickOnMap={pickOnMap}
           />
         ) : view === 'explore' ? (
           <AssistantExplore
@@ -487,10 +630,10 @@ export function ChatWidget({
               suggestedAtRef.current = null;
               setSuggestionsVersion((value) => value + 1);
             }}
-            onViewPoi={onViewPoi}
+            onViewPoi={viewPoi}
             onMapOverlay={onMapOverlay}
-            onFocusLocation={onFocusLocation}
-            onPickOnMap={onPickOnMap}
+            onFocusLocation={focusLocation}
+            onPickOnMap={pickOnMap}
             onSimulatePosition={onSimulatePosition}
           />
         ) : (
@@ -500,30 +643,67 @@ export function ChatWidget({
                 <MessageScrollerViewport className="px-4 py-3">
                   <MessageScrollerContent>
                     {turns.length === 0 && (
-                      <div className="space-y-2 py-2">
-                        <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-                          <Sparkles className="size-3.5 text-primary" aria-hidden />
-                          Gợi ý cho bạn lúc này
-                        </p>
-                        {suggestions ? (
-                          suggestions.suggestions.map((suggestion) => (
-                            <SuggestionChip
-                              key={suggestion.id}
-                              suggestion={suggestion}
-                              onPick={pickSuggestion}
-                              large
-                            />
-                          ))
-                        ) : (
-                          <p className="py-4 text-center text-sm text-muted-foreground">
-                            Thử hỏi: &quot;quán cà phê yên tĩnh gần đây&quot;
+                      <div className="space-y-4 py-2">
+                        <div className="space-y-2">
+                          <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                            <Sparkles className="size-3.5 text-primary" aria-hidden />
+                            Gợi ý cho bạn lúc này
                           </p>
-                        )}
-                        {suggestions && !suggestions.calendarAvailable && (
-                          <p className="text-[11px] text-muted-foreground">
-                            Lịch lễ hội hiện chỉ có cho Việt Nam.
-                          </p>
-                        )}
+                          {suggestions ? (
+                            contextChips.map((suggestion) => (
+                              <SuggestionChip
+                                key={suggestion.id}
+                                suggestion={suggestion}
+                                onPick={pickSuggestion}
+                                large
+                              />
+                            ))
+                          ) : suggestionsFailed ? (
+                            <div className="flex items-center justify-between gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">
+                              <span>Chưa tải được gợi ý theo vị trí.</span>
+                              <button
+                                type="button"
+                                onClick={retrySuggestions}
+                                className="flex shrink-0 items-center gap-1 font-semibold text-primary hover:underline"
+                              >
+                                <RotateCw className="size-3" />
+                                Thử lại
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="flex items-center gap-2 px-1 py-2.5 text-xs text-muted-foreground">
+                              <Spinner className="size-3.5" />
+                              Đang xem quanh bạn có gì: lễ sắp tới, thời tiết, giờ ăn…
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void send(SAMPLE_QUESTION)}
+                            disabled={loading}
+                            className="flex w-fit items-center gap-1.5 rounded-full border border-primary/30 px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/5"
+                          >
+                            <MessageCircle className="size-3.5" />
+                            Thử hỏi: “{SAMPLE_QUESTION.toLowerCase()}”
+                          </button>
+                          {suggestions && !suggestions.calendarAvailable && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Lịch lễ hội hiện chỉ có cho Việt Nam.
+                            </p>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-muted-foreground">Tính năng của trợ lý</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            {featureChips.map((suggestion) => (
+                              <SuggestionChip
+                                key={suggestion.id}
+                                suggestion={suggestion}
+                                onPick={pickSuggestion}
+                                large
+                              />
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     )}
                     {turns.map((turn, index) => (
@@ -539,14 +719,21 @@ export function ChatWidget({
                                       : 'bg-muted',
                                   )}
                                 >
-                                  {turn.content}
+                                  {turn.pending && !turn.content ? (
+                                    <span className="flex items-center gap-2 text-muted-foreground">
+                                      <Spinner className="size-3.5" />
+                                      Đang viết câu trả lời…
+                                    </span>
+                                  ) : (
+                                    turn.content
+                                  )}
                                 </BubbleContent>
                               </Bubble>
                             </BubbleGroup>
                             {turn.results && turn.results.length > 0 && (
                               <div className="flex w-full flex-col gap-1.5 pt-1">
-                                {turn.results.slice(0, 5).map((poi) => (
-                                  <ChatPoiCard key={poi.id} poi={poi} onView={onViewPoi} />
+                                {turn.results.slice(0, MAX_RESULT_CARDS).map((poi) => (
+                                  <ChatPoiCard key={poi.id} poi={poi} onView={viewPoi} />
                                 ))}
                               </div>
                             )}
@@ -556,8 +743,8 @@ export function ChatWidget({
                                   <PlaceCard
                                     key={place.poiId ?? place.name}
                                     place={place}
-                                    onView={onViewPoi}
-                                    onFocus={onFocusLocation}
+                                    onView={viewPoi}
+                                    onFocus={focusLocation}
                                   />
                                 ))}
                               </div>
@@ -597,14 +784,14 @@ export function ChatWidget({
                         </Message>
                       </MessageScrollerItem>
                     ))}
-                    {loading && (
+                    {loading && !turns.at(-1)?.pending && (
                       <MessageScrollerItem>
                         <Message align="start">
                           <MessageContent>
                             <BubbleGroup>
                               <Bubble align="start">
-                                <BubbleContent className="bg-muted">
-                                  <span className="flex items-center gap-2 text-muted-foreground">
+                                <BubbleContent className="bg-secondary text-secondary-foreground">
+                                  <span className="flex items-center gap-2 text-secondary-foreground">
                                     <Spinner className="size-3.5" />
                                     Đang tìm kiếm…
                                   </span>
@@ -620,9 +807,9 @@ export function ChatWidget({
               </MessageScroller>
             </MessageScrollerProvider>
 
-            {turns.length > 0 && suggestions && suggestions.suggestions.length > 0 && (
+            {turns.length > 0 && (
               <div className="flex shrink-0 gap-1.5 overflow-x-auto border-t border-border px-3 pt-2">
-                {suggestions.suggestions.map((suggestion) => (
+                {[...contextChips, ...featureChips].map((suggestion) => (
                   <SuggestionChip key={suggestion.id} suggestion={suggestion} onPick={pickSuggestion} />
                 ))}
               </div>
@@ -636,12 +823,12 @@ export function ChatWidget({
               }}
             >
               <Input
+                className="min-w-0 flex-1"
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 placeholder="Bạn muốn tìm gì gần đây?"
-                disabled={loading}
               />
-              <Button type="submit" size="icon" disabled={loading || !input.trim()}>
+              <Button type="submit" size="icon" aria-label="Gửi tin nhắn" disabled={loading || !input.trim()}>
                 <Send className="size-4" />
               </Button>
             </form>

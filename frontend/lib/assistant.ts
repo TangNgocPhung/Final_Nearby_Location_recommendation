@@ -190,6 +190,7 @@ export class NarrationPlayer {
   private objectUrl: string | null = null;
   private abort: AbortController | null = null;
   private finish: (() => void) | null = null;
+  private rate = 1;
 
   constructor(private readonly apiBaseUrl: string) {}
 
@@ -197,8 +198,10 @@ export class NarrationPlayer {
     poiId: string,
     language: string,
     onText: (text: string) => void,
+    options: { rate?: number } = {},
   ): Promise<'ended' | 'stopped' | 'unavailable'> {
     this.stop();
+    this.rate = options.rate ?? 1;
     const controller = new AbortController();
     this.abort = controller;
     const lang = encodeURIComponent(language);
@@ -233,6 +236,7 @@ export class NarrationPlayer {
     return new Promise((resolve) => {
       this.objectUrl = URL.createObjectURL(blob);
       const audio = new Audio(this.objectUrl);
+      audio.playbackRate = this.rate;
       this.audio = audio;
       this.finish = () => resolve('stopped');
       audio.onended = () => resolve('ended');
@@ -248,6 +252,7 @@ export class NarrationPlayer {
     return new Promise((resolve) => {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = lang;
+      utterance.rate = this.rate;
       // Chọn đúng giọng của ngôn ngữ nếu máy có — chỉ đặt `lang` thì vài trình
       // duyệt vẫn đọc bằng giọng mặc định (thường là tiếng Anh).
       const prefix = lang.slice(0, 2).toLowerCase();
