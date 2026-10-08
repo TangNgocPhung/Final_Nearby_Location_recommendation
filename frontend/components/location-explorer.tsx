@@ -31,6 +31,7 @@ import {
   CreditCard,
   DatabaseZap,
   Droplets,
+  EllipsisVertical,
   Dumbbell,
   FerrisWheel,
   Film,
@@ -49,10 +50,13 @@ import {
   Languages,
   LayoutGrid,
   LoaderCircle,
+  List,
   LocateFixed,
   type LucideIcon,
   Mailbox,
+  Map as MapIcon,
   MapPin,
+  MessageCircle,
   Mic,
   Moon,
   Navigation,
@@ -107,6 +111,11 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { useTheme } from '@/hooks/use-theme';
 import { useAutoTranslate } from '@/hooks/use-auto-translate';
 import { getTelemetry, type TelemetryState } from '@/lib/telemetry';
@@ -648,7 +657,7 @@ function categoryChipIcon(label: string): LucideIcon {
 }
 
 function chipClass(active: boolean) {
-  return `whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+  return `nearby-chip whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
     active
       ? 'border-primary bg-primary text-primary-foreground'
       : 'border-emerald-950/10 bg-white text-muted-foreground hover:border-primary/40 hover:text-foreground dark:border-white/15 dark:bg-card'
@@ -678,23 +687,36 @@ export function LocationExplorer() {
   const [mapPicking, setMapPicking] = useState(false);
   // Chế độ giọng nói cho người khiếm thị (Alt+V, nút "Giọng nói" trên thanh trên).
   const [voiceOpen, setVoiceOpen] = useState(false);
+  // Dưới lg bố cục là một ứng dụng ba màn: bản đồ luôn phủ kín vùng giữa, còn
+  // "Tìm kiếm" và "Kết quả" là lớp phủ đè lên nó, chuyển bằng thanh tab dưới
+  // đáy. Bản đồ KHÔNG bao giờ bị display:none — MapLibre đo khung 0×0 thì
+  // fitBounds lúc tìm kiếm tính ra mức zoom vô nghĩa.
+  const [mobileView, setMobileView] = useState<'search' | 'map' | 'results'>(
+    'map',
+  );
+  const showMapOnMobile = useCallback(() => {
+    if (window.innerWidth < 1024) setMobileView('map');
+  }, []);
   const requestMapPick = useCallback(
     (callback: ((latitude: number, longitude: number) => void) | null) => {
       mapPickRef.current = callback;
       setMapPicking(callback !== null);
-      if (callback && window.innerWidth < 1024) {
-        requestAnimationFrame(() => mapSectionRef.current?.scrollIntoView({ block: 'start' }));
-      }
+      if (callback) showMapOnMobile();
     },
-    [],
+    [showMapOnMobile],
   );
   const { theme, toggleTheme } = useTheme();
   const about = useAboutDialog();
   const [chatOpen, setChatOpen] = useState(false);
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  // Trên điện thoại bản đồ nằm trên danh sách: bấm một địa điểm trong danh sách
-  // thì cuộn lên bản đồ để thấy nó, nếu không người dùng chọn xong mà không thấy gì đổi.
-  const mapSectionRef = useRef<HTMLElement>(null);
+  // Trên điện thoại bấm một địa điểm trong danh sách thì chuyển sang màn bản
+  // đồ để thấy nó, nếu không người dùng chọn xong mà không thấy gì đổi.
+  // Lớp phủ "Tìm kiếm"/"Kết quả" dùng chung một vùng cuộn: đổi màn phải đưa
+  // nó về đầu, không thì danh sách kết quả mở ra ở giữa chừng.
+  const mobileSheetRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    mobileSheetRef.current?.scrollTo({ top: 0 });
+  }, [mobileView]);
   const skipFirstSelectScrollRef = useRef(true);
   const mapRef = useRef<MapLibreMap | null>(null);
   const mapLoadedRef = useRef(false);
@@ -1055,9 +1077,12 @@ export function LocationExplorer() {
       skipFirstSelectScrollRef.current = false;
       return;
     }
-    if (!selectedPoiId || typeof window === 'undefined' || window.innerWidth >= 1024) return;
-    mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, [selectedPoiId]);
+    if (!selectedPoiId || typeof window === 'undefined') return;
+    // Sang khung hình kế tiếp: đổi màn ngay trong effect sẽ render dây chuyền
+    // giữa lúc các effect khác (vẽ marker, lấy tuyến) còn đang chạy.
+    const frame = requestAnimationFrame(showMapOnMobile);
+    return () => cancelAnimationFrame(frame);
+  }, [selectedPoiId, showMapOnMobile]);
   // Giá trị nguyên thuỷ tách riêng để effect lấy tuyến đường bên dưới KHÔNG
   // bao giờ đóng gói tham chiếu tới `selectedPoi`/`visiblePois` — xem lý do
   // (179 request/lượt xem, đo được thật) ngay tại effect đó.
@@ -1321,8 +1346,12 @@ export function LocationExplorer() {
         zoom: 15.5,
         essential: true,
       });
+      // Gọi thẳng ở đây chứ không chỉ trông vào effect theo selectedPoiId: bấm
+      // lại đúng POI đang chọn thì id không đổi, effect không chạy, và người
+      // dùng kẹt lại ở màn danh sách.
+      showMapOnMobile();
     },
-    [selectedPoiId, telemetry],
+    [selectedPoiId, telemetry, showMapOnMobile],
   );
   useEffect(() => {
     focusPoiRef.current = focusPoi;
@@ -2637,16 +2666,19 @@ export function LocationExplorer() {
   }
 
   return (
-    <main className="nearby-app min-h-dvh bg-transparent text-foreground">
-      <header className="app-header border-b border-emerald-950/10 bg-white/90 px-3 py-3 backdrop-blur-xl sm:px-6 dark:border-white/10 dark:bg-slate-950/80">
-        <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <div className="flex items-center gap-3">
-            <div className="grid size-10 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-sm">
+    <main className="nearby-app flex h-dvh flex-col overflow-hidden bg-transparent text-foreground lg:block lg:h-auto lg:min-h-dvh lg:overflow-visible">
+      <header className="app-header shrink-0 border-b border-emerald-950/10 bg-white/90 px-3 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 backdrop-blur-xl sm:px-6 sm:py-3 dark:border-white/10 dark:bg-slate-950/80">
+        <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-x-4 gap-y-2 max-lg:flex-nowrap max-sm:gap-x-2">
+          <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
+            <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm sm:size-10 sm:rounded-2xl">
               <Compass className="size-5" />
             </div>
-            <div>
+            {/* Máy < 380px (360px là phổ biến) không đủ chỗ cho chữ cạnh năm nút
+                thao tác — chữ bị bẻ hai dòng làm header cao vọt. Logo la bàn
+                vẫn đủ nhận diện. */}
+            <div className="max-[379px]:sr-only">
               <div className="flex items-center gap-2">
-                <span className="text-lg font-bold tracking-tight">Nearby</span>
+                <span className="text-lg font-bold tracking-tight whitespace-nowrap" translate="no">Nearby</span>
                 <Badge variant="secondary" className="hidden sm:inline-flex">Tầng 1-3 · Live</Badge>
               </div>
               <p className="hidden text-xs text-muted-foreground sm:block">
@@ -2654,7 +2686,102 @@ export function LocationExplorer() {
               </p>
             </div>
           </div>
-          <div className="header-actions flex w-full flex-wrap items-center gap-2 text-xs text-muted-foreground sm:w-auto">
+          {/* Dưới lg (điện thoại, máy tính bảng — cùng mốc với thanh tab dưới
+              đáy): một hàng duy nhất — ba thao tác hay dùng nhất hiện
+              thẳng, còn ngôn ngữ / giao diện tối / giới thiệu gom vào menu "⋮".
+              Bày cả sáu nút ra như desktop thì header vỡ thành ba hàng và
+              chiếm ~1/3 màn hình trước khi người dùng thấy được gì. */}
+          <div className="header-actions-mobile flex shrink-0 items-center gap-1 lg:hidden">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full"
+              onClick={requestCurrentLocation}
+              aria-label="Vị trí của tôi"
+              title="Vị trí của tôi"
+            >
+              <LocateFixed className="size-5" />
+            </Button>
+            <Button
+              variant={isWatching ? 'default' : 'ghost'}
+              size="icon"
+              className="rounded-full"
+              onClick={() => (isWatching ? stopWatching() : startWatching())}
+              title={watchStatus}
+              aria-label={isWatching ? 'Đang theo dõi vị trí' : 'Theo dõi vị trí'}
+              aria-pressed={isWatching}
+            >
+              <Route className="size-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full"
+              onClick={() => setVoiceOpen(true)}
+              aria-label="Bật chế độ giọng nói cho người khiếm thị (phím tắt Alt+V)"
+              title="Chế độ giọng nói (Alt+V)"
+            >
+              <Mic className="size-5" />
+            </Button>
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="rounded-full"
+                    aria-label="Thêm tuỳ chọn"
+                  />
+                }
+              >
+                <EllipsisVertical className="size-5" />
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-[min(18rem,calc(100vw-1.5rem))] gap-1 p-2">
+                <label className="flex flex-col gap-1.5 px-2 pt-1 pb-2" translate="no">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <Languages className="size-4" aria-hidden />
+                    Ngôn ngữ / Language
+                    {uiLanguage.progress && (
+                      <output className="ml-auto flex items-center gap-1 tabular-nums">
+                        <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+                        {uiLanguage.progress.done}/{uiLanguage.progress.total}
+                      </output>
+                    )}
+                  </span>
+                  <select
+                    value={uiLanguage.language}
+                    onChange={(event) => uiLanguage.setLanguage(event.target.value)}
+                    className="h-11 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground"
+                    aria-label="Ngôn ngữ / Language"
+                  >
+                    {uiLanguage.languages.map((item) => (
+                      <option key={item.code} value={item.code}>
+                        {item.nativeName}
+                        {item.nativeName !== item.name ? ` · ${item.name}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button
+                  variant="ghost"
+                  className="h-11 justify-start gap-3 px-2 text-sm"
+                  onClick={toggleTheme}
+                >
+                  {theme === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
+                  {theme === 'dark' ? 'Giao diện sáng' : 'Giao diện tối'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-11 justify-start gap-3 px-2 text-sm"
+                  onClick={() => about.setOpen(true)}
+                >
+                  <Info className="size-5" />
+                  Giới thiệu đồ án
+                </Button>
+              </PopoverContent>
+            </Popover>
+          </div>
+          <div className="header-actions hidden flex-wrap items-center gap-2 text-xs text-muted-foreground lg:flex">
             <span className="hidden sm:inline">TP. Hồ Chí Minh</span>
             {/* translate="no": tên ngôn ngữ đã là tên bản ngữ, không dịch. */}
             <label className="flex items-center gap-1" translate="no">
@@ -2733,34 +2860,31 @@ export function LocationExplorer() {
       </header>
       <AboutDialog open={about.open} onOpenChange={about.onOpenChange} />
 
-      <nav aria-label="Điều hướng trên điện thoại" className="mobile-navigation sticky top-0 z-20 flex gap-2 border-b border-border bg-background/95 px-3 py-2 backdrop-blur-lg lg:hidden">
-        <Button variant="outline" className="flex-1" onClick={() => document.getElementById('nearby-search')?.scrollIntoView({ block: 'start' })}>
-          <Search aria-hidden /> Tìm kiếm
-        </Button>
-        <Button variant="outline" className="flex-1" onClick={() => mapSectionRef.current?.scrollIntoView({ block: 'start' })}>
-          <MapPin aria-hidden /> Bản đồ
-        </Button>
-        <Button variant="outline" className="flex-1" onClick={() => document.getElementById('nearby-results')?.scrollIntoView({ block: 'start' })}>
-          <LayoutGrid aria-hidden /> Kết quả
-        </Button>
-      </nav>
 
       <section
         className={cn(
-          'explorer-layout mx-auto grid max-w-[1500px] grid-cols-[minmax(0,1fr)] gap-3 p-3 sm:gap-4 sm:p-4 lg:h-[calc(100dvh-65px)] lg:grid-cols-[430px_minmax(0,1fr)] lg:p-5',
+          'explorer-layout relative mx-auto min-h-0 w-full max-w-[1500px] flex-1 overflow-hidden lg:grid lg:h-[calc(100dvh-65px)] lg:grid-cols-[430px_minmax(0,1fr)] lg:gap-4 lg:overflow-visible lg:p-5',
           chatOpen && 'xl:grid-cols-[390px_minmax(0,1fr)_360px]',
           mapExpanded && 'lg:grid-cols-[minmax(0,1fr)]',
           mapExpanded && chatOpen && 'xl:grid-cols-[minmax(0,1fr)_360px]',
         )}
       >
         <aside
+          ref={mobileSheetRef}
           className={cn(
-            'contents lg:flex lg:min-h-0 lg:min-w-0 lg:flex-col lg:gap-4 lg:overflow-y-auto',
+            'absolute inset-0 z-20 flex flex-col gap-3 overflow-y-auto overscroll-contain bg-background p-3 sm:gap-4 sm:p-4 lg:static lg:z-auto lg:min-h-0 lg:min-w-0 lg:gap-4 lg:overscroll-auto lg:bg-transparent lg:p-0',
+            mobileView === 'map' && 'max-lg:hidden',
             mapExpanded && 'lg:hidden',
           )}
         >
-          <Card id="nearby-search" className="order-1 min-w-0 shrink-0 scroll-mt-20 border-0 shadow-[0_12px_40px_rgb(14_68_48/8%)] ring-emerald-950/10 lg:order-none lg:max-h-[50%] lg:overflow-y-auto">
-            <CardHeader className="px-5 pt-5 pb-3">
+          <Card
+            id="nearby-search"
+            className={cn(
+              'min-w-0 shrink-0 border-0 shadow-[0_12px_40px_rgb(14_68_48/8%)] ring-emerald-950/10 lg:max-h-[50%] lg:overflow-y-auto',
+              mobileView !== 'search' && 'max-lg:hidden',
+            )}
+          >
+            <CardHeader className="px-4 pt-4 pb-2 sm:px-5 sm:pt-5 sm:pb-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <CardTitle className="text-xl font-bold">
@@ -2775,12 +2899,16 @@ export function LocationExplorer() {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-5">
+            <CardContent className="space-y-3 px-4 pb-4 sm:px-5 sm:pb-5">
               <form
                 className="flex gap-2"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void searchNearby();
+                  // Điện thoại: bấm "Tìm" là muốn xem danh sách, đừng để người
+                  // dùng tự đi tìm tab Kết quả. Chip danh mục thì KHÔNG chuyển
+                  // màn — người dùng thường bấm vài chip liền để lọc thử.
+                  if (window.innerWidth < 1024) setMobileView('results');
                 }}
               >
                 <div className="relative min-w-0 flex-1">
@@ -3023,7 +3151,7 @@ export function LocationExplorer() {
                   )}
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-2 xl:hidden">
+              <div className="grid grid-cols-2 gap-2 max-lg:hidden xl:hidden">
                 <div className="rounded-xl border border-border/70 bg-white px-3 py-2 dark:bg-card">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Định vị
@@ -3043,7 +3171,7 @@ export function LocationExplorer() {
               </div>
             </CardContent>
           </Card>
-          <div className="order-2 min-w-0 shrink-0 lg:order-none">
+          <div className={cn('min-w-0 shrink-0', mobileView !== 'search' && 'max-lg:hidden')}>
           {parkingOpen ? (
             <ParkingFinder
               apiBaseUrl={API_BASE_URL}
@@ -3094,7 +3222,13 @@ export function LocationExplorer() {
           )}
           </div>
 
-          <div id="nearby-results" className="order-4 flex min-w-0 flex-col gap-4 scroll-mt-20 lg:order-none lg:min-h-60 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+          <div
+            id="nearby-results"
+            className={cn(
+              'flex min-w-0 flex-col gap-4 lg:min-h-60 lg:flex-1 lg:overflow-y-auto lg:pr-1',
+              mobileView !== 'results' && 'max-lg:hidden',
+            )}
+          >
             {showDiscovery &&
               trending &&
               (trending.pois.length > 0 || trending.queries.length > 0) && (
@@ -3169,6 +3303,7 @@ export function LocationExplorer() {
                           center: [place.longitude, place.latitude],
                           zoom: 16,
                         });
+                        showMapOnMobile();
                         }}
                       >
                         <span className="block truncate text-xs font-medium">
@@ -3233,8 +3368,9 @@ export function LocationExplorer() {
 
             <div className="shrink-0 flex items-center justify-between px-1">
               <h2 className="font-semibold">Địa điểm gần bạn</h2>
-              <span className="text-xs text-muted-foreground">
-                {pois.length} kết quả
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {isLoading && <LoaderCircle className="size-3.5 animate-spin" aria-hidden />}
+                {isLoading ? 'Đang tìm…' : `${pois.length} kết quả`}
               </span>
             </div>
             <div className="grid shrink-0 gap-3">
@@ -3389,14 +3525,39 @@ export function LocationExplorer() {
           </div>
         </aside>
 
-        <section ref={mapSectionRef} className="nearby-map relative order-3 h-[65svh] min-h-[360px] min-w-0 scroll-mt-20 overflow-hidden rounded-2xl border border-emerald-950/10 bg-slate-100 shadow-[0_18px_60px_rgb(14_68_48/12%)] lg:order-none lg:h-auto lg:min-h-0 lg:rounded-[26px]">
+        <section className="nearby-map absolute inset-0 min-w-0 overflow-hidden bg-slate-100 lg:relative lg:inset-auto lg:min-h-0 lg:rounded-[26px] lg:border lg:border-emerald-950/10 lg:shadow-[0_18px_60px_rgb(14_68_48/12%)]">
           <div className="map-fallback absolute inset-0" aria-hidden="true" />
           <div
             ref={mapContainerRef}
             className="map-canvas-host absolute inset-0"
             aria-label="Bản đồ địa điểm"
           />
-          <div className="pointer-events-none absolute left-2 right-14 top-2 z-10 rounded-xl border border-white/70 bg-white/90 px-2 py-2 text-[10px] shadow-lg backdrop-blur-md sm:left-4 sm:right-auto sm:top-4 sm:px-3 sm:text-xs lg:left-16 dark:border-white/10 dark:bg-card/90">
+          {/* Điện thoại: thanh tìm kiếm nổi trên bản đồ như các app bản đồ
+              quen thuộc — chạm vào là sang màn Tìm kiếm với ô nhập đã focus.
+              Chú giải màu nhường chỗ cho nó (chỉ hiện từ lg). */}
+          <button
+            type="button"
+            onClick={() => {
+              setMobileView('search');
+              requestAnimationFrame(() =>
+                document
+                  .querySelector<HTMLInputElement>('#nearby-search input[role="combobox"]')
+                  ?.focus(),
+              );
+            }}
+            className="absolute inset-x-3 top-3 z-10 flex h-12 items-center gap-3 rounded-full border border-white/70 bg-white/95 px-4 text-left text-[15px] text-muted-foreground shadow-[0_6px_24px_rgb(14_68_48/18%)] backdrop-blur-md lg:hidden dark:border-white/10 dark:bg-card/95"
+          >
+            <Search className="size-5 shrink-0 text-primary" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">
+              {query.trim() || 'Tìm quán ăn, cà phê, cây xăng…'}
+            </span>
+            {selectedCategory && (
+              <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                {categoryOptions.find((option) => option.category === selectedCategory)?.categoryLabel ?? 'Đã lọc'}
+              </span>
+            )}
+          </button>
+          <div className="pointer-events-none absolute left-16 top-4 z-10 hidden rounded-xl border border-white/70 bg-white/90 px-3 py-2 text-xs shadow-lg backdrop-blur-md lg:block dark:border-white/10 dark:bg-card/90">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
               <span className="size-2 rounded-full bg-sky-500" /> Vị trí của bạn
               <span className="ml-2 size-2 rounded-full bg-orange-500" /> POI
@@ -3405,7 +3566,7 @@ export function LocationExplorer() {
               H3
             </div>
           </div>
-          {/* Chỉ desktop: trên điện thoại cột trái đã nằm dưới bản đồ. */}
+          {/* Chỉ desktop: điện thoại đã chuyển màn bằng thanh tab dưới đáy. */}
           <button
             type="button"
             aria-label={mapExpanded ? 'Hiện bảng bên trái' : 'Ẩn bảng bên trái'}
@@ -3843,6 +4004,12 @@ export function LocationExplorer() {
                 onFindParking={() => {
                   if (!poiDetail) return;
                   setParkingOpen(true);
+                  // Khung gửi xe nằm ở màn Tìm kiếm trên điện thoại, mà panel
+                  // chi tiết thì phủ kín màn hình — phải đóng nó mới thấy.
+                  if (window.innerWidth < 1024) {
+                    setMobileView('search');
+                    if (window.innerWidth < 640) closeDetail();
+                  }
                   setParkingRequest({
                     name: poiDetail.name,
                     latitude: poiDetail.latitude,
@@ -3898,7 +4065,7 @@ export function LocationExplorer() {
             onViewPoi={(poiId) => openDetail(poiId, 'chat')}
             onFocusLocation={(latitude, longitude) => {
               mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 17, essential: true });
-              if (window.innerWidth < 1024) mapSectionRef.current?.scrollIntoView({ block: 'start' });
+              showMapOnMobile();
             }}
             onMapOverlay={setAssistantOverlay}
             onPickOnMap={requestMapPick}
@@ -3929,6 +4096,63 @@ export function LocationExplorer() {
           </button>
         </div>
       )}
+      {/* Thanh tab dưới đáy (dưới lg) — vùng ngón cái chạm tới được bằng
+          một tay. "Trợ lý" bấm hộ nút nổi của ChatWidget (nút đó bị ẩn trên
+          màn hẹp, xem globals.css) để không phải kéo state mở/đóng ra ngoài. */}
+      <nav
+        aria-label="Điều hướng trên điện thoại"
+        className="mobile-tabbar z-30 grid shrink-0 grid-cols-4 border-t border-emerald-950/10 bg-white/95 px-2 pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] backdrop-blur-xl lg:hidden dark:border-white/10 dark:bg-slate-950/90"
+      >
+        {(
+          [
+            { view: 'search', label: 'Tìm kiếm', Icon: Search },
+            { view: 'map', label: 'Bản đồ', Icon: MapIcon },
+            { view: 'results', label: 'Kết quả', Icon: List },
+          ] as const
+        ).map(({ view, label, Icon }) => {
+          const active = mobileView === view;
+          return (
+            <button
+              key={view}
+              type="button"
+              onClick={() => setMobileView(view)}
+              aria-current={active ? 'page' : undefined}
+              className={cn(
+                'mobile-tab flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[11px] font-medium transition-colors',
+                active ? 'text-primary' : 'text-muted-foreground',
+              )}
+            >
+              <span
+                className={cn(
+                  'relative grid h-7 w-14 place-items-center rounded-full transition-colors',
+                  active && 'bg-primary/12',
+                )}
+              >
+                <Icon className="size-5" aria-hidden />
+                {view === 'results' && pois.length > 0 && (
+                  <span className="absolute -top-1 right-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                    {pois.length > 99 ? '99+' : pois.length}
+                  </span>
+                )}
+              </span>
+              {label}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          onClick={() => document.querySelector<HTMLButtonElement>('.chat-launcher')?.click()}
+          // ChatWidget chỉ được dựng khi đã có sessionId — trước đó bấm vào
+          // không có gì để mở, nên làm mờ thay vì để một nút "chết".
+          disabled={!telemetryState.sessionId}
+          className="mobile-tab flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[11px] font-medium text-muted-foreground disabled:opacity-40"
+        >
+          <span className="grid h-7 w-14 place-items-center rounded-full">
+            <MessageCircle className="size-5" aria-hidden />
+          </span>
+          Trợ lý
+        </button>
+      </nav>
     </main>
   );
 }

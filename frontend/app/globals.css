@@ -207,40 +207,41 @@ body {
     width: 44px;
     height: 44px;
   }
+
+  /* Chip lọc: ép 44px như nút thường thì 25 danh mục thành 8 hàng béo ục.
+     38px + khe 6px giữa các chip vẫn đủ vùng chạm ~44px theo chiều dọc. */
+  .nearby-app button.nearby-chip {
+    min-height: 38px;
+    min-width: 0;
+  }
+
+  /* Ô tab dưới đáy tự cao 56px; quy tắc 44px ở trên không được đội nó lên. */
+  .nearby-app .mobile-tabbar button {
+    min-height: 52px;
+  }
+
+  /* Trợ lý đã có ô riêng trên thanh tab dưới đáy — nút tròn nổi chỉ còn che
+     thẻ địa điểm ở đáy bản đồ. Vẫn giữ trong DOM: ô tab bấm hộ nó. */
+  .chat-launcher {
+    display: none;
+  }
 }
 
 @media (max-width: 639px) {
   .nearby-app {
-    padding-bottom: calc(5rem + env(safe-area-inset-bottom));
     overflow-wrap: anywhere;
   }
 
-  .header-actions {
-    gap: 6px;
-  }
-
-  .header-actions label {
-    flex: 1 1 100%;
-  }
-
-  .header-actions select {
-    flex: 1;
-    max-width: none;
-    min-width: 0;
+  /* Pinch-zoom là thao tác chuẩn trên điện thoại; hai nút +/- 44px chỉ chiếm
+     chỗ ngay góc mà thẻ địa điểm cần. */
+  .nearby-app .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
+    display: none;
   }
 
   .chat-panel,
   .poi-detail-mobile {
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
-  }
-
-  .chat-launcher {
-    bottom: calc(1rem + env(safe-area-inset-bottom));
-  }
-
-  .nearby-app:has(.chat-panel:not(.hidden)) .chat-launcher {
-    display: none;
   }
 
   .voice-mode button[aria-pressed='true'] {
