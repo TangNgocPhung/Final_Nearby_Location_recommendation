@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     # trỏ vào chính container đó chứ không phải máy host.
     ollama_url: str = ""
     ollama_embedding_model: str = "bge-m3"
+    # Giữ bge-m3 trong RAM giữa các lượt tìm kiếm. Mặc định của Ollama là 5
+    # phút; nạp lại bge-m3 mất ~10.6s (đo 2026-10-08) — dài hơn timeout 10s
+    # của truy vấn, nên lượt tìm đầu sau khi model bị dỡ mất hẳn kênh vector.
+    ollama_embedding_keep_alive: str = "30m"
     # Model chat cho chatbot AI (Phase 14) — cùng Ollama local, khác endpoint
     # (/api/chat thay vì /api/embed). Chỉ dùng để hiểu ý định người dùng và
     # diễn giải kết quả bằng lời; KHÔNG bao giờ tự quyết định POI — xem

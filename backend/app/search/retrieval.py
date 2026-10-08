@@ -12,7 +12,7 @@ from typing import Any
 from .. import geo_cache
 from ..config import settings
 from ..embeddings import semantic_embedding
-from ..poi_features import h3_ring_geometry, h3_ring_ids
+from ..poi_features import categories_for_query, h3_ring_geometry, h3_ring_ids
 from . import query as query_builder
 from .client import get_client, search_available
 from .enrichment import hydrate_candidates
@@ -46,6 +46,14 @@ CHANNEL_WEIGHTS = {
 
 # Số hit lấy về mỗi kênh trước khi fusion.
 PER_CHANNEL_SIZE = 150
+# Truy vấn mô tả mà BM25 khớp ít hơn số này thì bổ sung candidate của kênh
+# vector — xem `_gate_by_text_relevance`.
+MIN_TEXT_MATCHES = 5
+# Chỉ lấy ĐẦU danh sách k-NN để bổ sung: điểm vector phẳng rất nhanh — đo
+# 2026-10-08 với "chỗ nào yên tĩnh để ngồi làm việc", sau ~10 hit đầu (quán cà
+# phê, chùa) là hàng chục POI tên chung chung giống hệt nhau ("Bãi đỗ xe" x13,
+# "Ministop" x5) cùng một điểm ~0.735, không mang nghĩa gì về truy vấn.
+MAX_SEMANTIC_BACKFILL = 10
 
 
 def _search_hits(client: Any, body: dict[str, Any]) -> list[tuple[str, float]]:
@@ -153,11 +161,19 @@ def _gate_by_text_relevance(
     50 bất kể có liên quan hay không, và người dùng đọc thẳng nó là kết quả
     tìm kiếm. Nên giờ bỏ hẳn phần bổ sung khi đã có candidate khớp chữ.
 
-    Chỉ BM25 được tính là bằng chứng liên quan. Kênh vector là embedding băm
-    bag-of-words (``text_embedding``) và k-NN LUÔN trả đủ k hit gần nhất kể cả
-    khi cosine ~ 0, nên mọi POI trong bán kính đều lọt vào kênh này — tính nó
-    là "liên quan" thì cổng này không chặn được gì. Vector vẫn góp vào điểm
-    RRF để xếp thứ tự bên trong nhóm khớp chữ.
+    Với truy vấn NÊU LOẠI địa điểm ("bệnh viện", "quán cà phê"), chỉ BM25 được
+    tính là bằng chứng liên quan: k-NN LUÔN trả đủ k hit gần nhất kể cả khi
+    không liên quan, nên giữ candidate chỉ-có-ở-vector là đưa "Công viên" vào
+    kết quả "bệnh viện". Vector vẫn góp vào điểm RRF để xếp thứ tự bên trong
+    nhóm khớp chữ.
+
+    Truy vấn MÔ TẢ (không nêu loại nào, vd "chỗ nào yên tĩnh để ngồi làm
+    việc") thì khác: dữ liệu POI (phần lớn từ OSM) hầu như không có chữ "yên
+    tĩnh"/"làm việc", BM25 chỉ khớp lác đác — đo 2026-10-08 đúng 1 POI, và
+    cổng cũ cắt cả danh sách xuống còn 1. Ở đây kênh vector (bge-m3, embedding
+    ngữ nghĩa thật) mới là kênh hiểu được ý, nên khi BM25 khớp ít hơn
+    ``MIN_TEXT_MATCHES`` thì bổ sung ``MAX_SEMANTIC_BACKFILL`` candidate đầu
+    của kênh VECTOR (không phải geo/trending) xếp SAU nhóm khớp chữ.
 
     Không áp dụng khi không có query text (duyệt theo vị trí — geo là kênh
     chính đáng), và giữ nguyên RRF khi BM25 không khớp được gì (truy vấn quá
@@ -168,7 +184,13 @@ def _gate_by_text_relevance(
     relevant_ids = set(channels.get("bm25", []))
     if not relevant_ids:
         return fused
-    return [item for item in fused if item[0] in relevant_ids]
+    text_matches = [item for item in fused if item[0] in relevant_ids]
+    if len(text_matches) >= MIN_TEXT_MATCHES or categories_for_query(clean_query):
+        return text_matches
+    # Kênh vector đã xếp theo điểm k-NN giảm dần — cắt đầu theo đúng thứ tự đó.
+    semantic_head = [poi_id for poi_id in channels.get("vector", []) if poi_id not in relevant_ids]
+    semantic_ids = set(semantic_head[:MAX_SEMANTIC_BACKFILL])
+    return text_matches + [item for item in fused if item[0] in semantic_ids]
 
 
 def multi_channel_candidates(

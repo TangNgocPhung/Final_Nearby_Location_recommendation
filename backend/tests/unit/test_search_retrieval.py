@@ -23,14 +23,54 @@ def test_gate_bo_candidate_chi_geo_trending_khi_da_co_candidate_khop_chu() -> No
 
 
 def test_gate_khong_tinh_vector_la_bang_chung_lien_quan() -> None:
-    """k-NN trên embedding băm luôn trả đủ k hit kể cả cosine ~ 0 — candidate
-    chỉ có ở kênh vector (vd. "Công viên" cho "bệnh viện") không được giữ."""
+    """k-NN luôn trả đủ k hit kể cả khi không liên quan — với truy vấn nêu
+    LOẠI địa điểm, candidate chỉ có ở kênh vector (vd. "Công viên" cho "bệnh
+    viện") không được giữ."""
     fused = [("cong-vien", 0.06), ("benh-vien", 0.04)]
     channels = {"bm25": ["benh-vien"], "vector": ["cong-vien", "benh-vien"], "geo": ["cong-vien"]}
 
     gated = retrieval._gate_by_text_relevance(fused, channels, "benh vien")
 
     assert [poi_id for poi_id, _ in gated] == ["benh-vien"]
+
+
+def test_gate_bo_sung_vector_cho_truy_van_mo_ta_khi_bm25_khop_it() -> None:
+    """Đo 2026-10-08: "chỗ nào yên tĩnh để ngồi làm việc" — BM25 khớp đúng 1
+    POI, cổng cũ cắt cả danh sách còn 1. Truy vấn mô tả (không nêu loại) thì
+    bổ sung kênh vector, xếp SAU nhóm khớp chữ; geo/trending vẫn bị bỏ."""
+    fused = [("vec-a", 0.06), ("gan-trending", 0.05), ("khop-chu", 0.04), ("vec-b", 0.03)]
+    channels = {
+        "bm25": ["khop-chu"],
+        "vector": ["vec-a", "khop-chu", "vec-b"],
+        "geo": ["gan-trending"],
+        "trending": ["gan-trending"],
+    }
+
+    gated = retrieval._gate_by_text_relevance(fused, channels, "chỗ nào yên tĩnh để ngồi làm việc")
+
+    assert [poi_id for poi_id, _ in gated] == ["khop-chu", "vec-a", "vec-b"]
+
+
+def test_gate_chi_bo_sung_phan_dau_kenh_vector() -> None:
+    """Đuôi k-NN phẳng điểm, toàn POI tên chung chung ("Bãi đỗ xe" x13) — chỉ
+    lấy MAX_SEMANTIC_BACKFILL hit đầu của kênh vector."""
+    vector = [f"v{i}" for i in range(30)]
+    fused = [("khop-chu", 1.0)] + [(poi_id, 0.5) for poi_id in reversed(vector)]
+    channels = {"bm25": ["khop-chu"], "vector": vector}
+
+    gated = retrieval._gate_by_text_relevance(fused, channels, "yên tĩnh làm việc")
+
+    kept = {poi_id for poi_id, _ in gated[1:]}
+    assert kept == set(vector[: retrieval.MAX_SEMANTIC_BACKFILL])
+
+
+def test_gate_khong_bo_sung_vector_khi_bm25_da_khop_du() -> None:
+    fused = [(f"p{i}", 1.0 - i / 10) for i in range(7)]
+    channels = {"bm25": [f"p{i}" for i in range(5)], "vector": ["p5", "p6"]}
+
+    gated = retrieval._gate_by_text_relevance(fused, channels, "yên tĩnh làm việc")
+
+    assert [poi_id for poi_id, _ in gated] == [f"p{i}" for i in range(5)]
 
 
 def test_gate_giu_nguyen_thu_tu_rrf_trong_nhom_khop_chu() -> None:

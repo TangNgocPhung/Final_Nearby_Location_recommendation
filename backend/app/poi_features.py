@@ -513,17 +513,37 @@ def categories_for_query(query_text: str | None) -> tuple[str, ...]:
     từ khác, đúng kiểu lỗi mà fuzzy "AUTO" đã gây ra cho "bệnh viện" (xem
     `search.query.bm25_body`). Đệm dấu cách cũng xử lý luôn từ khoá nhiều âm
     tiết, nên không cần tách token riêng.
+
+    Truy vấn đã GÕ CÓ DẤU thì so khớp giữ dấu: bỏ dấu gộp "chỗ" với "chợ" (cả
+    hai thành "cho"), nên "chỗ nào yên tĩnh để ngồi làm việc" từng bị hiểu là
+    tìm chợ (đo 2026-10-08). Người gõ có dấu thì dấu là thông tin thật, không
+    phải nhiễu cần bỏ đi.
     """
     normalized = normalize_text(query_text)
     if not normalized:
         return ()
-    haystack = f" {normalized} "
+    if _has_vietnamese_marks(query_text or ""):
+        haystack = f" {_lower_words(query_text or '')} "
+        keyword_form = _lower_words
+    else:
+        haystack = f" {normalized} "
+        keyword_form = normalize_text
     matched = {
         category
         for category, keywords in CATEGORY_KEYWORDS.items()
-        if any(f" {normalize_text(keyword)} " in haystack for keyword in keywords)
+        if any(f" {keyword_form(keyword)} " in haystack for keyword in keywords)
     }
     return tuple(sorted(matched))
+
+
+def _lower_words(value: str) -> str:
+    """Chữ thường, GIỮ dấu, mọi ký tự không phải chữ/số thành một dấu cách."""
+    return re.sub(r"[\W_]+", " ", unicodedata.normalize("NFC", value).lower()).strip()
+
+
+def _has_vietnamese_marks(value: str) -> bool:
+    folded = normalize_text(value)
+    return bool(folded) and folded != re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:

@@ -18,6 +18,7 @@ from . import (
     charging,
     chat,
     directions,
+    embeddings,
     explore,
     geofence,
     languages,
@@ -78,6 +79,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # tạo dần phía sau (xem app/narration.py).
     narration.start_prewarm()
     chat.start_warmup()
+    embeddings.start_warmup()
     yield
 
 

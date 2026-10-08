@@ -261,6 +261,15 @@ def test_dia_danh_chua_chu_truong_khong_bi_hieu_thanh_truong_hoc(query: str) -> 
     assert categories_for_query(query) == ()
 
 
+def test_cho_co_dau_khong_bi_hieu_thanh_cho_mua_ban() -> None:
+    """Bỏ dấu thì "chỗ" và "chợ" cùng thành "cho" — đo 2026-10-08, "chỗ nào
+    yên tĩnh để ngồi làm việc" bị hiểu là tìm chợ. Gõ có dấu thì giữ dấu."""
+    assert categories_for_query("chỗ nào yên tĩnh để ngồi làm việc") == ()
+    assert categories_for_query("chợ Bến Thành") == ("market",)
+    # Gõ không dấu thì vẫn so khớp không dấu như cũ.
+    assert categories_for_query("cho ben thanh") == ("market",)
+
+
 def test_tu_khoa_mot_am_tiet_khop_theo_ranh_gioi_tu() -> None:
     """"phim" nằm GIỮA một từ khác không được tính là khớp — đúng loại lỗi mà
     fuzzy "AUTO" từng gây ra cho "bệnh viện" (xem `search.query.bm25_body`)."""
