@@ -306,16 +306,17 @@ export function ChatWidget({
           updateReply((turn) => ({ ...turn, content: event.reply || turn.content, pending: false }));
         }
       };
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let newline: number;
-        while ((newline = buffer.indexOf('\n')) >= 0) {
+      let chunk = await reader.read();
+      while (!chunk.done) {
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
           const line = buffer.slice(0, newline).trim();
           buffer = buffer.slice(newline + 1);
           if (line) handle(JSON.parse(line) as ChatStreamEvent);
+          newline = buffer.indexOf('\n');
         }
+        chunk = await reader.read();
       }
       if (!started) throw new Error('empty stream');
       // Stream đứt giữa chừng (mất mạng) mà chưa có chữ nào thì báo lỗi thay

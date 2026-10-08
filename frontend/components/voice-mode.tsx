@@ -41,6 +41,14 @@ type RouteStep = {
   location: [number, number] | null;
 };
 
+type DirectionsRoute = {
+  steps?: RouteStep[];
+  geometry: NonNullable<AssistantOverlay['line']>;
+  distanceMeters: number;
+  durationMinutes: number;
+  approximate?: boolean;
+};
+
 type Navigation = {
   poiId: string;
   name: string;
@@ -304,7 +312,7 @@ export function VoiceMode({
           mode: 'foot',
         });
         const res = await fetch(`${apiBaseUrl}/api/v1/directions?${params}`);
-        const data = res.ok ? await res.json() : null;
+        const data = (res.ok ? await res.json() : null) as { route?: DirectionsRoute | null } | null;
         const route = data?.route;
         if (route) {
           steps = (route.steps ?? []) as RouteStep[];
@@ -363,7 +371,7 @@ export function VoiceMode({
 
     if (remaining <= ARRIVE_METERS) {
       message = `Bạn đã tới ${nav.name}. Đã kết thúc dẫn đường.`;
-      stateRef.current = { ...(stateRef.current ?? {}), stage: 'selected' };
+      stateRef.current = { ...stateRef.current, stage: 'selected' };
       stopNavigation();
     } else {
       const step = nav.steps[nav.nextStep];
@@ -509,6 +517,8 @@ export function VoiceMode({
   return (
     <div
       ref={dialogRef}
+      // Lớp phủ toàn màn hình tự quản lý focus (dialogRef), không dùng <dialog> gốc.
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
       role="dialog"
       aria-modal="true"
       aria-label="Chế độ giọng nói cho người khiếm thị"

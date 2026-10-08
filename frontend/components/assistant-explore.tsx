@@ -149,8 +149,8 @@ export function AssistantExplore({
     }
     const controller = new AbortController();
     fetch(`${apiBaseUrl}/api/v1/explore/${selected.poiId}/story`, { headers, signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { locked: boolean; story?: ExploreStory } | null) => {
+      .then((res): Promise<{ locked: boolean; story?: ExploreStory }> | null => (res.ok ? res.json() : null))
+      .then((data) => {
         if (data && !data.locked && data.story) setStory(data.story);
       })
       .catch(() => undefined);

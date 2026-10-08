@@ -26,8 +26,8 @@ export function VisitorPhotos({ apiBaseUrl, poiId }: { apiBaseUrl: string; poiId
   useEffect(() => {
     const controller = new AbortController();
     fetch(`${apiBaseUrl}/api/v1/pois/${poiId}/visitor-photos`, { signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { photos: VisitorPhoto[] } | null) => setPhotos(data?.photos ?? []))
+      .then((res): Promise<{ photos: VisitorPhoto[] }> | null => (res.ok ? res.json() : null))
+      .then((data) => setPhotos(data?.photos ?? []))
       .catch(() => setPhotos([]));
     return () => controller.abort();
   }, [apiBaseUrl, poiId]);
