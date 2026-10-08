@@ -812,7 +812,7 @@ export function LocationExplorer() {
   const [pois, setPois] = useState<Poi[]>(() =>
     enrichSamplePois(DEFAULT_POSITION, '', 3_000, null),
   );
-  const [selectedPoiId, setSelectedPoiId] = useState<string | null>('poi-001');
+  const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
   // POI đang mở trong panel chi tiết. Cố tình TÁCH khỏi selectedPoiId: chọn một
   // POI (bấm thẻ trong danh sách, bấm marker) là thao tác nhẹ và xảy ra liên
   // tục khi lướt; mở panel là thao tác nặng, kéo theo hai yêu cầu mạng và che
@@ -2203,9 +2203,12 @@ export function LocationExplorer() {
           })),
         );
       }
-      // Kết quả đầu tiên được chọn sẵn để xem thông tin, KHÔNG tự chỉ đường.
+      // KHÔNG tự chọn kết quả nào: thẻ "Đang chọn" chỉ hiện khi người dùng bấm.
+      // Chỉ giữ lựa chọn cũ nếu POI đó vẫn còn trong kết quả mới.
       setDirectionsPoiId(null);
-      setSelectedPoiId(data.results[0]?.id ?? null);
+      setSelectedPoiId((prev) =>
+        prev && data.results.some((poi) => poi.id === prev) ? prev : null,
+      );
       setGatewayStatus(`Gateway OK · ${data.requestId.slice(0, 8)}`);
       if (data.parsedLocation.matched && data.parsedLocation.bestMatch) {
         setParserStatus(
@@ -2255,7 +2258,9 @@ export function LocationExplorer() {
       // trong khi màn hình đang là 6 POI mẫu bịa sẵn.
       setSearchMeta(null);
       setDirectionsPoiId(null);
-      setSelectedPoiId(fallback[0]?.id ?? null);
+      setSelectedPoiId((prev) =>
+        prev && fallback.some((poi) => poi.id === prev) ? prev : null,
+      );
       setStatus(
         `${fallback.length} kết quả mẫu · khởi động backend để dùng PostGIS`,
       );
