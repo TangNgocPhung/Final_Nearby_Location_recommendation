@@ -170,6 +170,19 @@ class ChatRequest(BaseModel):
     radius: int = Field(default=3_000, ge=100, le=50_000)
 
 
+class ChatHistoryTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4_000)
+
+
+class ChatHistoryRestore(BaseModel):
+    """Mở lại một cuộc trò chuyện cũ từ lịch sử phía trình duyệt: nạp lại ngữ
+    cảnh để câu hỏi tiếp theo vẫn được hiểu như câu nối tiếp. Chỉ giữ vài lượt
+    cuối (`chat.HISTORY_MAX_TURNS`), giới hạn ở đây chỉ để chặn payload rác."""
+
+    turns: list[ChatHistoryTurn] = Field(max_length=200)
+
+
 class TranslateRequest(BaseModel):
     """Một lô chuỗi giao diện tiếng Việt cần dịch — xem `app/translate.py`.
     Giới hạn số chuỗi để mỗi request xong trong timeout của gateway."""

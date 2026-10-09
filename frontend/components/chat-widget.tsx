@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  History,
   Home,
   MapPin,
   MessageCircle,
@@ -18,6 +19,15 @@ import {
 import { AssistantExplore } from '@/components/assistant-explore';
 import { AssistantMeetup } from '@/components/assistant-meetup';
 import { AssistantTour } from '@/components/assistant-tour';
+import {
+  ChatHistory,
+  conversationTitle,
+  loadConversations,
+  MAX_CONVERSATIONS,
+  newConversationId,
+  saveConversations,
+  type SavedConversation,
+} from '@/components/chat-history';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -96,6 +106,12 @@ const SUGGESTION_REFRESH_MS = 10 * 60 * 1000;
 // đúng chừng này để câu "N địa điểm…" khớp với số thẻ người dùng thấy.
 const MAX_RESULT_CARDS = 5;
 const SAMPLE_QUESTION = 'Quán cà phê yên tĩnh gần đây';
+// Số cuộc gần nhất hiện sẵn ở màn hình chào, còn lại vào "Lịch sử".
+const RECENT_CONVERSATIONS = 3;
+// Backend chỉ dùng vài lượt cuối làm ngữ cảnh (chat.HISTORY_MAX_TURNS) và
+// giới hạn độ dài mỗi lượt (ChatHistoryTurn) — cắt sẵn trước khi gửi.
+const RESTORE_TURNS = 12;
+const RESTORE_CONTENT_CHARS = 4000;
 
 // Tính năng của trợ lý luôn hiện sẵn, không chờ API gợi ý: API chậm (lần đầu
 // phải gọi dịch vụ thời tiết) hoặc lỗi thì các tính năng này vẫn mở được.
@@ -274,7 +290,7 @@ export function ChatWidget({
       if (restoreChat) changeOpen(true);
     });
   };
-  const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore'>('chat');
+  const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore' | 'history'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const [suggestionsFailed, setSuggestionsFailed] = useState(false);
   const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
@@ -283,6 +299,14 @@ export function ChatWidget({
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [conversations, setConversations] = useState<SavedConversation<ChatTurn>[]>([]);
+  // Cuộc đang mở: null = cuộc mới, chưa lưu lượt nào. Ref để effect lưu lịch
+  // sử không phải chạy lại khi id vừa được cấp; state để danh sách tô "đang mở".
+  const conversationIdRef = useRef<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Danh sách lượt vừa mở lại từ lịch sử — chưa hỏi thêm gì thì không lưu
+  // lại, kẻo chỉ mở xem thôi cũng đẩy cuộc cũ lên đầu "Hôm nay".
+  const restoredTurnsRef = useRef<ChatTurn[] | null>(null);
   // `position` đổi liên tục khi có GPS (watchPosition) — chỉ cần toạ độ TẠI
   // LÚC gửi tin, không muốn effect nào chạy lại vì nó đổi.
   const positionRef = useRef(position);
@@ -390,17 +414,81 @@ export function ChatWidget({
     return () => controller.abort();
   }, [apiBaseUrl, open, position, sessionId, suggestionsVersion]);
 
+  useEffect(() => {
+    if (sessionId) setConversations(loadConversations<ChatTurn>(sessionId));
+  }, [sessionId]);
+
+  // Lưu cuộc đang mở vào lịch sử mỗi khi có lượt mới — đợi stream xong để
+  // không ghi localStorage theo từng mẩu chữ.
+  useEffect(() => {
+    if (!sessionId || loading || turns.length === 0 || turns.some((turn) => turn.pending)) return;
+    if (turns === restoredTurnsRef.current) return;
+    let id = conversationIdRef.current;
+    if (!id) {
+      id = newConversationId();
+      conversationIdRef.current = id;
+      setActiveConversationId(id);
+    }
+    const saved: SavedConversation<ChatTurn> = { id, title: conversationTitle(turns), updatedAt: Date.now(), turns };
+    setConversations((prev) => {
+      const next = [saved, ...prev.filter((conversation) => conversation.id !== saved.id)].slice(0, MAX_CONVERSATIONS);
+      saveConversations(sessionId, next);
+      return next;
+    });
+  }, [loading, sessionId, turns]);
+
   /** Xoá cả lịch sử phía backend: không xoá thì câu hỏi đầu của cuộc mới vẫn
    * bị hiểu như câu nối tiếp ("còn chỗ nào khác không?"). Chỉ bấm được khi
    * không có lượt nào đang stream — stream sẽ ghi vào lượt cuối của danh sách. */
   const newConversation = () => {
     setTurns([]);
+    conversationIdRef.current = null;
+    setActiveConversationId(null);
+    restoredTurnsRef.current = null;
     void fetch(`${apiBaseUrl}/api/v1/chat/history`, {
       method: 'DELETE',
       headers: { 'X-Session-ID': sessionId },
     }).catch(() => {
       // Xoá hụt thì lịch sử tự hết hạn sau 30 phút — không chặn người dùng.
     });
+  };
+
+  /** Mở lại cuộc cũ: hiện lại đủ thẻ địa điểm đã lưu, và nạp lại ngữ cảnh
+   * phía backend để câu hỏi tiếp theo vẫn được hiểu là câu nối tiếp. */
+  const openConversation = (conversation: SavedConversation<ChatTurn>) => {
+    if (loading) return;
+    restoredTurnsRef.current = conversation.turns;
+    conversationIdRef.current = conversation.id;
+    setActiveConversationId(conversation.id);
+    setTurns(conversation.turns);
+    setView('chat');
+    void fetch(`${apiBaseUrl}/api/v1/chat/history`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
+      body: JSON.stringify({
+        turns: conversation.turns
+          .filter((turn) => turn.content.trim())
+          .slice(-RESTORE_TURNS)
+          .map((turn) => ({ role: turn.role, content: turn.content.slice(0, RESTORE_CONTENT_CHARS) })),
+      }),
+    }).catch(() => {
+      // Nạp hụt thì câu sau chỉ mất ngữ cảnh — vẫn trả lời được như câu mới.
+    });
+  };
+
+  const deleteConversation = (id: string) => {
+    setConversations((prev) => {
+      const next = prev.filter((conversation) => conversation.id !== id);
+      saveConversations(sessionId, next);
+      return next;
+    });
+    if (id === conversationIdRef.current) newConversation();
+  };
+
+  const clearConversations = () => {
+    setConversations([]);
+    saveConversations(sessionId, []);
+    if (conversationIdRef.current) newConversation();
   };
 
   const retrySuggestions = () => {
@@ -569,6 +657,18 @@ export function ChatWidget({
             <p className="text-xs text-muted-foreground">Hỏi bằng lời — mình tìm địa điểm thật gần bạn</p>
           </div>
           <div className="flex shrink-0 items-center">
+            {view === 'chat' && (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={() => setView('history')}
+                aria-label="Lịch sử trò chuyện"
+                title="Lịch sử trò chuyện"
+              >
+                <History className="size-4" />
+              </Button>
+            )}
             {view === 'chat' && turns.length > 0 && (
               <Button
                 type="button"
@@ -594,7 +694,17 @@ export function ChatWidget({
           </div>
         </div>
 
-        {view === 'tour' ? (
+        {view === 'history' ? (
+          <ChatHistory
+            conversations={conversations}
+            activeId={activeConversationId}
+            disabled={loading}
+            onOpen={openConversation}
+            onDelete={deleteConversation}
+            onClear={clearConversations}
+            onBack={() => setView('chat')}
+          />
+        ) : view === 'tour' ? (
           <AssistantTour
             apiBaseUrl={apiBaseUrl}
             position={position}
@@ -699,6 +809,35 @@ export function ChatWidget({
                             ))}
                           </div>
                         </div>
+                        {conversations.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                                <History className="size-3.5" aria-hidden />
+                                Trò chuyện gần đây
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => setView('history')}
+                                className="text-xs font-medium text-primary hover:underline"
+                              >
+                                Xem tất cả
+                              </button>
+                            </div>
+                            {conversations.slice(0, RECENT_CONVERSATIONS).map((conversation) => (
+                              <button
+                                key={conversation.id}
+                                type="button"
+                                onClick={() => openConversation(conversation)}
+                                disabled={loading}
+                                className="flex w-full items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-left transition hover:border-primary/40 hover:bg-muted"
+                              >
+                                <MessageCircle className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                                <span className="min-w-0 flex-1 truncate text-xs font-medium">{conversation.title}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                     {turns.map((turn, index) => (

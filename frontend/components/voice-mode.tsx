@@ -1,11 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
-import { Gauge, Keyboard, Mic, MicOff, Settings2, Volume2, VolumeX, X } from 'lucide-react';
+import { AudioLines, ChevronDown, Gauge, Keyboard, Mic, MicOff, Settings2, Volume2, VolumeX, X } from 'lucide-react';
 
 import { useHeading } from '@/hooks/use-heading';
+import { useMicLevel } from '@/hooks/use-mic-level';
 import { useWakeLock } from '@/hooks/use-wake-lock';
 import { NarrationPlayer, distanceMeters, type AssistantOverlay } from '@/lib/assistant';
+import { getRecognition, type SpeechRecognitionLike } from '@/lib/speech-recognition';
 import { cn } from '@/lib/utils';
 import { VoiceCues, type Cue } from '@/lib/voice-cues';
 
@@ -260,27 +262,6 @@ function sayMeters(meters: number): string {
   return `${(meters / 1000).toFixed(1).replace('.', ',').replace(',0', '')} ki lô mét`;
 }
 
-type SpeechRecognitionLike = {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  maxAlternatives: number;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
-  onerror: ((event: { error: string }) => void) | null;
-  onend: (() => void) | null;
-};
-
-function getRecognition(): SpeechRecognitionLike | null {
-  if (typeof window === 'undefined') return null;
-  const Ctor =
-    (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ??
-    (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition;
-  return Ctor ? new Ctor() : null;
-}
-
 export function VoiceMode({
   apiBaseUrl,
   position,
@@ -336,6 +317,8 @@ export function VoiceMode({
   const offRouteRef = useRef({ hits: 0, joined: false, latitude: NaN, longitude: NaN, reroutedAt: 0 });
   const accuracyRef = useRef(0);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const micRef = useRef<HTMLButtonElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     selfVoiceRef.current = selfVoice;
@@ -353,6 +336,7 @@ export function VoiceMode({
   }, [autoListen, rate, selfVoice]);
 
   useWakeLock(navigation !== null);
+  useMicLevel(phase === 'listening', micRef);
 
   // Âm tích tắc khi đang tìm — người không nhìn màn hình biết máy chưa treo.
   useEffect(() => {
@@ -906,6 +890,8 @@ export function VoiceMode({
   // Câu trả lời mới nhất đã hiện chữ to ở giữa: trong nhật ký chỉ để cho trình đọc màn hình.
   const lastAppIndex = lines.map((line) => line.who).lastIndexOf('app');
   const lastApp = lastAppIndex >= 0 ? lines[lastAppIndex] : undefined;
+  const lastUserIndex = lines.map((line) => line.who).lastIndexOf('user');
+  const lastUser = lastUserIndex >= 0 ? lines[lastUserIndex] : undefined;
   const quick = quickCommands(turn, navigation !== null);
   const phaseLabel = {
     idle: !recognitionSupported ? 'Gõ lệnh bên dưới' : touchScreen ? 'Chạm vào màn hình để nói' : 'Nhấn để nói (phím cách)',
@@ -1001,27 +987,59 @@ export function VoiceMode({
         onClick={onContentClick}
         className="voice-content flex min-h-0 flex-1 flex-col items-center gap-4 overflow-y-auto overscroll-contain px-4 py-4 sm:gap-6 sm:py-6"
       >
+        {/* Vòng sóng quanh nút (globals.css `.mic-orb`): phồng theo giọng khi nghe, lan ra khi đọc, xoay khi tìm. */}
         <button
+          ref={micRef}
           type="button"
           onClick={toggleListening}
           disabled={!recognitionSupported}
-          aria-label={phase === 'listening' ? 'Đang nghe — nhấn để dừng' : 'Nhấn để nói'}
-          className={cn(
-            'voice-mic grid size-32 shrink-0 place-items-center rounded-full border-4 transition sm:size-56',
+          data-phase={phase}
+          aria-label={
             phase === 'listening'
-              ? 'animate-pulse border-amber-300 bg-amber-400 text-slate-950'
+              ? 'Đang nghe — nhấn để dừng'
+              : phase === 'speaking'
+                ? 'Đang đọc — nhấn để ngắt và nói'
+                : 'Nhấn để nói'
+          }
+          className={cn(
+            'voice-mic mic-orb my-4 grid size-32 shrink-0 place-items-center rounded-full border-4 transition-colors sm:my-8 sm:size-56',
+            phase === 'listening'
+              ? 'border-amber-300 bg-amber-400 text-slate-950'
               : 'border-emerald-300 bg-emerald-500 text-slate-950 hover:bg-emerald-400',
             !recognitionSupported && 'opacity-40',
           )}
         >
-          {recognitionSupported ? <Mic className="size-14 sm:size-20" /> : <MicOff className="size-14 sm:size-20" />}
+          {!recognitionSupported ? (
+            <MicOff className="size-14 sm:size-20" />
+          ) : phase === 'speaking' ? (
+            <AudioLines className="size-14 sm:size-20" />
+          ) : (
+            <Mic className="size-14 sm:size-20" />
+          )}
         </button>
         <p className="w-full break-words text-center text-xl font-semibold sm:text-2xl" aria-hidden>
           {phaseLabel}
         </p>
-        {interim && <p className="text-xl text-amber-200">“{interim}”</p>}
+        {/* Câu người dùng vừa nói (đang nói thì hiện chữ nghe được tới đâu) và câu trả lời mới nhất. */}
+        {(interim || lastUser) && (
+          <p
+            key={interim ? 'interim' : lastUserIndex}
+            className={cn(
+              'voice-fade-in max-w-3xl break-words rounded-2xl px-4 py-2 text-center text-lg',
+              interim ? 'bg-amber-400/15 text-amber-100' : 'bg-white/10 text-white/80',
+            )}
+            aria-hidden
+          >
+            “{interim || lastUser?.text}”
+          </p>
+        )}
         {lastApp && (
-          <p className="w-full max-w-3xl break-words text-center text-lg leading-relaxed text-white sm:text-3xl">{lastApp.text}</p>
+          <p
+            key={lastAppIndex}
+            className="voice-fade-in w-full max-w-3xl break-words text-center text-lg leading-relaxed text-white sm:text-3xl"
+          >
+            {lastApp.text}
+          </p>
         )}
         {navigation && (
           <p className="rounded-full bg-emerald-500/20 px-4 py-2 text-lg text-emerald-200">
@@ -1074,12 +1092,41 @@ export function VoiceMode({
             Gửi
           </button>
         </form>
-        {/* Nhật ký hội thoại: trình đọc màn hình đọc mỗi dòng mới (aria-live). */}
-        <div role="log" aria-live="polite" aria-label="Nhật ký hội thoại" className="mx-auto mt-2 max-h-16 max-w-3xl overflow-y-auto break-words text-sm text-white/70 sm:max-h-28">
+        {lines.length > 1 && (
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((value) => !value)}
+            aria-expanded={historyOpen}
+            aria-controls="voice-history"
+            className="mx-auto mt-2 flex items-center gap-1 rounded-full px-3 py-1 text-xs text-white/60 hover:bg-white/10 hover:text-white"
+          >
+            {historyOpen ? 'Thu gọn lịch sử' : `Lịch sử hội thoại (${lines.length})`}
+            <ChevronDown className={cn('size-3.5 transition-transform', historyOpen && 'rotate-180')} aria-hidden />
+          </button>
+        )}
+        {/* Nhật ký hội thoại: trình đọc màn hình đọc mỗi dòng mới (aria-live). Thu gọn thì
+            chỉ ẩn khỏi mắt (sr-only), vẫn đọc được bằng trình đọc màn hình. */}
+        <div
+          id="voice-history"
+          role="log"
+          aria-live="polite"
+          aria-label="Nhật ký hội thoại"
+          className={cn(
+            'mx-auto mt-2 flex max-w-3xl flex-col gap-1.5 overflow-y-auto overscroll-contain break-words text-sm',
+            historyOpen ? 'max-h-[40dvh]' : 'sr-only',
+          )}
+        >
           {lines.map((line, index) => (
-            <p key={index} className={index === lastAppIndex ? 'sr-only' : undefined}>
+            <p
+              key={index}
+              className={cn(
+                'max-w-[85%] rounded-2xl px-3 py-1.5',
+                line.who === 'user' ? 'self-end bg-emerald-500/20 text-emerald-50' : 'self-start bg-white/10 text-white/85',
+              )}
+            >
               {/* translate="no": tên app, bộ dịch giao diện từng dịch thành "Yaxınlaşanlar". */}
-              <span className="font-semibold" translate={line.who === 'user' ? undefined : 'no'}>{line.who === 'user' ? 'Bạn' : 'Nearby'}:</span> {line.text}
+              <span className="sr-only" translate={line.who === 'user' ? undefined : 'no'}>{line.who === 'user' ? 'Bạn' : 'Nearby'}: </span>
+              {line.text}
             </p>
           ))}
         </div>

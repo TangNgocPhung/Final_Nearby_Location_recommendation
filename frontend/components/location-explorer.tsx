@@ -106,6 +106,7 @@ import {
 import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
 import { ChatWidget } from '@/components/chat-widget';
 import { VoiceMode } from '@/components/voice-mode';
+import { VoiceSearch } from '@/components/voice-search';
 import { ArExplorer } from '@/components/ar-explorer';
 import { ChargingFinder } from '@/components/charging-finder';
 import { FuelFinder } from '@/components/fuel-finder';
@@ -879,6 +880,8 @@ export function LocationExplorer() {
   const [mapPicking, setMapPicking] = useState(false);
   // Chế độ giọng nói cho người khiếm thị (Alt+V, nút "Giọng nói" trên thanh trên).
   const [voiceOpen, setVoiceOpen] = useState(false);
+  // Tìm nhanh bằng giọng (bảng nổi nhỏ) — khác chế độ giọng nói toàn màn hình ở trên.
+  const [voiceSearchOpen, setVoiceSearchOpen] = useState(false);
   const [arOpen, setArOpen] = useState(false);
   // Bản đồ sương mù: bật thì ghi ô H3 đã đi qua (xem hooks/use-exploration.ts).
   const [fogOn, setFogOn] = useState(false);
@@ -1864,7 +1867,12 @@ export function LocationExplorer() {
           if (!response.ok) return;
           const data = (await response.json()) as PoiSuggestion[];
           setSuggestions(data);
-          setSuggestionsOpen(true);
+          // Chỉ bung danh sách khi đang gõ trong ô tìm kiếm — từ khoá đến từ
+          // giọng nói / lịch sử thì kết quả đã hiện, gợi ý chỉ che bản đồ.
+          setSuggestionsOpen(
+            document.activeElement?.getAttribute('aria-controls') ===
+              'poi-suggestion-listbox',
+          );
         } catch (error) {
           if ((error as Error)?.name !== 'AbortError') setSuggestions([]);
         }
@@ -2743,6 +2751,7 @@ export function LocationExplorer() {
     const onKey = (event: KeyboardEvent) => {
       if (event.altKey && (event.key === 'v' || event.key === 'V')) {
         event.preventDefault();
+        setVoiceSearchOpen(false);
         setVoiceOpen((value) => !value);
       }
     };
@@ -3031,9 +3040,11 @@ export function LocationExplorer() {
               variant="ghost"
               size="icon"
               className="rounded-full"
-              onClick={() => setVoiceOpen(true)}
-              aria-label="Bật chế độ giọng nói cho người khiếm thị (phím tắt Alt+V)"
-              title="Chế độ giọng nói (Alt+V)"
+              onClick={() => setVoiceSearchOpen((value) => !value)}
+              data-voice-search-trigger
+              aria-expanded={voiceSearchOpen}
+              aria-label="Tìm bằng giọng nói (Alt+V: chế độ giọng nói cho người khiếm thị)"
+              title="Tìm bằng giọng nói"
             >
               <Mic className="size-5" />
             </Button>
@@ -3152,9 +3163,11 @@ export function LocationExplorer() {
                 variant="ghost"
                 size="icon"
                 className="size-8 rounded-full"
-                onClick={() => setVoiceOpen(true)}
-                aria-label="Bật chế độ giọng nói cho người khiếm thị (phím tắt Alt+V)"
-                title="Chế độ giọng nói (Alt+V)"
+                onClick={() => setVoiceSearchOpen((value) => !value)}
+                data-voice-search-trigger
+                aria-expanded={voiceSearchOpen}
+                aria-label="Tìm bằng giọng nói (Alt+V: chế độ giọng nói cho người khiếm thị)"
+                title="Tìm bằng giọng nói · Alt+V: chế độ đầy đủ"
               >
                 <Mic className="size-4" />
               </Button>
@@ -3249,7 +3262,7 @@ export function LocationExplorer() {
                 <div className="relative min-w-0 flex-1">
                   <Search className="pointer-events-none absolute left-3.5 top-1/2 size-[18px] -translate-y-1/2 text-primary/70" />
                   <Input
-                    className="h-12 rounded-2xl border-emerald-950/10 bg-white pl-10 text-[15px] shadow-[inset_0_1px_2px_rgb(14_68_48/5%)] transition-shadow focus-visible:shadow-[0_0_0_4px_rgb(15_138_98/12%)] dark:border-white/10 dark:bg-input/40"
+                    className="h-12 rounded-2xl border-emerald-950/10 bg-white pl-10 pr-11 text-[15px] shadow-[inset_0_1px_2px_rgb(14_68_48/5%)] transition-shadow focus-visible:shadow-[0_0_0_4px_rgb(15_138_98/12%)] dark:border-white/10 dark:bg-input/40"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     onFocus={() => {
@@ -3295,6 +3308,21 @@ export function LocationExplorer() {
                     }
                     autoComplete="off"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setVoiceSearchOpen((value) => !value)}
+                    data-voice-search-trigger
+                    aria-expanded={voiceSearchOpen}
+                    aria-label="Tìm bằng giọng nói"
+                    title="Tìm bằng giọng nói"
+                    className={`absolute right-1.5 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-xl transition-colors ${
+                      voiceSearchOpen
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'text-primary/70 hover:bg-emerald-50 hover:text-primary dark:hover:bg-white/10'
+                    }`}
+                  >
+                    <Mic className="size-[18px]" />
+                  </button>
                   {suggestionsOpen && suggestions.length > 0 && (
                     <div
                       id="poi-suggestion-listbox"
@@ -4583,6 +4611,19 @@ export function LocationExplorer() {
             // Check-in trong AR cũng mở ô — vẽ lại sương mù cho khớp.
             void exploration.refresh();
           }}
+        />
+      )}
+      {voiceSearchOpen && (
+        <VoiceSearch
+          language={uiLanguage.language}
+          onResult={(spoken) => {
+            setQuery(spoken);
+            setSuggestionsOpen(false);
+            void runSearch(spoken, selectedCategory);
+            if (window.innerWidth < 1024) setMobileView('results');
+          }}
+          onOpenFullMode={() => setVoiceOpen(true)}
+          onClose={() => setVoiceSearchOpen(false)}
         />
       )}
       {voiceOpen && (
