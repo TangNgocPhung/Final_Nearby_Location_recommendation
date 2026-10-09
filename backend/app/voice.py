@@ -91,6 +91,9 @@ _PHRASES: dict[str, tuple[str, ...]] = {
 _FILLERS = (
     "tim kiem", "tim giup toi", "tim cho toi", "tim", "cho toi", "giup toi", "toi muon",
     "toi can", "o gan day", "gan day", "quanh day", "gan nhat", "o dau",
+    # "gần tôi" là "gần đây", không phải vị trí — bỏ cả cụm, không thì "tôi"
+    # đi theo đường đại từ còn "gần" bị giữ lại và BM25 đòi khớp chữ "gần".
+    "gan toi", "quanh toi",
     # Câu gõ không dấu "hien mau o dau duoc". KHÔNG thêm "duoc" đứng một mình:
     # bỏ dấu thì "được" trùng "dược" ("nhà thuốc dược", "Công ty Dược") — chỉ
     # bỏ khi nó đi sau "ở đâu", còn chữ có dấu thì đi đường `_ACCENTED_FILLERS`.

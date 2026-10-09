@@ -85,6 +85,7 @@ def test_chon_bang_ten() -> None:
 def test_bo_tu_dem_nhung_giu_dau_va_vi_tri() -> None:
     assert voice.clean_query("tìm cho tôi quán phở gần đây") == "phở"
     assert voice.clean_query("cà phê gần Bến Thành") == "cà phê gần Bến Thành"
+    assert voice.clean_query("Quán chay gần tôi") == "chay"
 
 
 def test_bo_dai_tu_thua_ma_nhan_dang_giong_noi_chen_vao() -> None:

@@ -21,10 +21,27 @@ def test_extract_json_object_returns_none_for_garbage():
 
 
 def test_quick_search_intent_nhan_cau_tim_dia_diem_ro_rang():
-    intent = chat.quick_search_intent("Quán cà phê yên tĩnh gần đây")
+    intent = chat.quick_search_intent("Quán cà phê gần đây")
     assert intent is not None
     assert intent["category"] == "cafe"
     assert intent["needs_clarification"] is False
+
+
+def test_quick_search_intent_cau_co_them_y_thi_khong_khoa_category():
+    # Có category thì api.py bỏ chữ, chỉ lọc theo loại — "yên tĩnh" sẽ mất.
+    intent = chat.quick_search_intent("Quán cà phê yên tĩnh gần đây")
+    assert intent is not None
+    assert intent["category"] is None
+    assert intent["search_query"] == "cà phê yên tĩnh"
+
+
+def test_quick_search_intent_khop_theo_ranh_gioi_tu():
+    # "gan toi" chứa chuỗi con "an toi" (ăn tối) — từng biến "quán chay" thành
+    # "nhà hàng gần nhất" và trả chè, kem, sủi cảo.
+    intent = chat.quick_search_intent("Quán chay gần tôi")
+    assert intent is not None
+    assert intent["category"] is None
+    assert intent["search_query"] == "chay"
 
 
 def test_quick_search_intent_bo_qua_cau_hoi_mo_ho():

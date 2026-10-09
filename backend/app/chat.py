@@ -545,10 +545,24 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 
 _FAST_SEARCH_MARKERS = ("gan day", "gan toi", "quanh day", "quanh toi", "o dau gan")
 _FAST_SEARCH_PREFIXES = ("tim ", "quan ", "nha hang ", "ca phe ", "cafe ", "tiem ")
+# Từ được phép đứng cạnh tên loại mà câu vẫn là "chỉ hỏi loại đó" (so không dấu).
+_FAST_CATEGORY_FILLERS = frozenset(
+    "tim kiem giup cho toi minh gan day quanh o dau nhat nao co khong vay a".split()
+)
 
 
 def quick_search_intent(user_message: str) -> dict[str, Any] | None:
-    """Nhận diện truy vấn tìm địa điểm rõ ràng mà không cần chờ LLM."""
+    """Nhận diện truy vấn tìm địa điểm rõ ràng mà không cần chờ LLM.
+
+    Chỉ gán ``category`` khi câu KHÔNG nói gì thêm ngoài tên loại và từ đệm:
+    api.py thấy category ở đường nhanh thì bỏ hẳn chữ, lọc theo loại + khoảng
+    cách. Đo 2026-10-10: "Quán chay gần tôi" ra Chè 259, Kem Vĩnh Sanh, Sủi
+    Cảo — "quan chay g|an toi|" khớp chuỗi con "an toi" (ăn tối) nên thành
+    restaurant, rồi chữ "chay" bị vứt. Câu có thêm ý ("chay", "yên tĩnh")
+    thì để category None cho BM25/vector đọc — sau khi bỏ từ đệm
+    (``voice.clean_query``): giữ "gần tôi" thì BM25 kéo cả "Quán Bún Đậu Nhà
+    Tôi" lên đầu.
+    """
     normalized = normalize_text(user_message).strip()
     if not normalized:
         return None
@@ -566,12 +580,17 @@ def quick_search_intent(user_message: str) -> dict[str, Any] | None:
         "pharmacy": ("nha thuoc", "hieu thuoc"),
         "park": ("cong vien",),
     }
+    padded = f" {normalized} "
     for candidate, terms in category_terms.items():
-        if any(term in normalized for term in terms):
+        term = next((term for term in terms if f" {term} " in padded), None)
+        if term is None:
+            continue
+        rest = padded.replace(f" {term} ", " ", 1).split()
+        if all(word in _FAST_CATEGORY_FILLERS for word in rest if word != "quan"):
             category = candidate
-            break
+        break
     return {
-        "search_query": user_message.strip(),
+        "search_query": user_message.strip() if category else clean_query(user_message),
         "category": category,
         "radius_m": None,
         "needs_clarification": False,
