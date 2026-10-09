@@ -55,6 +55,23 @@ Sau khi các service sẵn sàng:
 - API docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
 
+## Tài khoản và phân quyền
+
+Hai vai trò: **Người dùng** (`user`) và **Quản trị viên** (`admin`).
+
+- Nút **Đăng nhập** trên thanh trên cùng: đăng ký luôn tạo vai trò `user`.
+  Đăng nhập thì địa điểm đã lưu và đánh giá trên trình duyệt đó chuyển sang
+  tài khoản; chưa đăng nhập vẫn dùng được như trước theo phiên ẩn danh.
+- Admin có thêm **Trang quản trị** trong menu tài khoản: thống kê, cấp/hạ quyền
+  admin, khoá/mở khoá, đặt lại mật khẩu, gỡ đánh giá vi phạm. Hệ thống không cho
+  admin tự hạ quyền/tự khoá mình, và luôn giữ ít nhất một admin đang hoạt động.
+- Admin đầu tiên: API tự tạo từ `ADMIN_USERNAME`/`ADMIN_PASSWORD` lúc khởi động
+  (môi trường dev: `admin` / `nearby_admin_dev`, xem `config/development.env`),
+  hoặc chạy `docker compose exec backend python -m app.auth create-admin <tên>`.
+- Production bắt buộc đặt `AUTH_SECRET` (>= 32 ký tự) để ký token đăng nhập.
+- API: `/api/v1/auth/*` (đăng ký, đăng nhập, `me`, đổi mật khẩu) và
+  `/api/v1/admin/*` (chỉ admin, trả 401 khi chưa đăng nhập, 403 khi không đủ quyền).
+
 ## Chạy riêng giao diện
 
 Giao diện có dữ liệu dự phòng nên vẫn dùng được khi backend chưa chạy:

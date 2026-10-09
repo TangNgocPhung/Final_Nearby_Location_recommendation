@@ -30,8 +30,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import psycopg
 from psycopg.rows import dict_row
 
+from . import directions
 from .config import settings
 from .opening_hours import opening_status
+from .poi_videos import VIDEOS_QUERY, video_json
 from .spatio_temporal import DEFAULT_TIMEZONE, eta_minutes, windowed_popularity
 
 DATABASE_URL = settings.database_url
@@ -393,6 +395,9 @@ def fetch_detail(
             cursor.execute(_KNOWLEDGE_QUERY, {"poi_id": poi_id})
             knowledge_row = cursor.fetchone()
 
+            cursor.execute(VIDEOS_QUERY, {"poi_id": poi_id})
+            videos = [video_json(video) for video in cursor.fetchall()]
+
             nearby_address = None
             if not (row["address"] or "").strip():
                 cursor.execute(
@@ -406,6 +411,13 @@ def fetch_detail(
                         "name": nearby_row["name"],
                         "distanceMeters": round(nearby_row["distanceMeters"]),
                     }
+
+    # Không có địa chỉ, cũng không mượn được của hàng xóm trong 100 m: lấy tên
+    # đường sát địa điểm từ OSRM. Gọi SAU khi đóng kết nối DB — OSRM chậm thì
+    # không giữ kết nối Postgres. Trả riêng `streetAddress` vì đây là ước lượng.
+    street_address = None
+    if not (row["address"] or "").strip() and nearby_address is None:
+        street_address = directions.nearest_streets(row["latitude"], row["longitude"])
 
     timezone_name = row["timezone"] or DEFAULT_TIMEZONE
     schedule = normalize_opening_hours(row["openingHours"])
@@ -484,6 +496,7 @@ def fetch_detail(
         "categoryLabel": row["categoryLabel"],
         "address": row["address"],
         "nearbyAddress": nearby_address,
+        "streetAddress": street_address,
         "district": row["district"],
         "city": row["city"],
         "countryCode": row["countryCode"],
@@ -515,6 +528,7 @@ def fetch_detail(
         "reviews": reviews,
         "similar": similar,
         "knowledge": knowledge,
+        "videos": videos,
         "provenance": {
             "source": row["source"],
             "sourceId": row["sourceId"] or None,

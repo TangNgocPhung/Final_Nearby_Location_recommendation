@@ -17,6 +17,7 @@ def _fake_ollama(calls, *, drop_key=None, garbage_key=None):
 
 def _isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(translate, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(translate, "SEED_DIR", tmp_path / "seed")
     monkeypatch.setattr(translate, "_memory", {})
 
 
@@ -54,6 +55,30 @@ def test_chi_liet_ke_ngon_ngu_co_cache_san(monkeypatch, tmp_path):
     translate.translate_texts(["Bán kính"], "fr")
 
     assert translate.cached_language_codes() == {"fr"}
+
+
+def test_seed_co_san_va_uu_tien_hon_cache(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(chat, "_ollama_chat", _fake_ollama(calls))
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    (seed / "ja.json").write_text(json.dumps({"Bán kính": "半径"}), encoding="utf-8")
+    (tmp_path / "ja.json").write_text(
+        json.dumps({"Bán kính": "MAY", "Lưu": "保存"}), encoding="utf-8"
+    )
+
+    assert translate.cached_language_codes() == {"ja"}
+    assert translate.cached_translations("ja") == {"Bán kính": "半径", "Lưu": "保存"}
+    assert translate.translate_texts(["Bán kính"], "ja") == {"Bán kính": "半径"}
+    assert calls == []
+
+
+def test_seed_hop_le_cho_ngon_ngu_ho_tro():
+    for path in translate.SEED_DIR.glob("*.json"):
+        assert translate.is_supported(path.stem), path.name
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data and all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in data.items())
 
 
 def test_ngon_ngu_goc_va_ngon_ngu_la_khong_dich(monkeypatch, tmp_path):

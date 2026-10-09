@@ -26,6 +26,9 @@ from .languages import ENGLISH_NAMES, SOURCE_LANGUAGE
 logger = logging.getLogger("nearby-translate")
 
 CACHE_DIR = Path(os.environ.get("I18N_CACHE_DIR", "/app/i18n_cache"))
+# Bản dịch soạn tay đi kèm mã nguồn (ja, ko, zh-CN...) — có ngay sau mỗi lần
+# build, không phụ thuộc volume cache; ưu tiên hơn bản dịch máy cùng khoá.
+SEED_DIR = Path(__file__).with_name("i18n_seed")
 
 MAX_TEXT_LENGTH = 2000
 MAX_TEXTS_PER_REQUEST = 40
@@ -62,18 +65,24 @@ def _cache_path(language: str) -> Path:
     return CACHE_DIR / f"{language}.json"
 
 
+def _read_mapping(path: Path, language: str) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning("Đọc file bản dịch hỏng (%s, %s): %s", language, path, error)
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {k: v for k, v in loaded.items() if isinstance(k, str) and isinstance(v, str)}
+
+
 def _load(language: str) -> dict[str, str]:
     if language in _memory:
         return _memory[language]
-    mapping: dict[str, str] = {}
-    path = _cache_path(language)
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                mapping = {k: v for k, v in loaded.items() if isinstance(k, str) and isinstance(v, str)}
-        except (OSError, json.JSONDecodeError) as error:
-            logger.warning("Đọc cache bản dịch hỏng (%s): %s", language, error)
+    mapping = _read_mapping(_cache_path(language), language)
+    mapping.update(_read_mapping(SEED_DIR / f"{language}.json", language))
     _memory[language] = mapping
     return mapping
 
@@ -99,21 +108,23 @@ def cached_translations(language: str) -> dict[str, str]:
 
 
 def cached_language_codes() -> set[str]:
-    """Các ngôn ngữ đã có sẵn cache bản dịch trên đĩa hoặc trong bộ nhớ."""
+    """Các ngôn ngữ đã có sẵn bản dịch (seed đi kèm mã nguồn, cache trên đĩa
+    hoặc trong bộ nhớ)."""
     codes = {
         language
         for language, mapping in _memory.items()
         if is_supported(language) and mapping
     }
-    try:
-        for path in CACHE_DIR.glob("*.json"):
-            language = path.stem
-            if is_supported(language):
-                with _lock_for(language):
-                    if _load(language):
-                        codes.add(language)
-    except OSError as error:
-        logger.warning("Không liệt kê được cache bản dịch: %s", error)
+    for directory in (SEED_DIR, CACHE_DIR):
+        try:
+            for path in directory.glob("*.json"):
+                language = path.stem
+                if is_supported(language):
+                    with _lock_for(language):
+                        if _load(language):
+                            codes.add(language)
+        except OSError as error:
+            logger.warning("Không liệt kê được bản dịch trong %s: %s", directory, error)
     return codes
 
 

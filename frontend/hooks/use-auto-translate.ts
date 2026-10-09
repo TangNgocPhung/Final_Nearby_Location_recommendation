@@ -15,6 +15,34 @@ const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'CODE', 'P
 const HAS_LETTER = /\p{L}/u;
 
 type Slot = { source: string; applied: string | null };
+type Template = { pattern: RegExp; translated: string; weight: number };
+
+const PLACEHOLDER = /\{(\d+)\}/g;
+
+/** Khoá có chỗ trống `{0}`, `{1}`... (chuỗi ghép lúc chạy, vd. `GPS chính xác ±{0} m`)
+ * thành regex khớp nguyên chuỗi. `weight` = độ dài phần chữ cố định, mẫu cụ
+ * thể hơn được thử trước (`Bỏ lưu {0}` trước `Bỏ {0}`). */
+function compileTemplate(source: string, translated: string): Template | null {
+  const parts = source.split(PLACEHOLDER);
+  if (parts.length < 3) return null;
+  let pattern = '^';
+  let weight = 0;
+  parts.forEach((part, index) => {
+    if (index % 2 === 0) {
+      pattern += part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      weight += part.trim().length;
+    } else {
+      pattern += `(?<p${part}>[\\s\\S]*?)`;
+    }
+  });
+  if (weight < 2) return null;
+  try {
+    return { pattern: new RegExp(`${pattern}$`), translated, weight };
+  } catch {
+    // Cùng một chỗ trống lặp lại hai lần (`{0}…{0}`) — bỏ mẫu này.
+    return null;
+  }
+}
 
 function readStoredLanguage(): string | null {
   try {
@@ -55,6 +83,7 @@ class DomTranslator {
   private readonly texts = new Map<Text, Slot>();
   private readonly attrs = new Map<Element, Map<string, Slot>>();
   private readonly dict = new Map<string, string>();
+  private templates: Template[] = [];
   private readonly failed = new Set<string>();
   private readonly dirty = new Set<Node>();
   private observer: MutationObserver | null = null;
@@ -75,8 +104,11 @@ class DomTranslator {
       if (response.ok) {
         const data = (await response.json()) as { translations: Record<string, string> };
         for (const [source, translated] of Object.entries(data.translations)) {
-          this.dict.set(source, translated);
+          const template = compileTemplate(source, translated);
+          if (template) this.templates.push(template);
+          else this.dict.set(source, translated);
         }
+        this.templates.sort((a, b) => b.weight - a.weight);
       }
     } catch {
       // Không lấy được cache — giữ nguyên tiếng Việt, không tự sinh bản dịch.
@@ -176,7 +208,7 @@ class DomTranslator {
   private translateSlot(slot: Slot, write: (text: string) => void) {
     const key = slot.source.trim();
     if (key.length > MAX_TEXT_LENGTH) return;
-    const translated = this.dict.get(key);
+    const translated = this.dict.get(key) ?? this.fillTemplate(key);
     if (translated !== undefined) {
       const text = slot.source.replace(key, translated);
       slot.applied = text;
@@ -184,6 +216,21 @@ class DomTranslator {
     } else if (!this.failed.has(key)) {
       this.failed.add(key);
     }
+  }
+
+  /** Dịch chuỗi ghép lúc chạy theo mẫu `{0}`; giá trị điền vào chỗ trống
+   * (tên danh mục, nhãn...) cũng được dịch nếu có sẵn trong từ điển. */
+  private fillTemplate(text: string): string | undefined {
+    for (const template of this.templates) {
+      const groups = template.pattern.exec(text)?.groups;
+      if (!groups) continue;
+      return template.translated.replace(PLACEHOLDER, (whole, index: string) => {
+        const value = groups[`p${index}`];
+        if (value === undefined) return whole;
+        return this.dict.get(value.trim()) ?? value;
+      });
+    }
+    return undefined;
   }
 
 }

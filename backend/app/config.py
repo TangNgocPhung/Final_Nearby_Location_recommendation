@@ -242,6 +242,17 @@ class Settings(BaseSettings):
     # gateway (150s). Hết giờ thì ảnh thành "chờ xác minh", lượt khám phá vẫn
     # được tính vì vị trí đã đúng.
     explore_vision_timeout_seconds: float = 100.0
+    # Phân quyền admin/user (`app/auth.py`). Token là chuỗi ký HMAC-SHA256
+    # bằng `auth_secret` — đổi secret là mọi phiên đăng nhập cũ hết hiệu lực.
+    # Rỗng ở development/test thì dùng một secret cố định chỉ dành cho máy dev;
+    # production bắt buộc tự đặt (xem validator bên dưới).
+    auth_secret: str = ""
+    auth_token_ttl_hours: int = 24 * 7
+    # Tài khoản admin khởi tạo: lúc API khởi động, nếu chưa có tài khoản nào
+    # mang tên này thì tạo mới với vai trò admin. Đã có thì KHÔNG đụng tới —
+    # đổi ADMIN_PASSWORD sau đó không ghi đè mật khẩu admin đã đổi trên giao diện.
+    admin_username: str = ""
+    admin_password: str = ""
     osm_bbox: str = "10.70,106.60,10.90,106.82"
     osm_max_pois: int = 3_000
     allowed_origins: str = (
@@ -280,7 +291,17 @@ class Settings(BaseSettings):
             raise ValueError("Production DATABASE_URL must not use development/test credentials")
         if not self.cors_origins or "*" in self.cors_origins:
             raise ValueError("Production ALLOWED_ORIGINS must contain explicit trusted origins")
+        if len(self.auth_secret) < 32:
+            raise ValueError("Production AUTH_SECRET must be at least 32 characters")
+        if self.admin_password and (
+            len(self.admin_password) < 12 or "dev" in self.admin_password.lower()
+        ):
+            raise ValueError("Production ADMIN_PASSWORD must be a strong, non-development password")
         return self
+
+    @property
+    def auth_signing_key(self) -> bytes:
+        return (self.auth_secret or "nearby-development-only-auth-secret").encode("utf-8")
 
 
 @lru_cache

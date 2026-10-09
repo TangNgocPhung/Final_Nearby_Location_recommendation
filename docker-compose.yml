@@ -19,6 +19,12 @@ x-backend-environment: &backend-environment
   # hạn mức RATE_LIMIT_PER_MINUTE. Dev = 1 (chỉ nginx), prod = 2 (Caddy+nginx).
   TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
   ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set}
+  # Phân quyền admin/user (app/auth.py). AUTH_SECRET ký token đăng nhập;
+  # ADMIN_USERNAME/ADMIN_PASSWORD tạo admin đầu tiên nếu tên đó chưa tồn tại.
+  AUTH_SECRET: ${AUTH_SECRET:-}
+  AUTH_TOKEN_TTL_HOURS: ${AUTH_TOKEN_TTL_HOURS:-168}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
   # Ảnh đường phố 360° (app/streetview.py). Giá trị nằm trong `.env` ở gốc repo
   # (đã .gitignore), nên compose phải chạy với CẢ HAI file env:
   #   docker compose --env-file config/development.env --env-file .env ...

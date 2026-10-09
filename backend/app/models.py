@@ -239,3 +239,42 @@ class GeofenceRequest(BaseModel):
     # Chống báo trùng: đứng yên trong vùng, mỗi 20 giây một ping, sẽ là mỗi 20
     # giây một thông báo nếu không có khoảng lặng này.
     cooldown_minutes: int = Field(default=30, ge=1, le=1_440)
+
+
+class RegisterRequest(BaseModel):
+    """Đăng ký công khai — LUÔN tạo vai trò ``user``; không nhận trường ``role``
+    để client không tự phong admin được. ``session_id`` (tuỳ chọn) là phiên ẩn
+    danh hiện tại, dữ liệu của nó được chuyển sang tài khoản mới."""
+
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+    display_name: str | None = Field(default=None, max_length=80)
+    session_id: UUID | None = None
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+    session_id: UUID | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class AdminUserUpdate(BaseModel):
+    """Trường nào để None thì giữ nguyên."""
+
+    role: Literal["admin", "user"] | None = None
+    is_active: bool | None = None
+    display_name: str | None = Field(default=None, max_length=80)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class PoiVideoRequest(BaseModel):
+    """Admin gắn video YouTube vào một địa điểm. ``title`` bỏ trống thì lấy
+    tiêu đề thật của video qua oEmbed (xem ``app/poi_videos.py``)."""
+
+    url: str = Field(min_length=1, max_length=300)
+    title: str | None = Field(default=None, max_length=160)

@@ -28,7 +28,7 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from .poi_features import normalize_text
+from .poi_features import categories_for_query, normalize_text
 
 MAX_RESULTS = 12
 PAGE_SIZE = 3
@@ -92,6 +92,16 @@ _FILLERS = (
     "tim kiem", "tim giup toi", "tim cho toi", "tim", "cho toi", "giup toi", "toi muon",
     "toi can", "o gan day", "gan day", "quanh day", "gan nhat", "o dau",
 )
+# Đại từ thừa — so CÓ DẤU, vì bỏ dấu thì "tôi" trùng "tối"/"tới" ("quán ăn tối").
+# Nhận dạng giọng nói hay chèn chúng vào câu ("Nhà tôi, quán phở tôi"), và mỗi
+# từ thừa làm search đòi khớp thêm một từ (minimum_should_match) — kết quả
+# lệch hẳn sang "Quán Chay Nhà Tôi", "Kem Vĩnh Sanh"... (đo 2026-10-08).
+_PRONOUN_FILLERS = ("của tôi", "nhà tôi", "tôi")
+# Danh từ chung đứng trước tên món/loại: "quán phở" mà giữ "quán" thì search
+# đòi khớp cả hai từ — "Phở Nhà Mình" (không có chữ "quán") bị loại, còn
+# "quan" (bỏ dấu) lại khớp "Quản lý xuất nhập cảnh". Chỉ bỏ khi nó không mang
+# thông tin loại địa điểm: "quán ăn", "quán nhậu", "tiệm thuốc" giữ nguyên.
+_GENERIC_HEADS = ("cửa hàng", "cửa tiệm", "quán", "tiệm")
 
 
 def fold(text: str | None) -> str:
@@ -148,8 +158,34 @@ def clean_query(text: str) -> str:
             if all(keep[start + i] and folded[start + i] == parts[i] for i in range(size)):
                 for i in range(size):
                     keep[start + i] = False
+    accented = [_lower_words(word) for word in words]
+    for filler in _PRONOUN_FILLERS:
+        parts = filler.split()
+        size = len(parts)
+        for start in range(0, len(words) - size + 1):
+            if all(keep[start + i] and accented[start + i] == parts[i] for i in range(size)):
+                for i in range(size):
+                    keep[start + i] = False
     cleaned = " ".join(word for word, flag in zip(words, keep) if flag).strip(" ,.?!")
-    return cleaned or text.strip()
+    return _drop_generic_heads(cleaned) or text.strip()
+
+
+def _drop_generic_heads(query: str) -> str:
+    """"quán phở" → "phở", nhưng "quán ăn" giữ nguyên — xem `_GENERIC_HEADS`."""
+    words = query.split()
+    categories = categories_for_query(query)
+    for head in _GENERIC_HEADS:
+        parts = head.split()
+        size = len(parts)
+        start = 0
+        while start + size < len(words):  # phải còn từ phía sau
+            if [_lower_words(word) for word in words[start:start + size]] == parts:
+                rest = words[:start] + words[start + size:]
+                if categories_for_query(" ".join(rest)) == categories:
+                    words = rest
+                    continue
+            start += 1
+    return " ".join(words).strip(" ,.?!")
 
 
 def parse(text: str, stage: str, result_names: list[str] | None = None) -> dict[str, Any]:
