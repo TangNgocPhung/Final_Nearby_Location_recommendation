@@ -53,7 +53,7 @@ type RouteStep = {
 
 type DirectionsRoute = {
   steps?: RouteStep[];
-  geometry: NonNullable<AssistantOverlay['line']>;
+  geometry: Extract<NonNullable<AssistantOverlay['line']>, { type: 'LineString' }>;
   distanceMeters: number;
   durationMinutes: number;
   approximate?: boolean;

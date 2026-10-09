@@ -336,13 +336,18 @@ def _plan_chat_turn(payload: ChatRequest) -> tuple[dict[str, Any], str | None]:
     """Phần KHÔNG cần LLM của một lượt chat. Trả ``(response, reply)`` —
     ``reply`` là ``None`` khi còn phải để LLM diễn giải ``response["results"]``.
 
-    Thứ tự, tất cả bằng luật (`app/chat_tools.py`): câu hỏi tiếp trên danh sách
+    Thứ tự, tất cả bằng luật (`app/chat_tools.py`): xe buýt → câu hỏi tiếp trên danh sách
     vừa xem ("số 2 mấy giờ đóng cửa?") → địa danh nêu tên → công cụ chuyên
     biệt (xăng, WC, gửi xe…) → search thường, có bộ lọc ("đang mở", "có
     wifi"). Tách riêng để ``/api/v1/chat`` và ``/api/v1/chat/stream`` dùng
     chung đúng một luồng, chỉ khác ở cách trả phần diễn giải.
     """
     session_id = str(payload.session_id)
+
+    # Xe buýt trước cả câu hỏi tiếp: "xe buýt số 2" là tuyến 02, không phải thẻ số 2.
+    bus_params = chat_tools.detect_bus(payload.message)
+    if bus_params is not None:
+        return _bus_turn(payload, bus_params)
 
     last = chat_tools.recall(session_id)
     plan = chat_tools.follow_up(payload.message, last, payload.latitude, payload.longitude)
@@ -507,6 +512,24 @@ def _tool_turn(
         "tool": tool,
         "quickReplies": chat_tools.quick_replies(tool, len(results)),
         "results": results,
+    }, reply
+
+
+def _bus_turn(payload: ChatRequest, params: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Câu hỏi xe buýt (giờ chạy, lộ trình, trạm gần) — trả lời bằng chữ kèm
+    ``overlay`` để khung chat vẽ lộ trình/trạm lên bản đồ. Không có thẻ: trạm
+    xe buýt không phải POI, bấm thẻ mở chi tiết POI sẽ lỗi. Như thời tiết, giữ
+    nguyên ngữ cảnh cũ để "số 2…" vẫn trỏ vào danh sách địa điểm trước đó."""
+    reply, overlay, replies = chat_tools.bus_answer(params, payload.latitude, payload.longitude)
+    chat.record_turn(str(payload.session_id), payload.message, reply)
+    return {
+        "needsClarification": False,
+        "searchParams": {"query": payload.message, "category": None, "radius": None},
+        "retrievalBackend": "tool:bus",
+        "tool": "bus",
+        "overlay": overlay,
+        "quickReplies": replies,
+        "results": [],
     }, reply
 
 
