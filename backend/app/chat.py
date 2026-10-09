@@ -55,6 +55,8 @@ Nhiệm vụ: viết một đoạn trả lời ngắn gọn, tự nhiên bằng 
 Quy tắc bắt buộc:
 - CHỈ nhắc tới POI có trong danh sách được cung cấp. TUYỆT ĐỐI không bịa thêm địa điểm nào khác.
 - Không tự đánh giá/xếp hạng lại — giữ đúng thứ tự đã cho, có thể nêu 3-5 kết quả đầu.
+- POI nào rõ ràng KHÔNG hợp yêu cầu (vd người dùng hỏi quán cà phê mà POI là trường học, sân bóng) thì bỏ qua, đừng giới thiệu.
+- Không gán cho POI đặc điểm mà dữ liệu không có (yên tĩnh, rộng rãi, có wifi...). Không biết thì đừng nói.
 - Nếu danh sách rỗng, xin lỗi và gợi ý người dùng thử từ khoá khác hoặc mở rộng bán kính.
 - Trả lời ngắn (2-5 câu), giọng thân thiện, không markdown.
 - CHỈ dùng tiếng Việt, không chèn từ tiếng Anh (kể cả từ đơn giản như "today").

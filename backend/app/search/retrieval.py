@@ -175,15 +175,25 @@ def _gate_by_text_relevance(
     ``MIN_TEXT_MATCHES`` thì bổ sung ``MAX_SEMANTIC_BACKFILL`` candidate đầu
     của kênh VECTOR (không phải geo/trending) xếp SAU nhóm khớp chữ.
 
+    BM25 KHÔNG khớp gì nhưng kênh vector có chạy thì chỉ giữ phần đầu kênh
+    vector. Đo 2026-10-09: câu nói tự nhiên "Tôi muốn kiếm 1 quán cà phê yên
+    tĩnh để học bài" (12 từ) không POI nào đạt ``minimum_should_match`` 70% →
+    BM25 rỗng; bản cũ trả nguyên RRF nên geo/h3/trending thắng và ra tiệm hoa,
+    sân bóng, Trường Tiểu học Phú Thọ — trong khi 15 hit đầu kênh vector đều
+    là quán cà phê. Chỉ khi cả vector cũng không có (Ollama chết) mới giữ
+    nguyên RRF: trả thứ gần nhất vẫn hơn trả rỗng.
+
     Không áp dụng khi không có query text (duyệt theo vị trí — geo là kênh
-    chính đáng), và giữ nguyên RRF khi BM25 không khớp được gì (truy vấn quá
-    lạ: trả thứ gần nhất vẫn hơn trả rỗng).
+    chính đáng).
     """
     if not clean_query:
         return fused
     relevant_ids = set(channels.get("bm25", []))
     if not relevant_ids:
-        return fused
+        semantic_ids = set(channels.get("vector", [])[:MAX_SEMANTIC_BACKFILL])
+        if not semantic_ids:
+            return fused
+        return [item for item in fused if item[0] in semantic_ids]
     text_matches = [item for item in fused if item[0] in relevant_ids]
     if len(text_matches) >= MIN_TEXT_MATCHES or categories_for_query(clean_query):
         return text_matches

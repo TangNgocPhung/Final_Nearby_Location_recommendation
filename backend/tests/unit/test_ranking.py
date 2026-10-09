@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 
 from app.config import settings
-from app.ranking import _relevance_sort_key, diversify, rerank
+from app.ranking import _relevance_sort_key, diversify, ensure_distance_diversity, insert_sponsored, rerank
 
 
 def candidate(
@@ -209,3 +209,61 @@ def test_cong_chat_luong_khong_doi_gi_khi_khong_co_query_text(monkeypatch) -> No
 
     assert [i["id"] for i in tat] == [i["id"] for i in bat]
     assert [i["score"] for i in tat] == [i["score"] for i in bat]
+
+
+# --- truy vấn nêu loại địa điểm (đo 2026-10-09) ---------------------------------
+#
+# "quán bình dân" xếp UBND phường 8 ở hạng 2: BM25 khớp mờ "quan"/"dan" trên
+# từ khoá nhóm hành chính ("cơ quan", "nhân dân"), UBND gần hơn nên điểm cao
+# hơn, rồi `diversify` còn kéo thêm loại khác chen vào giữa các quán cơm.
+
+RESTAURANT = frozenset({"restaurant"})
+
+
+def test_truy_van_neu_loai_day_ung_vien_khac_loai_xuong_sau() -> None:
+    ubnd = candidate("ubnd", "government", distance=500, text=0.11)
+    quan_com = candidate("quan-com", "restaurant", distance=1200, text=1.0, rating=3.0)
+
+    ranked = rerank(deepcopy([ubnd, quan_com]), has_query_text=True, intent_categories=RESTAURANT)
+
+    assert [item["id"] for item in ranked] == ["quan-com", "ubnd"]
+
+
+def test_khong_neu_loai_thi_khong_doi_thu_tu() -> None:
+    near = candidate("near", "government", distance=100)
+    far = candidate("far", "restaurant", distance=2500)
+
+    ranked = rerank(deepcopy([near, far]), has_query_text=True)
+
+    assert [item["id"] for item in ranked] == ["near", "far"]
+
+
+def test_diversify_khong_chen_loai_khac_vao_giua_loai_duoc_hoi() -> None:
+    results = [
+        candidate("r1", "restaurant"),
+        candidate("r2", "restaurant"),
+        candidate("r3", "restaurant"),
+        candidate("g1", "government"),
+    ]
+
+    diversified = diversify(results, max_run=2, intent_categories=RESTAURANT)
+
+    assert [item["id"] for item in diversified] == ["r1", "r2", "r3", "g1"]
+
+
+def test_luat_khoang_cach_khong_keo_ung_vien_khac_loai_len_top() -> None:
+    results = [candidate(f"r{i}", "restaurant", distance=200) for i in range(3)]
+    results.append(candidate("g-xa", "government", distance=2500))
+
+    ordered = ensure_distance_diversity(results, k=3, intent_categories=RESTAURANT)
+
+    assert "g-xa" not in [item["id"] for item in ordered[:3]]
+
+
+def test_tai_tro_khac_loai_khong_duoc_chen_vao_top() -> None:
+    results = [candidate(f"r{i}", "restaurant") for i in range(3)]
+    results.append({**candidate("g-tt", "government"), "sponsored": True})
+
+    ordered = insert_sponsored(results, intent_categories=RESTAURANT)
+
+    assert [item["id"] for item in ordered] == ["r0", "r1", "r2", "g-tt"]

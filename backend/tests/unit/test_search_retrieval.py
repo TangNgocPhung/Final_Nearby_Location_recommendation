@@ -103,6 +103,25 @@ def test_gate_khong_doi_gi_khi_khong_co_candidate_lien_quan() -> None:
     assert gated == fused
 
 
+def test_gate_chi_giu_dau_kenh_vector_khi_bm25_rong() -> None:
+    """Đo 2026-10-09: câu dài "Tôi muốn kiếm 1 quán cà phê yên tĩnh để học bài"
+    làm BM25 rỗng (minimum_should_match 70%), cổng cũ trả nguyên RRF → tiệm
+    hoa, sân bóng, trường tiểu học (gần + trending) đứng trên quán cà phê."""
+    fused = [("tiem-hoa", 0.06), ("truong-hoc", 0.05), ("ca-phe", 0.04)]
+    channels = {
+        "bm25": [],
+        "vector": ["ca-phe"],
+        "geo": ["tiem-hoa", "truong-hoc", "ca-phe"],
+        "trending": ["tiem-hoa"],
+    }
+
+    gated = retrieval._gate_by_text_relevance(
+        fused, channels, "Tôi muốn kiếm 1 quán cà phê yên tĩnh để học bài"
+    )
+
+    assert [poi_id for poi_id, _ in gated] == ["ca-phe"]
+
+
 def test_multi_channel_returns_none_when_not_configured(monkeypatch) -> None:
     monkeypatch.setattr(settings, "opensearch_url", "", raising=False)
     reset_client_cache()
