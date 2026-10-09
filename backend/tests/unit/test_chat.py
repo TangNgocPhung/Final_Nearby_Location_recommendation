@@ -165,3 +165,39 @@ def test_format_distance():
     assert chat._format_distance(822.3) == "822 m"
     assert chat._format_distance(999.7) == "1,0 km"
     assert chat._format_distance(None) is None
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.store[key] = value
+
+    def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+
+def test_set_history_nap_lai_vai_luot_cuoi_va_bo_luot_rong(monkeypatch):
+    fake = _FakeRedis()
+    monkeypatch.setattr(chat.geo_cache, "get_client", lambda: fake)
+    turns = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"tin {index}"}
+        for index in range(20)
+    ]
+    turns.append({"role": "assistant", "content": "   "})
+    chat.set_history("s1", turns)
+    history = chat.get_history("s1")
+    assert len(history) == chat.HISTORY_MAX_TURNS * 2
+    assert history[-1] == {"role": "assistant", "content": "tin 19"}
+
+
+def test_set_history_rong_thi_xoa_ngu_canh_cu(monkeypatch):
+    fake = _FakeRedis()
+    monkeypatch.setattr(chat.geo_cache, "get_client", lambda: fake)
+    chat.set_history("s1", [{"role": "user", "content": "quán phở"}])
+    chat.set_history("s1", [])
+    assert chat.get_history("s1") == []
