@@ -159,7 +159,17 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
 # toàn. Đây đúng là loại lỗi mà fuzzy "AUTO" từng gây ra cho "bệnh viện".
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     # Ăn uống
-    "restaurant": ("nhà hàng", "quán ăn", "ăn uống", "quán cơm", "chỗ ăn", "đồ ăn"),
+    "restaurant": (
+        "nhà hàng",
+        "quán ăn",
+        "ăn uống",
+        "quán cơm",
+        "chỗ ăn",
+        "đồ ăn",
+        "quán bình dân",
+        "cơm bình dân",
+        "bình dân",
+    ),
     "bakery": ("tiệm bánh", "lò bánh", "bánh ngọt"),
     "cafe": ("quán cà phê", "cà phê", "cafe", "coffee", "quán nước"),
     "bar": ("quán bar", "quán nhậu", "pub", "bia hơi"),

@@ -259,7 +259,7 @@ def _is_text_relevant(candidate: dict[str, Any]) -> bool:
     return candidate.get("textScore", 1.0) > 0.0 or candidate.get("vectorScore") is not None
 
 
-def _relevance_sort_key(has_query_text: bool):
+def _relevance_sort_key(has_query_text: bool, intent_categories: frozenset[str] = frozenset()):
     """Khoá sắp xếp: khi có query text, ứng viên KHÔNG có tín hiệu liên quan
     văn bản nào (chỉ lọt vào nhờ geo/trending) luôn đứng SAU mọi ứng viên có
     tín hiệu, bất kể điểm cuối cùng cao thấp ra sao.
@@ -270,11 +270,19 @@ def _relevance_sort_key(has_query_text: bool):
     lúc truy xuất — vì bước này CHỈ quyết định ai LỌT VÀO candidate pool, còn
     thứ tự HIỂN THỊ CUỐI CÙNG do `rerank` tính lại từ đầu và ghi đè hoàn toàn.
     Phải gate lại đúng ở đây, nơi thứ tự thật sự được quyết định.
+
+    ``intent_categories`` (``categories_for_query`` của câu truy vấn): truy vấn
+    NÊU LOẠI địa điểm thì ứng viên khác loại đứng sau mọi ứng viên đúng loại.
+    Đo 2026-10-09: "quán bình dân" xếp UBND phường 8 ở hạng 2 — BM25 khớp mờ
+    "quán"→"quan" (cơ quan nhà nước) và "dân"→"dan" (ủy ban nhân dân) trên
+    ``search_keywords`` của nhóm hành chính, rồi gần hơn nên điểm cao hơn quán
+    cơm thật. Đẩy xuống chứ không bỏ: POI tên "Cà phê X" gắn nhầm loại vẫn còn.
     """
 
-    def key(item: dict[str, Any]) -> tuple[int, float, float]:
+    def key(item: dict[str, Any]) -> tuple[int, int, float, float]:
         demoted = 1 if has_query_text and not _is_text_relevant(item) else 0
-        return (demoted, -item["score"], item["distanceMeters"])
+        off_intent = 1 if intent_categories and item.get("category") not in intent_categories else 0
+        return (demoted, off_intent, -item["score"], item["distanceMeters"])
 
     return key
 
@@ -286,6 +294,7 @@ def rerank(
     graph_boost: set[str] | None = None,
     ranker: str = "linear",
     has_query_text: bool = False,
+    intent_categories: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Chấm điểm và sắp xếp ứng viên.
 
@@ -297,7 +306,7 @@ def rerank(
     weights = weights or DEFAULT_WEIGHTS
     category_boost = category_boost or {}
     graph_boost = graph_boost or set()
-    sort_key = _relevance_sort_key(has_query_text)
+    sort_key = _relevance_sort_key(has_query_text, intent_categories)
 
     if ranker == "ltr" and candidates:
         # Đặc trưng lấy từ chính dict candidate này, nên LTR phải chạy SAU
@@ -397,7 +406,10 @@ def rerank(
 
 
 def diversify(
-    results: list[dict[str, Any]], max_run: int = 2, max_per_brand: int = 2
+    results: list[dict[str, Any]],
+    max_run: int = 2,
+    max_per_brand: int = 2,
+    intent_categories: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Không quá `max_run` kết quả liên tiếp cùng category và không quá
     `max_per_brand` địa điểm cùng thương hiệu, giữ thứ tự điểm số nhiều nhất có thể.
@@ -406,6 +418,11 @@ def diversify(
     TP.HCM hoàn toàn có thể ra 6 cửa hàng Highlands trong top 10. Địa điểm vượt
     hạn ngạch bị ĐẨY XUỐNG CUỐI chứ không loại hẳn — với bán kính nhỏ, loại hẳn
     sẽ làm hụt kết quả và đó là cái hại lớn hơn.
+
+    Luật đa dạng LOẠI không áp cho ứng viên thuộc ``intent_categories``: người
+    dùng đã nói rõ muốn loại nào thì "đa dạng" chính là kéo loại khác lên —
+    đúng lỗi đo 2026-10-09, sau 2 quán cà phê là tiệm hoa, sân bóng, trường
+    học chen vào. Luật thương hiệu vẫn giữ nguyên.
     """
     if len(results) <= max_run:
         return results
@@ -437,7 +454,7 @@ def diversify(
             if item["category"] != run_category:
                 break
             run_length += 1
-        if run_length >= max_run:
+        if run_length >= max_run and run_category not in intent_categories:
             swap_index = next(
                 (i for i, item in enumerate(remaining) if item["category"] != run_category),
                 0,
@@ -448,8 +465,21 @@ def diversify(
     return ordered + overflow
 
 
+def _on_intent(item: dict[str, Any], intent_categories: frozenset[str]) -> bool:
+    """Ứng viên đúng loại truy vấn nêu ra (luôn đúng khi truy vấn không nêu loại).
+
+    Ba luật nghiệp vụ dưới chỉ được kéo ứng viên ĐÚNG LOẠI lên top: kéo một
+    UBND vào kết quả "quán bình dân" để đủ dải giá/khoảng cách/tài trợ là phá
+    đúng thứ ``_relevance_sort_key`` vừa sắp xếp.
+    """
+    return not intent_categories or item.get("category") in intent_categories
+
+
 def ensure_price_diversity(
-    results: list[dict[str, Any]], k: int = 10, minimum_affordable: int = 2
+    results: list[dict[str, Any]],
+    k: int = 10,
+    minimum_affordable: int = 2,
+    intent_categories: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Bảo đảm top `k` có ít nhất `minimum_affordable` địa điểm giá phải chăng.
 
@@ -466,7 +496,9 @@ def ensure_price_diversity(
     for index in range(k, len(ordered)):
         if needed <= 0:
             break
-        if 1 <= (ordered[index].get("priceLevel") or 0) <= 2:
+        if 1 <= (ordered[index].get("priceLevel") or 0) <= 2 and _on_intent(
+            ordered[index], intent_categories
+        ):
             # Đổi chỗ với địa điểm ĐẮT NHẤT trong top, không phải với địa điểm
             # cuối top: mục tiêu là mở rộng dải giá, không phải hạ chất lượng.
             victim = max(
@@ -488,7 +520,11 @@ def _distance_band(meters: float) -> int:
     return 2
 
 
-def ensure_distance_diversity(results: list[dict[str, Any]], k: int = 10) -> list[dict[str, Any]]:
+def ensure_distance_diversity(
+    results: list[dict[str, Any]],
+    k: int = 10,
+    intent_categories: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     """Mỗi vành đai khoảng cách có ít nhất một đại diện trong top `k`.
 
     Không có luật này, spatial decay hàm mũ dồn gần như toàn bộ top về vành đai
@@ -507,6 +543,7 @@ def ensure_distance_diversity(results: list[dict[str, Any]], k: int = 10) -> lis
                 index
                 for index in range(k, len(ordered))
                 if _distance_band(ordered[index].get("distanceMeters") or 0.0) == band
+                and _on_intent(ordered[index], intent_categories)
             ),
             None,
         )
@@ -529,7 +566,9 @@ def ensure_distance_diversity(results: list[dict[str, Any]], k: int = 10) -> lis
 
 
 def insert_sponsored(
-    results: list[dict[str, Any]], slots: tuple[int, ...] = (2,)
+    results: list[dict[str, Any]],
+    slots: tuple[int, ...] = (2,),
+    intent_categories: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Chèn địa điểm tài trợ vào các vị trí `slots` (0-based).
 
@@ -542,10 +581,13 @@ def insert_sponsored(
     3. Luôn đánh dấu ``sponsored: true`` để giao diện hiển thị nhãn "Tài trợ".
        Chính sự minh bạch này mới là điều đáng bảo vệ, không phải cơ chế chèn.
     """
-    sponsored = [item for item in results if item.get("sponsored")]
+    sponsored = [
+        item for item in results if item.get("sponsored") and _on_intent(item, intent_categories)
+    ]
     if not sponsored:
         return results
-    organic = [item for item in results if not item.get("sponsored")]
+    sponsored_ids = {id(item) for item in sponsored}
+    organic = [item for item in results if id(item) not in sponsored_ids]
     ordered = list(organic)
     for slot, item in zip(sorted(s for s in slots if s >= 1), sponsored):
         ordered.insert(min(slot, len(ordered)), item)
@@ -616,20 +658,24 @@ def rank_pois_detailed(
     candidates = apply_crowd_signal(candidates, latitude, longitude, radius)
     candidates = enrich_candidates(candidates, latitude=latitude, longitude=longitude)
     candidates = attach_region_ctr(candidates)
+    # Bộ lọc category tường minh (chip trên UI) đã giới hạn sẵn tập ứng viên —
+    # chỉ suy loại từ câu chữ khi người dùng KHÔNG chọn chip.
+    intent_categories = frozenset() if category else frozenset(categories_for_query(query_text))
     candidates = rerank(
         candidates,
         category_boost=category_boost,
         graph_boost=graph_boost,
         ranker=ranker,
         has_query_text=bool(query_text and query_text.strip()),
+        intent_categories=intent_categories,
     )
     # Diversity & Business Rules, theo thứ tự: đa dạng loại + thương hiệu trước
     # (chúng sắp xếp lại cả danh sách), rồi hai luật chỉ vá chỗ thiếu trong top,
     # cuối cùng mới chèn tài trợ để nó không bị các luật sau đẩy đi chỗ khác.
-    candidates = diversify(candidates)
-    candidates = ensure_price_diversity(candidates, k=limit)
-    candidates = ensure_distance_diversity(candidates, k=limit)
-    candidates = insert_sponsored(candidates)
+    candidates = diversify(candidates, intent_categories=intent_categories)
+    candidates = ensure_price_diversity(candidates, k=limit, intent_categories=intent_categories)
+    candidates = ensure_distance_diversity(candidates, k=limit, intent_categories=intent_categories)
+    candidates = insert_sponsored(candidates, intent_categories=intent_categories)
     return candidates[:limit], backend
 
 
