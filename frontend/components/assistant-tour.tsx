@@ -86,6 +86,18 @@ export function AssistantTour({
   // lần render).
   const [player] = useState(() => new NarrationPlayer(apiBaseUrl));
   const autoRunRef = useRef(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+
+  // Đưa khung ảnh lên đầu vùng cuộn của tour. Tự tính scrollTop thay vì
+  // scrollIntoView: scrollIntoView kéo cả khung chatbot lẫn trang theo.
+  const revealStage = useCallback(() => {
+    const container = scrollRef.current;
+    const stage = stageRef.current;
+    if (!container || !stage) return;
+    const offset = stage.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    container.scrollTo({ top: container.scrollTop + offset - 8, behavior: 'smooth' });
+  }, []);
 
   const stopAll = useCallback(() => {
     autoRunRef.current = false;
@@ -217,13 +229,14 @@ export function AssistantTour({
     for (const stop of plan.stops) {
       if (!autoRunRef.current) break;
       onFocusLocation(stop.latitude, stop.longitude);
+      revealStage();
       const outcome = await narrate(stop);
       if (outcome === 'stopped' || !autoRunRef.current) break;
       await new Promise((resolve) => setTimeout(resolve, 1200));
     }
     autoRunRef.current = false;
     setAutoRun(false);
-  }, [narrate, onFocusLocation, plan]);
+  }, [narrate, onFocusLocation, plan, revealStage]);
 
   // Đi thật: tới gần điểm chưa nghe thì tự đọc.
   useEffect(() => {
@@ -255,7 +268,7 @@ export function AssistantTour({
         <p className="text-sm font-semibold">Hướng dẫn viên AI</p>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm">
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm">
         <div>
           <p className="text-xs text-muted-foreground">Bạn có bao nhiêu thời gian?</p>
           <div className="mt-1.5 flex gap-1.5">
@@ -362,19 +375,21 @@ export function AssistantTour({
             </p>
 
             {stageStop && (
-              <TourStage
-                stops={plan.stops}
-                stop={stageStop}
-                images={visuals[stageStop.poiId]}
-                visited={visited}
-                playing={playingId === stageStop.poiId}
-                text={nowText?.poiId === stageStop.poiId ? nowText.text : null}
-                progress={progress}
-                onSelect={(stop) => {
-                  setSelectedId(stop.poiId);
-                  onFocusLocation(stop.latitude, stop.longitude);
-                }}
-              />
+              <div ref={stageRef}>
+                <TourStage
+                  stops={plan.stops}
+                  stop={stageStop}
+                  images={visuals[stageStop.poiId]}
+                  visited={visited}
+                  playing={playingId === stageStop.poiId}
+                  text={nowText?.poiId === stageStop.poiId ? nowText.text : null}
+                  progress={progress}
+                  onSelect={(stop) => {
+                    setSelectedId(stop.poiId);
+                    onFocusLocation(stop.latitude, stop.longitude);
+                  }}
+                />
+              </div>
             )}
 
             <ol className="space-y-1.5">
@@ -400,6 +415,7 @@ export function AssistantTour({
                         onClick={() => {
                           setSelectedId(stop.poiId);
                           onFocusLocation(stop.latitude, stop.longitude);
+                          revealStage();
                         }}
                         aria-label={`Xem ảnh ${stop.name}`}
                         className="shrink-0"
