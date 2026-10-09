@@ -80,6 +80,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     # toàn, dù "cây xăng" và "sửa xe" là hai thứ người đi đường tìm nhiều nhất.
     ("amenity", "fuel"): ("fuel", "Cây xăng"),
     ("amenity", "charging_station"): ("charging_station", "Trạm sạc"),
+    ("amenity", "toilets"): ("toilets", "Nhà vệ sinh"),
     ("amenity", "car_wash"): ("car_wash", "Rửa xe"),
     ("shop", "car_repair"): ("car_repair", "Sửa xe"),
     ("shop", "motorcycle"): ("car_repair", "Sửa xe"),
@@ -257,6 +258,7 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "parking": ("bãi xe", "bãi đỗ xe", "bãi giữ xe", "chỗ đậu xe", "gửi xe", "parking"),
     # Xăng dầu và dịch vụ xe
     "fuel": ("cây xăng", "trạm xăng", "đổ xăng", "xăng dầu", "bơm xăng"),
+    "toilets": ("nhà vệ sinh", "nhà vệ sinh công cộng", "wc", "toilet", "đi vệ sinh"),
     "charging_station": ("trạm sạc", "sạc xe điện", "trụ sạc", "sạc pin xe"),
     "car_repair": (
         "sửa xe",
@@ -475,8 +477,18 @@ def h3_ring_geometry(ring: "H3Ring") -> dict[str, Any] | None:
     đúng quy ước GeoJSON. Không dùng ``cell_to_boundary``: nó trả (lat, lng) và
     vòng hở, vẽ lên bản đồ sẽ ra hình méo mà không báo lỗi gì.
     """
+    return h3_cells_geometry(ring.cells)
+
+
+def h3_cells_geometry(cells: Iterable[str]) -> dict[str, Any] | None:
+    """Đường bao hợp nhất của một tập ô H3 bất kỳ (GeoJSON Polygon/MultiPolygon,
+    toạ độ làm tròn 5 chữ số). Dùng chung cho vành tìm kiếm và bản đồ sương mù
+    (`app/exploration.py`). ``None`` khi tập rỗng hoặc H3 từ chối."""
+    cells = list(cells)
+    if not cells:
+        return None
     try:
-        shape = h3.cells_to_h3shape(list(ring.cells), tight=True)
+        shape = h3.cells_to_h3shape(cells, tight=True)
         geo = h3.h3shape_to_geo(shape)
     except (ValueError, TypeError, AttributeError):
         return None
@@ -556,6 +568,29 @@ def _has_vietnamese_marks(value: str) -> bool:
     return bool(folded) and folded != re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
+# Bách hoá lớn thật gắn `shop=department_store` (đã bỏ dấu, viết liền). Ở VN
+# thẻ này bị dùng tràn lan cho tạp hoá ("bách hoá" dịch thẳng): đo 2026-10-10
+# có 520 POI, gần hết là "Tạp hóa cô Mai", chỉ vài nơi là bách hoá lớn thật.
+_DEPARTMENT_STORE_MARKERS = (
+    "lottedepartmentstore",
+    "parkson",
+    "takashimaya",
+    "unionsquare",
+    "trungtamthuongmai",
+    "tttm",
+    "vincom",
+)
+
+
+def is_real_mall(name: str | None, tags: dict[str, Any]) -> bool:
+    """``shop=mall``, hoặc ``shop=department_store`` mang tên một bách hoá lớn
+    thật (Lotte, Parkson, Vincom...). Còn lại là tạp hoá gắn nhầm thẻ."""
+    if tags.get("shop") == "mall":
+        return True
+    folded = normalize_text(name).replace(" ", "")
+    return any(marker in folded for marker in _DEPARTMENT_STORE_MARKERS)
+
+
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
     # Thứ tự khoá là thứ tự ƯU TIÊN, không phải tuỳ ý: một POI mang nhiều thẻ
     # (nhà thờ vừa `amenity=place_of_worship` vừa `tourism=attraction`) sẽ lấy
@@ -574,6 +609,10 @@ def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
     ):
         value = tags.get(key)
         if value and (key, value) in CATEGORY_MAP:
+            if (key, value) == ("shop", "department_store") and not is_real_mall(
+                tags.get("name") or tags.get("name:vi"), tags
+            ):
+                return ("convenience", "Mua sắm")
             return CATEGORY_MAP[(key, value)]
     return None
 
@@ -586,6 +625,8 @@ _UNNAMED_FALLBACK_NAMES: dict[tuple[str, str], str] = {
     ("amenity", "motorcycle_parking"): "Bãi giữ xe máy",
     ("amenity", "parking"): "Bãi đỗ xe",
     ("amenity", "charging_station"): "Trạm sạc xe điện",
+    # 147/157 nhà vệ sinh công cộng trên OSM không có tên (đo 2026-10-10).
+    ("amenity", "toilets"): "Nhà vệ sinh công cộng",
 }
 # Bãi riêng (của cơ quan, chung cư...) không phục vụ người ngoài — hiện ra chỉ
 # làm người dùng chạy tới rồi bị từ chối.
@@ -637,7 +678,7 @@ def normalize_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
     center = element.get("center") or element
     if not name or not category_value or "lat" not in center or "lon" not in center:
         return None
-    if category_value[0] in ("parking", "charging_station") and tags.get("access") in _PRIVATE_ACCESS:
+    if category_value[0] in ("parking", "charging_station", "toilets") and tags.get("access") in _PRIVATE_ACCESS:
         return None
     category, category_label = category_value
     latitude, longitude = float(center["lat"]), float(center["lon"])

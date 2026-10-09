@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  History,
   Home,
   MapPin,
+  Navigation,
   MessageCircle,
   RotateCw,
   Search,
@@ -18,6 +20,15 @@ import {
 import { AssistantExplore } from '@/components/assistant-explore';
 import { AssistantMeetup } from '@/components/assistant-meetup';
 import { AssistantTour } from '@/components/assistant-tour';
+import {
+  ChatHistory,
+  conversationTitle,
+  loadConversations,
+  MAX_CONVERSATIONS,
+  newConversationId,
+  saveConversations,
+  type SavedConversation,
+} from '@/components/chat-history';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -64,12 +75,25 @@ type ChatPoiResult = {
   distanceMeters?: number | null;
   rating?: number | null;
   busyness?: ChatBusyness | null;
+  /** dòng phụ của công cụ chuyên biệt: "4 phút xe máy · RON 95 · Đang mở" */
+  detail?: string | null;
+  openNow?: boolean | null;
 };
+
+type ChatDirections = { poiId: string; name: string | null };
 
 // Từng dòng NDJSON của POST /api/v1/chat/stream: kết quả search tới trước
 // (~1s), lời diễn giải của LLM tới dần sau — xem `chat_turn_stream` (app/api.py).
 type ChatStreamEvent =
-  | { type: 'results'; needsClarification: boolean; results: ChatPoiResult[] }
+  | {
+      type: 'results';
+      needsClarification: boolean;
+      results: ChatPoiResult[];
+      /** câu hỏi tiếp "chỉ đường tới số 1" — xem app/chat_tools.py */
+      directions?: ChatDirections | null;
+      /** câu gợi ý bấm-là-gửi, backend chọn theo loại câu trả lời */
+      quickReplies?: string[];
+    }
   | { type: 'delta'; text: string }
   | { type: 'done'; reply: string };
 
@@ -87,6 +111,8 @@ type ChatTurn = {
   search?: SearchAction | null;
   /** hiện nút "đặt vị trí hiện tại làm nhà" */
   offerSetHome?: boolean;
+  directions?: ChatDirections | null;
+  quickReplies?: string[];
 };
 
 // Tải lại gợi ý khi người dùng đi xa hơn mức này, hoặc sau REFRESH_MS.
@@ -95,7 +121,19 @@ const SUGGESTION_REFRESH_MS = 10 * 60 * 1000;
 // Số thẻ địa điểm hiện dưới mỗi câu trả lời — tìm trực tiếp cũng chỉ lấy
 // đúng chừng này để câu "N địa điểm…" khớp với số thẻ người dùng thấy.
 const MAX_RESULT_CARDS = 5;
-const SAMPLE_QUESTION = 'Quán cà phê yên tĩnh gần đây';
+// Mỗi câu mẫu một kiểu trợ lý hiểu được: tìm theo ý, có điều kiện lọc, công cụ chuyên biệt.
+const SAMPLE_QUESTIONS = [
+  'Quán cà phê yên tĩnh gần đây',
+  'Cà phê có wifi đang mở cửa',
+  'Cây xăng gần nhất',
+  'Nhà vệ sinh gần đây',
+];
+// Số cuộc gần nhất hiện sẵn ở màn hình chào, còn lại vào "Lịch sử".
+const RECENT_CONVERSATIONS = 3;
+// Backend chỉ dùng vài lượt cuối làm ngữ cảnh (chat.HISTORY_MAX_TURNS) và
+// giới hạn độ dài mỗi lượt (ChatHistoryTurn) — cắt sẵn trước khi gửi.
+const RESTORE_TURNS = 12;
+const RESTORE_CONTENT_CHARS = 4000;
 
 // Tính năng của trợ lý luôn hiện sẵn, không chờ API gợi ý: API chậm (lần đầu
 // phải gọi dịch vụ thời tiết) hoặc lỗi thì các tính năng này vẫn mở được.
@@ -162,11 +200,6 @@ function PlaceCard({
   );
 }
 
-function formatDistance(meters: number | null | undefined): string | null {
-  if (meters == null) return null;
-  return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
-}
-
 // Ước tính từ tương tác gần đây trên Nearby, KHÔNG PHẢI dữ liệu real-time
 // thật — xem `spatio_temporal._busyness_estimate` phía backend. Màu chỉ là
 // gợi ý trực quan, chữ "(ước tính)" luôn đi kèm để không đọc nhầm thành số đo.
@@ -178,13 +211,18 @@ const BUSYNESS_STYLE: Record<string, string> = {
 
 function ChatPoiCard({
   poi,
+  index,
   onView,
 }: {
   poi: ChatPoiResult;
+  /** số thứ tự để hỏi tiếp "số 2 mấy giờ đóng cửa?" — null khi chỉ có một thẻ */
+  index: number | null;
   onView: (poiId: string) => void;
 }) {
-  const distance = formatDistance(poi.distanceMeters);
+  const distance = formatMeters(poi.distanceMeters);
   const busyLevel = poi.busyness?.estimated ? poi.busyness.level : null;
+  // Công cụ chuyên biệt đã ghi trạng thái mở trong `detail`.
+  const openLabel = poi.detail ? null : poi.openNow === true ? 'Đang mở' : poi.openNow === false ? 'Đang đóng' : null;
   return (
     <button
       type="button"
@@ -192,7 +230,16 @@ function ChatPoiCard({
       className="flex w-full min-w-0 flex-col gap-1 rounded-lg border border-border bg-background px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
     >
       <span className="flex w-full min-w-0 items-center gap-2">
-        <MapPin className="size-4 shrink-0 text-muted-foreground" />
+        {index != null ? (
+          <span
+            className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary"
+            aria-label={`Số ${index}`}
+          >
+            {index}
+          </span>
+        ) : (
+          <MapPin className="size-4 shrink-0 text-muted-foreground" />
+        )}
         <span className="min-w-0 flex-1 truncate font-medium">{poi.name}</span>
         {typeof poi.rating === 'number' && (
           <span className="flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground">
@@ -204,10 +251,27 @@ function ChatPoiCard({
           <span className="shrink-0 text-xs text-muted-foreground">{distance}</span>
         )}
       </span>
+      {(poi.detail || poi.categoryLabel || openLabel) && (
+        <span className="ml-7 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="min-w-0 truncate">
+            {[poi.categoryLabel, poi.detail].filter(Boolean).join(' · ')}
+          </span>
+          {openLabel && (
+            <span
+              className={cn(
+                'shrink-0 font-medium',
+                poi.openNow ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400',
+              )}
+            >
+              {openLabel}
+            </span>
+          )}
+        </span>
+      )}
       {busyLevel && (
         <span
           className={cn(
-            'ml-6 flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+            'ml-7 flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
             BUSYNESS_STYLE[busyLevel],
           )}
         >
@@ -225,6 +289,7 @@ export function ChatWidget({
   position,
   language,
   onViewPoi,
+  onDirections,
   onFocusLocation,
   onMapOverlay,
   onPickOnMap,
@@ -239,6 +304,8 @@ export function ChatWidget({
   /** ngôn ngữ giao diện — tour thuyết minh đọc bằng ngôn ngữ này */
   language: string;
   onViewPoi: (poiId: string) => void;
+  /** mở chỉ đường trong ứng dụng tới một POI ("chỉ đường tới số 1") */
+  onDirections?: (poiId: string) => void;
   onFocusLocation: (latitude: number, longitude: number) => void;
   onMapOverlay: (overlay: AssistantOverlay | null) => void;
   onPickOnMap: (callback: ((latitude: number, longitude: number) => void) | null) => void;
@@ -263,6 +330,11 @@ export function ChatWidget({
     if (window.innerWidth < 1280) changeOpen(false);
     onViewPoi(poiId);
   };
+  const startDirections = (poiId: string) => {
+    if (window.innerWidth < 1280) changeOpen(false);
+    if (onDirections) onDirections(poiId);
+    else onViewPoi(poiId);
+  };
   const focusLocation = (latitude: number, longitude: number) => {
     if (window.innerWidth < 1280) changeOpen(false);
     onFocusLocation(latitude, longitude);
@@ -279,7 +351,7 @@ export function ChatWidget({
       if (restoreChat) changeOpen(true);
     });
   };
-  const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore'>('chat');
+  const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore' | 'history'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const [suggestionsFailed, setSuggestionsFailed] = useState(false);
   const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
@@ -288,6 +360,14 @@ export function ChatWidget({
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [conversations, setConversations] = useState<SavedConversation<ChatTurn>[]>([]);
+  // Cuộc đang mở: null = cuộc mới, chưa lưu lượt nào. Ref để effect lưu lịch
+  // sử không phải chạy lại khi id vừa được cấp; state để danh sách tô "đang mở".
+  const conversationIdRef = useRef<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Danh sách lượt vừa mở lại từ lịch sử — chưa hỏi thêm gì thì không lưu
+  // lại, kẻo chỉ mở xem thôi cũng đẩy cuộc cũ lên đầu "Hôm nay".
+  const restoredTurnsRef = useRef<ChatTurn[] | null>(null);
   // `position` đổi liên tục khi có GPS (watchPosition) — chỉ cần toạ độ TẠI
   // LÚC gửi tin, không muốn effect nào chạy lại vì nó đổi.
   const positionRef = useRef(position);
@@ -326,7 +406,14 @@ export function ChatWidget({
           started = true;
           setTurns((prev) => [
             ...prev,
-            { role: 'assistant', content: '', results: event.results, pending: true },
+            {
+              role: 'assistant',
+              content: '',
+              results: event.results,
+              directions: event.directions ?? null,
+              quickReplies: event.quickReplies ?? [],
+              pending: true,
+            },
           ]);
         } else if (event.type === 'delta') {
           updateReply((turn) => ({ ...turn, content: turn.content + event.text }));
@@ -395,17 +482,85 @@ export function ChatWidget({
     return () => controller.abort();
   }, [apiBaseUrl, open, position, sessionId, suggestionsVersion]);
 
+  // Nạp lịch sử ngay lúc render khi phiên đổi (không qua effect). An toàn với
+  // hydrate: sessionId rỗng ở server và lần render đầu, chỉ có sau khi mount.
+  const [conversationsSessionId, setConversationsSessionId] = useState('');
+  if (sessionId !== conversationsSessionId) {
+    setConversationsSessionId(sessionId);
+    setConversations(sessionId ? loadConversations<ChatTurn>(sessionId) : []);
+  }
+
+  // Lưu cuộc đang mở vào lịch sử mỗi khi có lượt mới — đợi stream xong để
+  // không ghi localStorage theo từng mẩu chữ.
+  useEffect(() => {
+    if (!sessionId || loading || turns.length === 0 || turns.some((turn) => turn.pending)) return;
+    if (turns === restoredTurnsRef.current) return;
+    let id = conversationIdRef.current;
+    if (!id) {
+      id = newConversationId();
+      conversationIdRef.current = id;
+      setActiveConversationId(id);
+    }
+    const saved: SavedConversation<ChatTurn> = { id, title: conversationTitle(turns), updatedAt: Date.now(), turns };
+    setConversations((prev) => {
+      const next = [saved, ...prev.filter((conversation) => conversation.id !== saved.id)].slice(0, MAX_CONVERSATIONS);
+      saveConversations(sessionId, next);
+      return next;
+    });
+  }, [loading, sessionId, turns]);
+
   /** Xoá cả lịch sử phía backend: không xoá thì câu hỏi đầu của cuộc mới vẫn
    * bị hiểu như câu nối tiếp ("còn chỗ nào khác không?"). Chỉ bấm được khi
    * không có lượt nào đang stream — stream sẽ ghi vào lượt cuối của danh sách. */
   const newConversation = () => {
     setTurns([]);
+    conversationIdRef.current = null;
+    setActiveConversationId(null);
+    restoredTurnsRef.current = null;
     void fetch(`${apiBaseUrl}/api/v1/chat/history`, {
       method: 'DELETE',
       headers: { 'X-Session-ID': sessionId },
     }).catch(() => {
       // Xoá hụt thì lịch sử tự hết hạn sau 30 phút — không chặn người dùng.
     });
+  };
+
+  /** Mở lại cuộc cũ: hiện lại đủ thẻ địa điểm đã lưu, và nạp lại ngữ cảnh
+   * phía backend để câu hỏi tiếp theo vẫn được hiểu là câu nối tiếp. */
+  const openConversation = (conversation: SavedConversation<ChatTurn>) => {
+    if (loading) return;
+    restoredTurnsRef.current = conversation.turns;
+    conversationIdRef.current = conversation.id;
+    setActiveConversationId(conversation.id);
+    setTurns(conversation.turns);
+    setView('chat');
+    void fetch(`${apiBaseUrl}/api/v1/chat/history`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
+      body: JSON.stringify({
+        turns: conversation.turns
+          .filter((turn) => turn.content.trim())
+          .slice(-RESTORE_TURNS)
+          .map((turn) => ({ role: turn.role, content: turn.content.slice(0, RESTORE_CONTENT_CHARS) })),
+      }),
+    }).catch(() => {
+      // Nạp hụt thì câu sau chỉ mất ngữ cảnh — vẫn trả lời được như câu mới.
+    });
+  };
+
+  const deleteConversation = (id: string) => {
+    setConversations((prev) => {
+      const next = prev.filter((conversation) => conversation.id !== id);
+      saveConversations(sessionId, next);
+      return next;
+    });
+    if (id === conversationIdRef.current) newConversation();
+  };
+
+  const clearConversations = () => {
+    setConversations([]);
+    saveConversations(sessionId, []);
+    if (conversationIdRef.current) newConversation();
   };
 
   const retrySuggestions = () => {
@@ -574,6 +729,18 @@ export function ChatWidget({
             <p className="text-xs text-muted-foreground">Hỏi bằng lời — mình tìm địa điểm thật gần bạn</p>
           </div>
           <div className="flex shrink-0 items-center">
+            {view === 'chat' && (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={() => setView('history')}
+                aria-label="Lịch sử trò chuyện"
+                title="Lịch sử trò chuyện"
+              >
+                <History className="size-4" />
+              </Button>
+            )}
             {view === 'chat' && turns.length > 0 && (
               <Button
                 type="button"
@@ -599,7 +766,17 @@ export function ChatWidget({
           </div>
         </div>
 
-        {view === 'tour' ? (
+        {view === 'history' ? (
+          <ChatHistory
+            conversations={conversations}
+            activeId={activeConversationId}
+            disabled={loading}
+            onOpen={openConversation}
+            onDelete={deleteConversation}
+            onClear={clearConversations}
+            onBack={() => setView('chat')}
+          />
+        ) : view === 'tour' ? (
           <AssistantTour
             apiBaseUrl={apiBaseUrl}
             position={position}
@@ -676,15 +853,20 @@ export function ChatWidget({
                               Đang xem quanh bạn có gì: lễ sắp tới, thời tiết, giờ ăn…
                             </p>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => void send(SAMPLE_QUESTION)}
-                            disabled={loading}
-                            className="flex w-fit items-center gap-1.5 rounded-full border border-primary/30 px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/5"
-                          >
-                            <MessageCircle className="size-3.5" />
-                            Thử hỏi: “{SAMPLE_QUESTION.toLowerCase()}”
-                          </button>
+                          <div className="flex flex-wrap gap-1.5">
+                            {SAMPLE_QUESTIONS.map((question) => (
+                              <button
+                                key={question}
+                                type="button"
+                                onClick={() => void send(question)}
+                                disabled={loading}
+                                className="flex w-fit items-center gap-1.5 rounded-full border border-primary/30 px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/5"
+                              >
+                                <MessageCircle className="size-3.5" />
+                                {question}
+                              </button>
+                            ))}
+                          </div>
                           {suggestions && !suggestions.calendarAvailable && (
                             <p className="text-[11px] text-muted-foreground">
                               Lịch lễ hội hiện chỉ có cho Việt Nam.
@@ -704,6 +886,35 @@ export function ChatWidget({
                             ))}
                           </div>
                         </div>
+                        {conversations.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                                <History className="size-3.5" aria-hidden />
+                                Trò chuyện gần đây
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => setView('history')}
+                                className="text-xs font-medium text-primary hover:underline"
+                              >
+                                Xem tất cả
+                              </button>
+                            </div>
+                            {conversations.slice(0, RECENT_CONVERSATIONS).map((conversation) => (
+                              <button
+                                key={conversation.id}
+                                type="button"
+                                onClick={() => openConversation(conversation)}
+                                disabled={loading}
+                                className="flex w-full items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-left transition hover:border-primary/40 hover:bg-muted"
+                              >
+                                <MessageCircle className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                                <span className="min-w-0 flex-1 truncate text-xs font-medium">{conversation.title}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                     {turns.map((turn, index) => (
@@ -732,8 +943,13 @@ export function ChatWidget({
                             </BubbleGroup>
                             {turn.results && turn.results.length > 0 && (
                               <div className="flex w-full flex-col gap-1.5 pt-1">
-                                {turn.results.slice(0, MAX_RESULT_CARDS).map((poi) => (
-                                  <ChatPoiCard key={poi.id} poi={poi} onView={viewPoi} />
+                                {turn.results.slice(0, MAX_RESULT_CARDS).map((poi, position) => (
+                                  <ChatPoiCard
+                                    key={poi.id}
+                                    poi={poi}
+                                    index={turn.results!.length > 1 ? position + 1 : null}
+                                    onView={viewPoi}
+                                  />
                                 ))}
                               </div>
                             )}
@@ -746,6 +962,32 @@ export function ChatWidget({
                                     onView={viewPoi}
                                     onFocus={focusLocation}
                                   />
+                                ))}
+                              </div>
+                            )}
+                            {turn.directions && (
+                              <button
+                                type="button"
+                                onClick={() => startDirections(turn.directions!.poiId)}
+                                className="mt-1 flex w-fit items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                              >
+                                <Navigation className="size-3" />
+                                Chỉ đường{turn.directions.name ? ` tới ${turn.directions.name}` : ''}
+                              </button>
+                            )}
+                            {/* Chỉ lượt cuối: gợi ý của lượt cũ trỏ vào danh sách đã bị thay. */}
+                            {index === turns.length - 1 && !turn.pending && turn.quickReplies && turn.quickReplies.length > 0 && (
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {turn.quickReplies.map((reply) => (
+                                  <button
+                                    key={reply}
+                                    type="button"
+                                    onClick={() => void send(reply)}
+                                    disabled={loading}
+                                    className="w-fit rounded-full border border-primary/30 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/5"
+                                  >
+                                    {reply}
+                                  </button>
                                 ))}
                               </div>
                             )}

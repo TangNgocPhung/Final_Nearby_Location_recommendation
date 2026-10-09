@@ -85,6 +85,7 @@ def test_chon_bang_ten() -> None:
 def test_bo_tu_dem_nhung_giu_dau_va_vi_tri() -> None:
     assert voice.clean_query("tìm cho tôi quán phở gần đây") == "phở"
     assert voice.clean_query("cà phê gần Bến Thành") == "cà phê gần Bến Thành"
+    assert voice.clean_query("Quán chay gần tôi") == "chay"
 
 
 def test_bo_dai_tu_thua_ma_nhan_dang_giong_noi_chen_vao() -> None:
@@ -92,6 +93,25 @@ def test_bo_dai_tu_thua_ma_nhan_dang_giong_noi_chen_vao() -> None:
     assert voice.clean_query("Nhà tôi, quán phở tôi.") == "phở"
     # So có dấu: "tối" không phải "tôi".
     assert voice.clean_query("quán ăn tối") == "quán ăn tối"
+
+
+def test_bo_tu_dem_hoi_han() -> None:
+    # Đo 2026-10-10: giữ "ở đâu được" thì minimum_should_match đòi khớp 3/5 từ
+    # và BM25 về 0 hit.
+    assert voice.clean_query("Hiến máu ở đâu được") == "Hiến máu"
+    assert voice.clean_query("hien mau o dau") == "hien mau"
+    assert voice.clean_query("hien mau o dau duoc") == "hien mau"
+    assert voice.clean_query("chỗ hiến máu gần đây") == "hiến máu"
+    assert voice.clean_query("chỗ nào yên tĩnh để ngồi làm việc") == "yên tĩnh để ngồi làm việc"
+    assert voice.clean_query("nơi bán thuốc") == "bán thuốc"
+
+
+def test_khong_bo_chu_trung_tu_dem_khi_bo_dau() -> None:
+    # "dược" bỏ dấu là "duoc", "chợ" bỏ dấu là "cho" — không được coi là từ đệm.
+    assert voice.clean_query("nhà thuốc dược") == "nhà thuốc dược"
+    assert voice.clean_query("chợ Bến Thành") == "chợ Bến Thành"
+    # "chỗ đậu xe" là tên loại (bãi xe) — bỏ "chỗ" thì mất loại.
+    assert voice.clean_query("chỗ đậu xe") == "chỗ đậu xe"
 
 
 def test_bo_quan_tiem_chi_khi_khong_doi_loai_dia_diem() -> None:
@@ -203,6 +223,8 @@ def test_nhac_lai_cau_vua_noi() -> None:
 def test_thuyet_minh_chi_khi_co_bai() -> None:
     selected = _turn("số một", _turn("phở")["state"], story=True)
     assert "“thuyết minh”" in selected["speech"]
+    assert selected["state"]["selected"]["hasStory"] is True
+    assert _turn("số một", _turn("phở")["state"], story=False)["state"]["selected"]["hasStory"] is False
     narrate = _turn("thuyết minh", selected["state"], story=True)
     assert narrate["action"] == {"type": "narrate", "poiId": "p1", "name": "Phở Nhà Mình"}
     assert _turn("thuyết minh", selected["state"], story=False)["action"] is None

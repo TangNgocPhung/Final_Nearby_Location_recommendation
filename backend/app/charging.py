@@ -29,7 +29,9 @@ DEFAULT_RADIUS_METERS = 10_000
 MAX_ROUTED = 25
 # Không có OSRM: ước tính từ đường chim bay × hệ số đường vòng, tốc độ nội đô.
 DETOUR_FACTOR = 1.3
-FALLBACK_SPEED_M_PER_MIN = {"motorbike": 350.0, "car": 300.0}
+# Đi bộ ~4,5 km/h — cho tìm cửa hàng tiện lợi / nhà vệ sinh (`app/convenience.py`,
+# `app/toilets.py`).
+FALLBACK_SPEED_M_PER_MIN = {"motorbike": 350.0, "car": 300.0, "foot": 75.0}
 
 _VINFAST_MARKERS = ("vinfast", "v-green", "vgreen", "v green")
 
@@ -97,6 +99,36 @@ def attach_drive_times(
         station["driveMinutes"] = max(1, round(meters / speed))
         station["driveMeters"] = round(meters)
     return True
+
+
+def rank_by_travel_time(
+    latitude: float,
+    longitude: float,
+    candidates: list[dict[str, Any]],
+    mode: str,
+    limit: int,
+    max_routed: int = MAX_ROUTED,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Xếp ``candidates`` (đã sắp theo đường chim bay) theo thời gian đi THẬT từ
+    người dùng — OSRM /table một lần cho ``max_routed`` điểm gần nhất. Điểm
+    không có địa chỉ được gắn ``streetAddress`` (tên đường sát nó, ước lượng);
+    chỉ tra cho điểm SẼ hiển thị (có cache Redis). Trả ``(kết quả, ước tính?)``.
+    """
+    routed = candidates[:max_routed]
+    table = (
+        directions.duration_table(
+            [(latitude, longitude)], [(item["latitude"], item["longitude"]) for item in routed], mode
+        )
+        if routed
+        else None
+    )
+    approximate = attach_drive_times(routed, table, mode)
+    routed.sort(key=lambda item: (item["driveMinutes"] is None, item["driveMinutes"] or 0, item["distanceMeters"]))
+    results = routed[:limit]
+    for item in results:
+        if item.get("address") is None:
+            item["streetAddress"] = directions.nearest_streets(item["latitude"], item["longitude"])
+    return results, approximate
 
 
 def search_stations(

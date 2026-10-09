@@ -9,6 +9,7 @@ from pathlib import Path
 from app.config import settings
 from app.parking import refresh_facilities
 from app.poi_import import (
+    build_amenity_query,
     fetch_overpass_elements,
     import_osm_elements,
     parse_bbox,
@@ -22,6 +23,10 @@ def main() -> None:
     parser.add_argument("--max-pois", type=int, default=settings.osm_max_pois)
     parser.add_argument("--input", type=Path, help="read an Overpass JSON snapshot instead")
     parser.add_argument("--save-raw", type=Path, help="save the fetched Overpass JSON snapshot")
+    parser.add_argument(
+        "--only-amenity",
+        help="chỉ nhập một loại amenity (vd toilets) — bổ sung loại mới mà không tải lại cả thành phố",
+    )
     parser.add_argument(
         "--refresh-existing",
         action="store_true",
@@ -37,7 +42,8 @@ def main() -> None:
     if args.input:
         elements = json.loads(args.input.read_text(encoding="utf-8")).get("elements", [])
     else:
-        elements = fetch_overpass_elements(settings.overpass_url, bbox)
+        query = build_amenity_query(bbox, args.only_amenity) if args.only_amenity else None
+        elements = fetch_overpass_elements(settings.overpass_url, bbox, query=query)
         if args.save_raw:
             args.save_raw.parent.mkdir(parents=True, exist_ok=True)
             args.save_raw.write_text(

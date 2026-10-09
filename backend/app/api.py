@@ -20,8 +20,12 @@ from . import (
     auth,
     charging,
     chat,
+    chat_tools,
+    checkins,
+    convenience,
     directions,
     embeddings,
+    exploration,
     explore,
     fuel,
     geofence,
@@ -35,6 +39,7 @@ from . import (
     saved_places,
     storefront,
     streetview,
+    toilets,
     translate,
     tts,
     voice,
@@ -48,8 +53,11 @@ from .auth import AuthError, AuthUser
 from .models import (
     AdminUserUpdate,
     ChangePasswordRequest,
+    ChatHistoryRestore,
     ChatRequest,
+    CheckInRequest,
     EventBatch,
+    ExplorationRequest,
     ExploreDiscoverRequest,
     GeofenceRequest,
     GeoParseRequest,
@@ -111,7 +119,7 @@ app.add_middleware(
     # DELETE cần cho /api/v1/geofences/{id}: thiếu nó thì trình duyệt chặn ở
     # bước preflight và nút "bỏ nhắc" hỏng lặng lẽ, chỉ thấy lỗi trong console.
     # PATCH cho /api/v1/admin/users/{id} (đổi vai trò, khoá tài khoản).
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     # X-Narration-*: /narration/audio (Phase 16.2) trả text đã đọc kèm audio
     # qua header — không expose thì frontend gọi được audio nhưng
@@ -324,18 +332,37 @@ def contextual_search(payload: SearchRequest, request: Request) -> dict[str, Any
 
 
 def _plan_chat_turn(payload: ChatRequest) -> tuple[dict[str, Any], str | None]:
-    """Phần KHÔNG cần LLM của một lượt chat: khớp tên POI, trích ý định bằng
-    luật, chạy search thật. Trả ``(response, reply)`` — ``reply`` là ``None``
-    khi còn phải để LLM diễn giải ``response["results"]``.
+    """Phần KHÔNG cần LLM của một lượt chat. Trả ``(response, reply)`` —
+    ``reply`` là ``None`` khi còn phải để LLM diễn giải ``response["results"]``.
 
-    Tách riêng để ``/api/v1/chat`` và ``/api/v1/chat/stream`` dùng chung đúng
-    một luồng, chỉ khác ở cách trả phần diễn giải.
+    Thứ tự, tất cả bằng luật (`app/chat_tools.py`): câu hỏi tiếp trên danh sách
+    vừa xem ("số 2 mấy giờ đóng cửa?") → địa danh nêu tên → công cụ chuyên
+    biệt (xăng, WC, gửi xe…) → search thường, có bộ lọc ("đang mở", "có
+    wifi"). Tách riêng để ``/api/v1/chat`` và ``/api/v1/chat/stream`` dùng
+    chung đúng một luồng, chỉ khác ở cách trả phần diễn giải.
     """
     session_id = str(payload.session_id)
+
+    last = chat_tools.recall(session_id)
+    plan = chat_tools.follow_up(payload.message, last, payload.latitude, payload.longitude)
+    if plan is not None:
+        handled = _follow_up_turn(payload, last, plan)
+        if handled is not None:
+            return handled
 
     # Khớp tên POI THẬT trước, không qua LLM — xem docstring `chat.find_named_poi`.
     named_poi = chat.find_named_poi(payload.message, payload.latitude, payload.longitude)
     if named_poi is not None:
+        chat_tools.remember(
+            session_id,
+            {
+                "kind": "named",
+                "radius": payload.radius,
+                "results": [chat_tools.compact(named_poi)],
+                "page_start": 0,
+                "focus": named_poi["id"],
+            },
+        )
         return {
             "needsClarification": False,
             "searchParams": {
@@ -345,50 +372,212 @@ def _plan_chat_turn(payload: ChatRequest) -> tuple[dict[str, Any], str | None]:
             },
             "retrievalBackend": "poi-name-match",
             "results": [named_poi],
+            "quickReplies": ["Chỉ đường tới đó", "Chỗ đó mấy giờ mở cửa?"],
         }, None
 
-    quick_intent = chat.quick_search_intent(payload.message)
-    intent = quick_intent or chat.rule_based_intent(payload.message)
+    filters = chat_tools.extract_filters(payload.message)
+    tool = chat_tools.detect_tool(payload.message, filters, chat._radius_from_message(payload.message))
+    if tool is not None:
+        params, ignored = (
+            chat_tools.refine_tool_params(tool["tool"], tool["params"], filters.keys)
+            if tool["tool"] != "weather"
+            else (tool["params"], ())
+        )
+        return _tool_turn(payload, tool["tool"], params, chat_tools.filter_note((), (*ignored, *filters.unsupported)))
 
-    if intent["needs_clarification"] or not intent["search_query"]:
+    text = filters.text if filters else payload.message
+    quick_intent = chat.quick_search_intent(text) if text else None
+    intent = quick_intent or chat.rule_based_intent(text)
+    empty_subject = bool(filters) and chat_tools.is_empty_subject(filters.leftover)
+
+    if not filters and (intent["needs_clarification"] or not intent["search_query"]):
         question = intent["clarifying_question"] or "Bạn có thể nói rõ hơn bạn đang muốn tìm gì không?"
         chat.record_clarification(session_id, payload.message, question)
         return {"needsClarification": True, "searchParams": None, "results": []}, question
 
-    radius = intent["radius_m"] or payload.radius
-    geo_telemetry: dict[str, Any] = {}
     # Câu rõ loại địa điểm đi đường nhanh: lọc theo category + khoảng cách,
     # không tạo embedding và không gọi LLM. Câu phức tạp vẫn giữ nguyên văn để
-    # BM25/Vector hiểu đầy đủ sắc thái ("yên tĩnh", "có wifi"...).
+    # BM25/Vector hiểu đầy đủ sắc thái ("yên tĩnh"...). "Chỗ nào có wifi" chỉ
+    # còn từ đệm sau khi cắt bộ lọc — không gửi chữ nào cho BM25.
     fast_category = intent["category"] if quick_intent is not None else None
+    if filters and fast_category is None:
+        fast_category = chat_tools.plain_category(filters)
+    query = None if fast_category or empty_subject else (intent["search_query"] or None)
+    return _search_turn(
+        payload,
+        query=query,
+        semantic_query=intent.get("semantic_query") if query else None,
+        category=fast_category,
+        display_category=intent["category"],
+        radius=intent["radius_m"] or payload.radius,
+        filter_keys=filters.keys,
+        unsupported=filters.unsupported,
+        code_reply=quick_intent is not None or bool(filters),
+    )
+
+
+def _search_turn(
+    payload: ChatRequest,
+    *,
+    query: str | None,
+    category: str | None,
+    radius: int,
+    filter_keys: tuple[str, ...] = (),
+    unsupported: tuple[str, ...] = (),
+    code_reply: bool,
+    display_category: str | None = None,
+    semantic_query: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Search thật (+ bộ lọc), rồi lưu danh sách làm ngữ cảnh cho câu hỏi tiếp.
+
+    ``semantic_query``: câu nguyên văn cho kênh vector khi ``query`` (BM25) đã
+    bỏ từ đệm — xem `chat.rule_based_intent`."""
+    session_id = str(payload.session_id)
+    geo_telemetry: dict[str, Any] = {}
     results, retrieval_backend = rank_pois_detailed(
         payload.latitude,
         payload.longitude,
         radius,
-        None if fast_category else intent["search_query"],
-        fast_category,
-        20,
+        query,
+        category,
+        chat_tools.FILTER_POOL if filter_keys else 20,
         telemetry=geo_telemetry,
+        semantic_text=semantic_query,
     )
+    note = None
+    if filter_keys or unsupported:
+        kept, unknown = chat_tools.apply_filters(results, filter_keys)
+        results = kept[:20]
+        note = chat_tools.filter_note(filter_keys, unsupported, unknown)
     for index, poi in enumerate(results):
         poi["rank"] = index
 
-    reply = (
-        chat.summarize_results_fast(session_id, payload.message, results)
-        if quick_intent is not None
-        else None
+    chat_tools.remember(
+        session_id,
+        {
+            "kind": "search",
+            "query": query,
+            "semantic_query": semantic_query,
+            "category": category,
+            "radius": radius,
+            "filters": list(filter_keys),
+            "results": [chat_tools.compact(poi, payload.latitude, payload.longitude) for poi in results],
+            "page_start": 0,
+        },
     )
+    reply = chat.summarize_results_fast(session_id, payload.message, results, note) if code_reply else None
     return {
         "needsClarification": False,
         "searchParams": {
-            "query": intent["search_query"],
-            "category": intent["category"],
+            "query": query,
+            "category": display_category or category,
             "radius": radius,
         },
         "retrievalBackend": retrieval_backend,
-        "fastPath": quick_intent is not None,
+        "fastPath": code_reply,
+        "filters": [chat_tools.FILTER_LABELS[key] for key in filter_keys],
+        "quickReplies": chat_tools.quick_replies("search", len(results), filter_keys),
         "results": results,
     }, reply
+
+
+def _tool_turn(
+    payload: ChatRequest, tool: str, params: dict[str, Any], note: str | None = None
+) -> tuple[dict[str, Any], str]:
+    """Câu thuộc một công cụ chuyên biệt (xăng, sạc, WC, gửi xe, tiện lợi,
+    thời tiết) — gọi đúng module đó, câu trả lời do code ghép."""
+    session_id = str(payload.session_id)
+    cards, reply = chat_tools.run_tool(tool, params, payload.latitude, payload.longitude)
+    if note:
+        reply = f"{reply} {note}"
+    results = [chat_tools.compact(card) for card in cards]
+    # Thời tiết không có danh sách: giữ nguyên ngữ cảnh cũ để "số 2…" vẫn
+    # trỏ vào danh sách địa điểm trước đó.
+    if tool != "weather":
+        chat_tools.remember(
+            session_id,
+            {"kind": tool, "params": params, "radius": params.get("radius"), "results": results, "page_start": 0},
+        )
+    chat.record_turn(session_id, payload.message, reply)
+    return {
+        "needsClarification": False,
+        "searchParams": {"query": payload.message, "category": None, "radius": params.get("radius")},
+        "retrievalBackend": f"tool:{tool}",
+        "tool": tool,
+        "quickReplies": chat_tools.quick_replies(tool, len(results)),
+        "results": results,
+    }, reply
+
+
+def _follow_up_turn(
+    payload: ChatRequest, last: dict[str, Any] | None, plan: dict[str, Any]
+) -> tuple[dict[str, Any], str | None] | None:
+    """Thực hiện kế hoạch của `chat_tools.follow_up`. ``None`` = không làm
+    được với loại ngữ cảnh này, để luồng tìm mới xử lý câu."""
+    if last is None:
+        return None
+    session_id = str(payload.session_id)
+    kind = last.get("kind")
+    plan_type = plan["type"]
+
+    if plan_type == "clarify":
+        chat.record_turn(session_id, payload.message, plan["reply"])
+        return {"needsClarification": True, "searchParams": None, "results": []}, plan["reply"]
+
+    if plan_type in ("answer", "page", "reorder"):
+        context = {**last}
+        if plan_type == "answer":
+            context["focus"] = plan["focus"]
+            results = plan["results"]
+            # Câu gợi ý phải tự hiểu được ở lượt sau: "chỗ đó" trỏ vào `focus`.
+            replies = []
+            if plan.get("directions") is None:
+                replies.append("Chỉ đường tới đó")
+            if plan.get("question") != "hours":
+                replies.append("Chỗ đó mấy giờ đóng cửa?")
+        else:
+            context["page_start"] = plan["page_start"]
+            if plan_type == "reorder":
+                context["results"] = plan["results"]
+            results = plan["results"][: chat_tools.PAGE_SIZE] if plan_type == "reorder" else plan["results"]
+            # Đếm cả phần chưa xem để còn gợi ý "Còn chỗ khác không?".
+            remaining = len(context["results"]) - plan["page_start"]
+            replies = chat_tools.quick_replies(kind or "search", remaining, tuple(last.get("filters") or ()))
+        chat_tools.remember(session_id, context)
+        chat.record_turn(session_id, payload.message, plan["reply"])
+        return {
+            "needsClarification": False,
+            "searchParams": None,
+            "retrievalBackend": "chat-context",
+            "directions": plan.get("directions"),
+            "quickReplies": replies,
+            "results": results,
+        }, plan["reply"]
+
+    # plan_type == "rerun": chạy lại đúng truy vấn trước với bán kính/bộ lọc mới.
+    if kind == "search":
+        filter_keys = tuple(plan.get("filters", last.get("filters") or ()))
+        radius = min(int(plan.get("radius") or last.get("radius") or payload.radius), chat_tools.SEARCH_MAX_RADIUS)
+        return _search_turn(
+            payload,
+            query=last.get("query"),
+            semantic_query=last.get("semantic_query"),
+            category=last.get("category"),
+            radius=radius,
+            filter_keys=filter_keys,
+            unsupported=tuple(plan.get("unsupported", ())),
+            code_reply=True,
+        )
+    if kind in chat_tools.TOOL_TITLES:
+        params = dict(last.get("params") or {})
+        ignored: tuple[str, ...] = ()
+        if "radius" in plan:
+            params = chat_tools.tool_radius(kind, params, 2)
+        if "filters" in plan:
+            params, ignored = chat_tools.refine_tool_params(kind, params, tuple(plan["filters"]))
+        note = chat_tools.filter_note((), (*ignored, *plan.get("unsupported", ())))
+        return _tool_turn(payload, kind, params, note)
+    return None
 
 
 @app.post("/api/v1/chat")
@@ -448,6 +637,17 @@ def delete_chat_history(request: Request) -> Response:
     if not owner_id:
         return JSONResponse(status_code=400, content={"detail": "Thiếu X-Session-ID"})
     chat.clear_history(owner_id)
+    return Response(status_code=204)
+
+
+@app.put("/api/v1/chat/history", status_code=204)
+def restore_chat_history(payload: ChatHistoryRestore, request: Request) -> Response:
+    """Mở lại một cuộc trò chuyện cũ (lịch sử lưu ở trình duyệt): nạp lại ngữ
+    cảnh của phiên để câu hỏi tiếp theo được hiểu là câu nối tiếp."""
+    owner_id = _owner_id(request)
+    if not owner_id:
+        return JSONResponse(status_code=400, content={"detail": "Thiếu X-Session-ID"})
+    chat.set_history(owner_id, [turn.model_dump() for turn in payload.turns])
     return Response(status_code=204)
 
 
@@ -952,6 +1152,58 @@ def fuel_search(
     )
 
 
+@app.get("/api/v1/convenience/search")
+def convenience_search(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    mode: str = Query(default="foot", pattern="^(foot|motorbike)$"),
+    brand: str = Query(default="any", pattern="^(any|chain|circle_k|familymart|gs25|seven_eleven|ministop|winmart|bach_hoa_xanh|coop_food|bsmart|shop_go|satrafoods|other)$"),
+    open_now: bool = Query(default=False),
+    radius: int = Query(default=convenience.DEFAULT_RADIUS_METERS, ge=300, le=15_000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Cửa hàng tiện lợi theo chuỗi (Circle K, FamilyMart, GS25, 7-Eleven…),
+    đang mở cửa — xếp theo THỜI GIAN ĐI THẬT (đi bộ hoặc xe máy, OSRM). Xem
+    `app/convenience.py`."""
+    return convenience.search_stores(
+        latitude=lat,
+        longitude=lng,
+        mode=mode,
+        brand=brand,
+        open_now=open_now,
+        radius=radius,
+        limit=limit,
+    )
+
+
+@app.get("/api/v1/toilets/search")
+def toilets_search(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    mode: str = Query(default="foot", pattern="^(foot|motorbike)$"),
+    source: str = Query(default="all", pattern="^(all|public)$"),
+    free_only: bool = Query(default=False),
+    wheelchair: bool = Query(default=False),
+    open_now: bool = Query(default=False),
+    radius: int = Query(default=toilets.DEFAULT_RADIUS_METERS, ge=300, le=15_000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Nhà vệ sinh: WC công cộng, cộng cây xăng / trung tâm thương mại / quán
+    có WC cho khách (ghi rõ nguồn) — xếp theo THỜI GIAN ĐI THẬT. Xem
+    `app/toilets.py`."""
+    return toilets.search_toilets(
+        latitude=lat,
+        longitude=lng,
+        mode=mode,
+        source=source,
+        free_only=free_only,
+        wheelchair=wheelchair,
+        open_now=open_now,
+        radius=radius,
+        limit=limit,
+    )
+
+
 @app.get("/api/v1/parking/{poi_id}")
 def parking_detail(poi_id: str, minutes: int = Query(default=120, ge=15, le=7 * 24 * 60)) -> Any:
     """Thông tin gửi xe của một bãi/trạm sạc cho panel chi tiết: giá từng loại
@@ -1313,6 +1565,80 @@ def delete_saved_place(place_id: str, request: Request) -> Any:
     return {"deleted": place_id}
 
 
+@app.post("/api/v1/checkins")
+def create_checkin(payload: CheckInRequest, request: Request) -> Any:
+    """Check-in tại một POI khi đứng đủ gần (khám phá AR). Đi theo tài khoản như
+    địa điểm đã lưu — huy hiệu là thành quả người dùng muốn giữ khi đổi máy.
+
+    Luôn 200 với ``status`` cho các kết cục của trò chơi (``too_far``,
+    ``not_allowed``, ``already``) — đó là phản hồi cho người chơi, không phải
+    lỗi HTTP; giống `/api/v1/explore/{poi_id}/discover`.
+    """
+    owner_id = _account_owner_id(request, payload.session_id)
+    if not owner_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Cần X-Session-ID hoặc session_id trong body"},
+        )
+    result = checkins.check_in(
+        owner_id,
+        str(payload.poi_id),
+        payload.latitude,
+        payload.longitude,
+        payload.accuracy_meters,
+    )
+    if result["status"] == "not_found":
+        return JSONResponse(status_code=404, content={"detail": "Không có POI này"})
+    if result["status"] in ("checked_in", "already"):
+        # Đứng tại địa điểm thì ô đó cũng đã "sáng" trên bản đồ sương mù.
+        exploration.record(
+            owner_id,
+            [{"latitude": payload.latitude, "longitude": payload.longitude, "accuracy_meters": payload.accuracy_meters}],
+        )
+    return result
+
+
+@app.get("/api/v1/checkins")
+def list_checkins(request: Request) -> dict[str, Any]:
+    """Không có phiên thì trả rỗng (kèm huy hiệu chưa đạt), không phải lỗi:
+    màn AR gọi endpoint này ngay khi mở."""
+    owner_id = _account_owner_id(request)
+    if not owner_id:
+        return {**checkins.badge_summary_empty(), "reason": "no-session"}
+    return checkins.summary(owner_id)
+
+
+@app.post("/api/v1/exploration")
+def record_exploration(payload: ExplorationRequest, request: Request) -> Any:
+    """Ghi ô H3 vừa đi qua cho bản đồ sương mù; trả đường bao mới kèm ``added``.
+    Chỉ giữ ô, không giữ toạ độ hay giờ — xem migration 0033."""
+    owner_id = _account_owner_id(request, payload.session_id)
+    if not owner_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Cần X-Session-ID hoặc session_id trong body"},
+        )
+    return exploration.record(owner_id, [point.model_dump() for point in payload.points])
+
+
+@app.get("/api/v1/exploration")
+def get_exploration(request: Request) -> dict[str, Any]:
+    owner_id = _account_owner_id(request)
+    if not owner_id:
+        return {**exploration.empty_overview(), "reason": "no-session"}
+    return exploration.overview(owner_id)
+
+
+@app.delete("/api/v1/exploration")
+def clear_exploration(request: Request) -> Any:
+    """Người dùng tự xoá toàn bộ vùng đã khám phá — dữ liệu vị trí của họ, họ
+    phải xoá được bằng một nút."""
+    owner_id = _account_owner_id(request)
+    if not owner_id:
+        return JSONResponse(status_code=400, content={"detail": "Cần X-Session-ID"})
+    return {"deleted": exploration.clear(owner_id)}
+
+
 @app.get("/api/v1/notifications/stream")
 def notification_stream(request: Request) -> Response:
     """Server-Sent Events: đẩy thông báo tới gần xuống trình duyệt.
@@ -1372,6 +1698,8 @@ def _adopt_session_data(request: Request, user: AuthUser, payload_session: Any) 
     try:
         saved_places.transfer_owner(session_id, user.owner_id)
         reviews.transfer_owner(session_id, user.owner_id)
+        checkins.transfer_owner(session_id, user.owner_id)
+        exploration.transfer_owner(session_id, user.owner_id)
     except psycopg.Error as error:
         logger.warning("Không chuyển được dữ liệu phiên sang tài khoản: %s", error)
 

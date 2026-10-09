@@ -348,3 +348,80 @@ def test_moi_khoa_trong_bo_loc_osm_deu_duoc_osm_category_doc_toi() -> None:
     nguon = inspect.getsource(osm_category)
     thieu = {key for key in OSM_FILTERS if f'"{key}"' not in nguon}
     assert thieu == set()
+
+
+def test_bach_hoa_gan_nham_cho_tap_hoa_la_cua_hang_tien_loi() -> None:
+    """OSM ở VN dùng `shop=department_store` cho tạp hoá ("bách hoá" dịch
+    thẳng): đo 2026-10-10 có 520 POI, gần hết là tiệm tạp hoá nhỏ. Coi hết là
+    TTTM thì tạp hoá hiện ảnh bìa TTTM, lọt vào "trung tâm thương mại" và vắng
+    mặt khi tìm cửa hàng tiện lợi."""
+    assert osm_category({"shop": "department_store", "name": "Tạp hóa cô Mai"}) == ("convenience", "Mua sắm")
+    # Cửa hàng lẻ gắn nhầm cũng không phải TTTM.
+    assert osm_category({"shop": "department_store", "name": "Tiffany & Co. Vietnam"}) == ("convenience", "Mua sắm")
+    # Không có tên (chỉ còn `name:vi`) vẫn xét theo tên đó.
+    assert osm_category({"shop": "department_store", "name:vi": "Bách hóa Xanh"}) == ("convenience", "Mua sắm")
+
+
+@pytest.mark.parametrize(
+    "ten",
+    [
+        "Lotte Department Store",
+        "Parkson",
+        "Takashimaya",
+        "Union Square",
+        "Trung tâm Thương mại Thủ Đức",
+        "Trung Tâm Thương Mại Vincom Plaza Gò Vấp",
+        "TTTM Sài Gòn",
+    ],
+)
+def test_bach_hoa_lon_that_van_la_trung_tam_thuong_mai(ten: str) -> None:
+    assert osm_category({"shop": "department_store", "name": ten}) == ("shopping_mall", "Mua sắm")
+
+
+def test_shop_mall_luon_la_trung_tam_thuong_mai_bat_ke_ten() -> None:
+    assert osm_category({"shop": "mall", "name": "Saigon Centre"}) == ("shopping_mall", "Mua sắm")
+    assert osm_category({"shop": "mall", "name": "Tạp hóa cô Mai"}) == ("shopping_mall", "Mua sắm")
+
+
+def test_tap_hoa_gan_department_store_qua_normalize_osm_element() -> None:
+    poi = normalize_osm_element(
+        {
+            "type": "node",
+            "id": 7,
+            "lat": 10.77,
+            "lon": 106.70,
+            "tags": {"shop": "department_store", "name": "Tạp hóa Hồng Phúc"},
+        }
+    )
+    assert poi is not None
+    assert (poi["category"], poi["category_label"]) == ("convenience", "Mua sắm")
+
+
+def test_dau_hieu_bach_hoa_lon_trong_migration_0035_khop_poi_features() -> None:
+    """Migration 0035 chép danh sách dấu hiệu thay vì import từ `app` (quy ước
+    dự án) — hai bản lệch nhau thì POI cũ và POI mới import bị xếp khác loại."""
+    import importlib.util
+    from pathlib import Path
+
+    from app.poi_features import _DEPARTMENT_STORE_MARKERS
+
+    path = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0035_department_store_not_mall.py"
+    spec = importlib.util.spec_from_file_location("migration_0035", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.MARKERS == _DEPARTMENT_STORE_MARKERS
+
+
+def test_ghi_de_tiffany_trong_migration_0037_la_danh_muc_co_that() -> None:
+    """Tiffany & Co. gắn `shop=department_store` — sau khi tạp hoá gắn thẻ này
+    thành cửa hàng tiện lợi, nó cần ghi đè riêng. Danh mục ghi đè phải là
+    một cặp (category, nhãn) có thật, nếu không chip lọc/ảnh bìa không nhận."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0037_tiffany_jewelry_override.py"
+    spec = importlib.util.spec_from_file_location("migration_0037", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.CATEGORY in set(CATEGORY_MAP.values())
+    assert osm_category({"shop": "jewelry"}) == module.CATEGORY

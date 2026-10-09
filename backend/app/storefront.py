@@ -236,9 +236,9 @@ def read_signs(image_bytes: bytes) -> list[str] | None:
         "stream": False,
         # Qwen3.5 có chế độ "thinking" — tắt để chỉ nhận danh sách chữ.
         "think": False,
-        # Giữ model trong RAM giữa các POI: mặc định Ollama gỡ sau 5 phút, và
-        # nạp lại khi máy dev đang thiếu RAM hay hỏng (`std::bad_alloc` → 500).
-        "keep_alive": "30m",
+        # Giữ model trong RAM giữa các POI liên tiếp: nạp lại khi máy dev đang
+        # thiếu RAM hay hỏng (`std::bad_alloc` → 500).
+        "keep_alive": settings.ollama_vision_keep_alive,
         "options": {"temperature": 0, "num_ctx": 4096, "num_predict": OCR_MAX_TOKENS},
         "messages": [
             {

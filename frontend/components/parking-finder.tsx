@@ -27,7 +27,7 @@ import {
   type ParkingSearchResponse,
   type Vehicle,
 } from '@/lib/parking';
-import { cn } from '@/lib/utils';
+import { cn, formatMeters } from '@/lib/utils';
 
 type Place = { name: string; latitude: number; longitude: number };
 
@@ -318,7 +318,7 @@ export function ParkingFinder({
                           // Tới trạm sạc là lái xe tới, không đi bộ.
                           <>
                             <MapPin className="size-3.5" />
-                            {(result.walkMeters / 1000).toFixed(1)} km
+                            {formatMeters(result.walkMeters)}
                           </>
                         ) : (
                           <>

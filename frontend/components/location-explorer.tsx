@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import maplibregl, {
   type GeoJSONSource,
   type Map as MapLibreMap,
@@ -65,6 +65,9 @@ import {
   Merge,
   MessageCircle,
   Mic,
+  ScanEye,
+  CloudFog,
+  Trash2,
   Moon,
   Navigation,
   PanelLeftClose,
@@ -89,6 +92,7 @@ import {
   Stethoscope,
   Store,
   Sun,
+  Toilet,
   TrainFront,
   Trees,
   Undo2,
@@ -103,11 +107,16 @@ import {
 import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
 import { ChatWidget } from '@/components/chat-widget';
 import { VoiceMode } from '@/components/voice-mode';
+import { VoiceSearch } from '@/components/voice-search';
+import { ArExplorer } from '@/components/ar-explorer';
 import { ChargingFinder } from '@/components/charging-finder';
+import { ConvenienceFinder } from '@/components/convenience-finder';
 import { FuelFinder } from '@/components/fuel-finder';
+import { ToiletFinder } from '@/components/toilet-finder';
 import { ParkingFinder, type ParkingRequest } from '@/components/parking-finder';
 import { useProximityNotifications } from '@/hooks/use-proximity';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
+import { fogGeometry, useExploration } from '@/hooks/use-exploration';
 import {
   PoiDetailPanel,
   type PoiRouteSummary,
@@ -133,7 +142,7 @@ import { getTelemetry, type TelemetryState } from '@/lib/telemetry';
 import { authHeaders, useAuth } from '@/lib/auth';
 import { AccountMenu } from '@/components/account-menu';
 import type { AssistantOverlay } from '@/lib/assistant';
-import { cn } from '@/lib/utils';
+import { cn, formatMeters } from '@/lib/utils';
 
 type Poi = {
   id: string;
@@ -413,7 +422,8 @@ const OSM_RASTER_STYLE = {
   glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
   layers: [{ id: 'osm', type: 'raster' as const, source: 'osm' }],
 };
-const DEFAULT_POINT_COLOR = '#f97316';
+// Màu chấm POI có nhãn lạ, không nằm trong CATEGORY_COLORS.
+const DEFAULT_POINT_COLOR = '#64748b';
 // Màu pin của POI đang chọn — đỏ quen mắt kiểu ghim Google Maps, tách hẳn khỏi
 // bảng cam/xanh của các chấm POI để nhìn phát biết ngay "đây là chỗ vừa bấm".
 const SELECTED_PIN_COLOR = '#ea4335';
@@ -561,12 +571,6 @@ function distanceInMeters(from: Position, to: Position) {
   );
 }
 
-function formatDistance(distance = 0) {
-  return distance < 1_000
-    ? `${Math.round(distance)} m`
-    : `${(distance / 1_000).toFixed(1)} km`;
-}
-
 function enrichSamplePois(
   position: Position,
   query: string,
@@ -606,7 +610,11 @@ function poisToFeatureCollection(
     type: 'FeatureCollection',
     features: pois.map((poi) => ({
       type: 'Feature',
-      properties: { id: poi.id },
+      properties: {
+        id: poi.id,
+        color: categoryColor(poi.categoryLabel),
+        icon: `${POI_ICON_PREFIX}${poi.categoryLabel}`,
+      },
       geometry: { type: 'Point', coordinates: [poi.longitude, poi.latitude] },
     })),
   };
@@ -619,7 +627,7 @@ function pointColorExpression(
     'case',
     ['==', ['get', 'id'], selectedPoiId ?? ''],
     SELECTED_POINT_COLOR,
-    DEFAULT_POINT_COLOR,
+    ['get', 'color'],
   ];
 }
 
@@ -704,6 +712,7 @@ const CATEGORY_CHIP_ICONS: Record<string, LucideIcon> = {
   'Tiệc cưới & sự kiện': Cake,
   'Cắt tóc': Scissors,
   'Cây xăng': Fuel,
+  'Nhà vệ sinh': Toilet,
   'Trạm sạc': BatteryCharging,
   'Sửa xe': Wrench,
   'Rửa xe': SprayCan,
@@ -729,6 +738,112 @@ const CATEGORY_CHIP_ICONS: Record<string, LucideIcon> = {
 
 function categoryChipIcon(label: string): LucideIcon {
   return CATEGORY_CHIP_ICONS[label] ?? MapPin;
+}
+
+// Màu chấm POI trên bản đồ theo NHÓM danh mục — 40 nhãn mà 40 màu thì mắt
+// không phân biệt nổi, gom thành ~12 họ màu (ăn uống cam, y tế đỏ, mua sắm
+// hồng...). Tránh xanh lục emerald vì đó là màu của cụm, và đỏ #ea4335 đã
+// dành cho ghim POI đang chọn nên y tế dùng đỏ đậm hơn.
+const CATEGORY_COLOR_GROUPS: [string, string[]][] = [
+  ['#f97316', ['Ăn uống']],
+  ['#92400e', ['Cà phê']],
+  ['#db2777', ['Mua sắm', 'Chợ', 'Giày dép', 'Tiệm vàng', 'Kính mắt', 'Tiệm hoa']],
+  ['#65a30d', ['Công viên', 'Khu vui chơi']],
+  ['#b91c1c', ['Y tế', 'Nha khoa']],
+  ['#2563eb', ['Giáo dục', 'Mầm non']],
+  ['#0891b2', ['Dịch vụ', 'Bưu điện', 'Giặt ủi', 'Thú cưng', 'Nhà vệ sinh']],
+  ['#c026d3', ['Spa', 'Làm đẹp', 'Cắt tóc']],
+  ['#4f46e5', ['Lưu trú']],
+  ['#9333ea', ['Giải trí', 'Xem phim', 'Tiệc cưới & sự kiện']],
+  ['#0d9488', ['Thể thao', 'Bể bơi', 'Sân thể thao']],
+  ['#ca8a04', ['Văn hóa', 'Địa danh', 'Tín ngưỡng']],
+  ['#475569', ['Cây xăng', 'Trạm sạc', 'Sửa xe', 'Rửa xe', 'Bãi xe', 'Bến xe', 'Ga tàu', 'Sân bay']],
+  ['#1e3a8a', ['Công an', 'Hành chính']],
+];
+const CATEGORY_COLORS: Record<string, string> = Object.fromEntries(
+  CATEGORY_COLOR_GROUPS.flatMap(([color, labels]) =>
+    labels.map((label) => [label, color]),
+  ),
+);
+
+function categoryColor(label: string): string {
+  return CATEGORY_COLORS[label] ?? DEFAULT_POINT_COLOR;
+}
+
+// Ảnh icon của chấm POI đăng ký với MapLibre dưới id `poi-icon:<nhãn>`, tạo
+// lười trong `styleimagemissing` — chỉ nhãn nào thật sự xuất hiện mới tốn canvas.
+const POI_ICON_PREFIX = 'poi-icon:';
+const POI_ICON_SIZE = 15;
+const POI_ICON_PIXEL_RATIO = 2;
+const POI_ICON_MIN_ZOOM = 15;
+
+type LucideIconNode = [string, Record<string, string | number>][];
+
+// Lấy danh sách phần tử SVG của icon lucide. lucide-react không export
+// `__iconNode` qua entry chính, nhưng mỗi icon là forwardRef mà hàm render chỉ
+// trả `createElement(Icon, { iconNode, ... })` (không hook) — gọi thẳng là đọc
+// được. Đổi phiên bản lucide mà cấu trúc khác thì trả null, chấm vẫn có màu.
+function lucideIconNode(icon: LucideIcon): LucideIconNode | null {
+  try {
+    const element = (
+      icon as unknown as {
+        render: (props: object, ref: null) => { props: { iconNode?: LucideIconNode } };
+      }
+    ).render({}, null);
+    return element.props.iconNode ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Vẽ icon trắng lên canvas bằng Path2D thay vì nạp SVG qua <img>: nạp ảnh là
+// bất đồng bộ, mà `styleimagemissing` cần addImage NGAY trong handler — trễ một
+// nhịp là MapLibre đã dựng tile không có icon và không tự vẽ lại.
+function renderPoiIcon(icon: LucideIcon): ImageData | null {
+  const nodes = lucideIconNode(icon);
+  const pixels = POI_ICON_SIZE * POI_ICON_PIXEL_RATIO;
+  const canvas = document.createElement('canvas');
+  canvas.width = pixels;
+  canvas.height = pixels;
+  const context = canvas.getContext('2d');
+  if (!nodes || !context) return null;
+  // viewBox lucide là 24×24, nét 2.
+  context.scale(pixels / 24, pixels / 24);
+  context.strokeStyle = '#ffffff';
+  context.lineWidth = 2.25;
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  const num = (value: string | number | undefined) => Number(value ?? 0);
+  for (const [tag, attrs] of nodes) {
+    let path: Path2D;
+    if (tag === 'path') {
+      path = new Path2D(String(attrs.d));
+    } else if (tag === 'circle') {
+      path = new Path2D();
+      path.arc(num(attrs.cx), num(attrs.cy), num(attrs.r), 0, Math.PI * 2);
+    } else if (tag === 'rect') {
+      path = new Path2D();
+      path.roundRect(
+        num(attrs.x),
+        num(attrs.y),
+        num(attrs.width),
+        num(attrs.height),
+        num(attrs.rx),
+      );
+    } else if (tag === 'line') {
+      path = new Path2D(
+        `M${num(attrs.x1)} ${num(attrs.y1)}L${num(attrs.x2)} ${num(attrs.y2)}`,
+      );
+    } else if (tag === 'polyline' || tag === 'polygon') {
+      path = new Path2D(
+        `M${String(attrs.points)}${tag === 'polygon' ? 'Z' : ''}`,
+      );
+    } else {
+      continue;
+    }
+    context.stroke(path);
+  }
+  return context.getImageData(0, 0, pixels, pixels);
 }
 
 // Số chip danh mục hiện khi thu gọn — vừa đủ hai hàng trong cột 430px.
@@ -757,6 +872,8 @@ export function LocationExplorer() {
   const [parkingOpen, setParkingOpen] = useState(false);
   const [chargingOpen, setChargingOpen] = useState(false);
   const [fuelOpen, setFuelOpen] = useState(false);
+  const [convenienceOpen, setConvenienceOpen] = useState(false);
+  const [toiletOpen, setToiletOpen] = useState(false);
   // Lớp vẽ tạm của trợ lý (tuyến tour, người trong nhóm hẹn, quán gợi ý) — xem
   // components/chat-widget.tsx. Tách khỏi 'route' để chỉ đường và tour không
   // xoá lẫn nhau.
@@ -769,6 +886,12 @@ export function LocationExplorer() {
   const [mapPicking, setMapPicking] = useState(false);
   // Chế độ giọng nói cho người khiếm thị (Alt+V, nút "Giọng nói" trên thanh trên).
   const [voiceOpen, setVoiceOpen] = useState(false);
+  // Tìm nhanh bằng giọng (bảng nổi nhỏ) — khác chế độ giọng nói toàn màn hình ở trên.
+  const [voiceSearchOpen, setVoiceSearchOpen] = useState(false);
+  const [arOpen, setArOpen] = useState(false);
+  // Bản đồ sương mù: bật thì ghi ô H3 đã đi qua (xem hooks/use-exploration.ts).
+  const [fogOn, setFogOn] = useState(false);
+  const [fogGps, setFogGps] = useState<'waiting' | 'ok' | 'denied'>('waiting');
   // Dưới lg bố cục là một ứng dụng ba màn: bản đồ luôn phủ kín vùng giữa, còn
   // "Tìm kiếm" và "Kết quả" là lớp phủ đè lên nó, chuyển bằng thanh tab dưới
   // đáy. Bản đồ KHÔNG bao giờ bị display:none — MapLibre đo khung 0×0 thì
@@ -1002,6 +1125,33 @@ export function LocationExplorer() {
   // thuộc `session_id` ẩn danh. Đăng nhập/đăng xuất đổi `authToken` nên danh
   // sách tự nạp lại theo chủ sở hữu mới — xem `_account_owner_id` ở backend.
   const { token: authToken } = useAuth();
+  const exploration = useExploration({
+    apiBaseUrl: API_BASE_URL,
+    sessionId: telemetryState.sessionId,
+    authToken,
+    active: fogOn,
+  });
+  const recordExploration = exploration.record;
+
+  // Chế độ sương mù có GPS RIÊNG, không dùng "Theo dõi vị trí": cái đó còn gửi
+  // ping telemetry, còn sương mù chỉ ghi ô — bật cái này không được kéo theo
+  // việc gửi thêm dữ liệu vị trí nào khác.
+  useEffect(() => {
+    if (!fogOn || !navigator.geolocation) return;
+    const id = navigator.geolocation.watchPosition(
+      ({ coords }) => {
+        setFogGps('ok');
+        void recordExploration({
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          accuracy: coords.accuracy,
+        });
+      },
+      () => setFogGps('denied'),
+      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 20_000 },
+    );
+    return () => navigator.geolocation.clearWatch(id);
+  }, [fogOn, recordExploration]);
   const reloadSavedPlaces = useCallback(async () => {
     const sessionId = telemetryState.sessionId;
     if (!sessionId) return;
@@ -1287,6 +1437,28 @@ export function LocationExplorer() {
     position.longitude,
     transportMode,
   ]);
+
+  // Vẽ sương mù. Dữ liệu cũng giữ trong ref: lượt nạp đầu có thể về TRƯỚC khi
+  // bản đồ dựng xong lớp, lúc đó initMapLayers lấy từ ref.
+  const fogDataRef = useRef<{ fog: GeoJSON.FeatureCollection; explored: GeoJSON.FeatureCollection }>({
+    fog: { type: 'FeatureCollection', features: [] },
+    explored: { type: 'FeatureCollection', features: [] },
+  });
+  const fogShape = exploration.overview?.shape ?? null;
+  useEffect(() => {
+    const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+    const asCollection = (geometry: GeoJSON.Geometry): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: [{ type: 'Feature', properties: {}, geometry }],
+    });
+    fogDataRef.current = fogOn
+      ? { fog: asCollection(fogGeometry(fogShape)), explored: fogShape ? asCollection(fogShape) : empty }
+      : { fog: empty, explored: empty };
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    (map.getSource('fog') as GeoJSONSource | undefined)?.setData(fogDataRef.current.fog);
+    (map.getSource('explored') as GeoJSONSource | undefined)?.setData(fogDataRef.current.explored);
+  }, [fogOn, fogShape]);
 
   // Vẽ vành hexagon H3 của lần tìm kiếm gần nhất.
   useEffect(() => {
@@ -1701,7 +1873,12 @@ export function LocationExplorer() {
           if (!response.ok) return;
           const data = (await response.json()) as PoiSuggestion[];
           setSuggestions(data);
-          setSuggestionsOpen(true);
+          // Chỉ bung danh sách khi đang gõ trong ô tìm kiếm — từ khoá đến từ
+          // giọng nói / lịch sử thì kết quả đã hiện, gợi ý chỉ che bản đồ.
+          setSuggestionsOpen(
+            document.activeElement?.getAttribute('aria-controls') ===
+              'poi-suggestion-listbox',
+          );
         } catch (error) {
           if ((error as Error)?.name !== 'AbortError') setSuggestions([]);
         }
@@ -1822,12 +1999,37 @@ export function LocationExplorer() {
     // style được parse xong — đủ điều kiện để addSource/addLayer — và không phụ thuộc
     // vào việc tile tải được hay không.
     const initMapLayers = () => {
+      map.on('styleimagemissing', (event) => {
+        if (!event.id.startsWith(POI_ICON_PREFIX) || map.hasImage(event.id)) return;
+        const image = renderPoiIcon(
+          categoryChipIcon(event.id.slice(POI_ICON_PREFIX.length)),
+        );
+        if (image) map.addImage(event.id, image, { pixelRatio: POI_ICON_PIXEL_RATIO });
+      });
+
       map.addSource('pois', {
         type: 'geojson',
         data: poisToFeatureCollection(poisRef.current),
         cluster: true,
         clusterRadius: 50,
         clusterMaxZoom: 14,
+      });
+
+      // Sương mù — thêm trước mọi lớp khác nên nằm ngay trên nền bản đồ, dưới
+      // vành H3, tuyến đường và POI: sương che phố, không che thứ người dùng bấm.
+      map.addSource('fog', { type: 'geojson', data: fogDataRef.current.fog });
+      map.addSource('explored', { type: 'geojson', data: fogDataRef.current.explored });
+      map.addLayer({
+        id: 'fog-fill',
+        type: 'fill',
+        source: 'fog',
+        paint: { 'fill-color': '#0b1220', 'fill-opacity': 0.62 },
+      });
+      map.addLayer({
+        id: 'explored-edge',
+        type: 'line',
+        source: 'explored',
+        paint: { 'line-color': '#34d399', 'line-width': 2.5, 'line-blur': 1.5, 'line-opacity': 0.9 },
       });
 
       // Vành hexagon H3 — vùng mà kênh 2 thật sự đã quét. Thêm ĐẦU TIÊN nên
@@ -1922,10 +2124,28 @@ export function LocationExplorer() {
         source: 'pois',
         filter: ['!', ['has', 'point_count']],
         paint: {
-          'circle-radius': 9,
-          'circle-stroke-width': 3,
+          // Dưới zoom 15 không có icon (xem 'unclustered-icon') nên thu chấm
+          // lại cho đỡ rối; từ 15 trở lên phóng to cho icon đủ chỗ.
+          'circle-radius': ['step', ['zoom'], 8, POI_ICON_MIN_ZOOM, 13],
+          'circle-stroke-width': 2.5,
           'circle-stroke-color': '#ffffff',
           'circle-color': pointColorExpression(selectedPoiIdRef.current),
+        },
+      });
+      // Icon loại địa điểm vẽ đè lên chấm màu, chỉ khi đã zoom đủ gần — xa hơn
+      // thì khu trung tâm dày đặc icon, nhìn rối mà cũng không đọc nổi. Không
+      // bắt click riêng: handler của 'unclustered-point' vẫn nhận cú bấm vì
+      // chấm nằm ngay bên dưới.
+      map.addLayer({
+        id: 'unclustered-icon',
+        type: 'symbol',
+        source: 'pois',
+        minzoom: POI_ICON_MIN_ZOOM,
+        filter: ['!', ['has', 'point_count']],
+        layout: {
+          'icon-image': ['get', 'icon'],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
         },
       });
 
@@ -2537,6 +2757,7 @@ export function LocationExplorer() {
     const onKey = (event: KeyboardEvent) => {
       if (event.altKey && (event.key === 'v' || event.key === 'V')) {
         event.preventDefault();
+        setVoiceSearchOpen(false);
         setVoiceOpen((value) => !value);
       }
     };
@@ -2770,6 +2991,23 @@ export function LocationExplorer() {
     }
   }
 
+  // "Chỉ đường tới số 1" trong trợ lý chỉ mang poiId, còn startNavigation cần
+  // đủ Poi (toạ độ, tên) — mở panel chi tiết trước, chi tiết về thì bật chỉ đường.
+  const pendingChatDirectionsRef = useRef<string | null>(null);
+  const directionsFromChat = useCallback(
+    (poiId: string) => {
+      pendingChatDirectionsRef.current = poiId;
+      openDetail(poiId, 'chat');
+    },
+    [openDetail],
+  );
+  const navigateFromChat = useEffectEvent((poi: Poi) => startNavigation(poi));
+  useEffect(() => {
+    if (!detailAsPoi || pendingChatDirectionsRef.current !== detailAsPoi.id) return;
+    pendingChatDirectionsRef.current = null;
+    navigateFromChat(detailAsPoi);
+  }, [detailAsPoi]);
+
   return (
     <main className="nearby-app flex h-dvh flex-col overflow-hidden bg-transparent text-foreground">
       <header className="app-header relative z-30 shrink-0 border-b border-emerald-950/[0.07] bg-white/75 px-3 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 backdrop-blur-xl sm:px-6 sm:py-3 dark:border-white/[0.07] dark:bg-background/75">
@@ -2825,9 +3063,11 @@ export function LocationExplorer() {
               variant="ghost"
               size="icon"
               className="rounded-full"
-              onClick={() => setVoiceOpen(true)}
-              aria-label="Bật chế độ giọng nói cho người khiếm thị (phím tắt Alt+V)"
-              title="Chế độ giọng nói (Alt+V)"
+              onClick={() => setVoiceSearchOpen((value) => !value)}
+              data-voice-search-trigger
+              aria-expanded={voiceSearchOpen}
+              aria-label="Tìm bằng giọng nói (Alt+V: chế độ giọng nói cho người khiếm thị)"
+              title="Tìm bằng giọng nói"
             >
               <Mic className="size-5" />
             </Button>
@@ -2946,9 +3186,11 @@ export function LocationExplorer() {
                 variant="ghost"
                 size="icon"
                 className="size-8 rounded-full"
-                onClick={() => setVoiceOpen(true)}
-                aria-label="Bật chế độ giọng nói cho người khiếm thị (phím tắt Alt+V)"
-                title="Chế độ giọng nói (Alt+V)"
+                onClick={() => setVoiceSearchOpen((value) => !value)}
+                data-voice-search-trigger
+                aria-expanded={voiceSearchOpen}
+                aria-label="Tìm bằng giọng nói (Alt+V: chế độ giọng nói cho người khiếm thị)"
+                title="Tìm bằng giọng nói · Alt+V: chế độ đầy đủ"
               >
                 <Mic className="size-4" />
               </Button>
@@ -3043,7 +3285,7 @@ export function LocationExplorer() {
                 <div className="relative min-w-0 flex-1">
                   <Search className="pointer-events-none absolute left-3.5 top-1/2 size-[18px] -translate-y-1/2 text-primary/70" />
                   <Input
-                    className="h-12 rounded-2xl border-emerald-950/10 bg-white pl-10 text-[15px] shadow-[inset_0_1px_2px_rgb(14_68_48/5%)] transition-shadow focus-visible:shadow-[0_0_0_4px_rgb(15_138_98/12%)] dark:border-white/10 dark:bg-input/40"
+                    className="h-12 rounded-2xl border-emerald-950/10 bg-white pl-10 pr-11 text-[15px] shadow-[inset_0_1px_2px_rgb(14_68_48/5%)] transition-shadow focus-visible:shadow-[0_0_0_4px_rgb(15_138_98/12%)] dark:border-white/10 dark:bg-input/40"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     onFocus={() => {
@@ -3089,6 +3331,21 @@ export function LocationExplorer() {
                     }
                     autoComplete="off"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setVoiceSearchOpen((value) => !value)}
+                    data-voice-search-trigger
+                    aria-expanded={voiceSearchOpen}
+                    aria-label="Tìm bằng giọng nói"
+                    title="Tìm bằng giọng nói"
+                    className={`absolute right-1.5 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-xl transition-colors ${
+                      voiceSearchOpen
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'text-primary/70 hover:bg-emerald-50 hover:text-primary dark:hover:bg-white/10'
+                    }`}
+                  >
+                    <Mic className="size-[18px]" />
+                  </button>
                   {suggestionsOpen && suggestions.length > 0 && (
                     <div
                       id="poi-suggestion-listbox"
@@ -3141,7 +3398,7 @@ export function LocationExplorer() {
                           </span>
                           {suggestion.distanceMeters != null && (
                             <span className="shrink-0 text-xs text-muted-foreground">
-                              {formatDistance(suggestion.distanceMeters)}
+                              {formatMeters(suggestion.distanceMeters)}
                             </span>
                           )}
                         </div>
@@ -3361,8 +3618,26 @@ export function LocationExplorer() {
               onOpenDetail={openParkingDetail}
               onClose={() => setFuelOpen(false)}
             />
+          ) : convenienceOpen ? (
+            <ConvenienceFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              onOpenDetail={openParkingDetail}
+              onClose={() => setConvenienceOpen(false)}
+            />
+          ) : toiletOpen ? (
+            <ToiletFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              onOpenDetail={openParkingDetail}
+              onClose={() => setToiletOpen(false)}
+            />
           ) : (
-            <div className="grid shrink-0 grid-cols-3 gap-2">
+            // 6 cột: hàng đầu 3 nút (mỗi nút 2 cột), hàng sau 2 nút (mỗi nút 3
+            // cột) — 5 nút mà chia lưới 3 thì hàng sau hụt một ô trông lệch.
+            <div className="grid shrink-0 grid-cols-6 gap-2">
               {(
                 [
                   {
@@ -3383,14 +3658,29 @@ export function LocationExplorer() {
                     tone: 'bg-amber-50 text-amber-600 ring-amber-600/10 dark:bg-amber-500/15 dark:text-amber-300',
                     open: () => setFuelOpen(true),
                   },
+                  {
+                    label: 'Cửa hàng tiện lợi',
+                    Icon: Store,
+                    tone: 'bg-blue-50 text-blue-600 ring-blue-600/10 dark:bg-blue-500/15 dark:text-blue-300',
+                    open: () => setConvenienceOpen(true),
+                  },
+                  {
+                    label: 'Nhà vệ sinh',
+                    Icon: Toilet,
+                    tone: 'bg-teal-50 text-teal-600 ring-teal-600/10 dark:bg-teal-500/15 dark:text-teal-300',
+                    open: () => setToiletOpen(true),
+                  },
                 ] as const
-              ).map(({ label, Icon, tone, open }) => (
+              ).map(({ label, Icon, tone, open }, index) => (
                 <Button
                   key={label}
                   type="button"
                   variant="outline"
                   onClick={open}
-                  className="glass-card group h-auto min-h-11 min-w-0 flex-col gap-2 rounded-2xl px-2 py-3 text-center text-[13px] leading-tight font-semibold whitespace-normal transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-white hover:shadow-[0_14px_32px_-10px_rgb(14_68_48/22%)] dark:hover:bg-card"
+                  className={cn(
+                    index < 3 ? 'col-span-2' : 'col-span-3',
+                    'glass-card group h-auto min-h-11 min-w-0 flex-col gap-2 rounded-2xl px-2 py-3 text-center text-[13px] leading-tight font-semibold whitespace-normal transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-white hover:shadow-[0_14px_32px_-10px_rgb(14_68_48/22%)] dark:hover:bg-card',
+                  )}
                 >
                   <span
                     className={cn(
@@ -3544,7 +3834,7 @@ export function LocationExplorer() {
                           </span>
                         )}
                         <span className="text-muted-foreground">
-                          {formatDistance(poi.distanceMeters)}
+                          {formatMeters(poi.distanceMeters)}
                         </span>
                       </div>
                     </button>
@@ -3628,7 +3918,7 @@ export function LocationExplorer() {
                         )}
                         <span className="ml-auto flex items-center gap-1 font-medium text-primary">
                           <Navigation className="size-3.5" />
-                          {formatDistance(poi.distanceMeters)}
+                          {formatMeters(poi.distanceMeters)}
                         </span>
                       </div>
                       {/* Tín hiệu riêng của TỪNG POI. traffic đổi theo vị trí
@@ -3756,11 +4046,80 @@ export function LocationExplorer() {
           <div className="pointer-events-none absolute left-[4.25rem] top-4 z-10 hidden h-10 items-center rounded-full border border-white/70 bg-white/90 px-4 text-xs shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md lg:flex dark:border-white/10 dark:bg-card/90">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
               <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-sky-500 ring-2 ring-sky-500/20" /> Vị trí của bạn</span>
-              <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-orange-500 ring-2 ring-orange-500/20" /> POI</span>
+              <span className="flex items-center gap-1.5"><span className="flex -space-x-1"><span className="size-2.5 rounded-full bg-orange-500 ring-1 ring-white" /><span className="size-2.5 rounded-full bg-pink-600 ring-1 ring-white" /><span className="size-2.5 rounded-full bg-blue-600 ring-1 ring-white" /></span> POI theo loại</span>
               <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-500/20" /> Cụm</span>
               <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-sky-500/60 ring-2 ring-sky-500/15" /> Vành H3</span>
             </div>
           </div>
+          {/* Khám phá: AR và sương mù — điện thoại xếp dọc dưới thanh tìm kiếm
+              nổi, desktop xếp ngang ở góc trên phải. */}
+          <div className="absolute right-3 top-[4.25rem] z-10 flex flex-col items-end gap-2 lg:right-4 lg:top-4 lg:flex-row">
+            <button
+              type="button"
+              onClick={() => setFogOn((on) => !on)}
+              aria-pressed={fogOn}
+              aria-label={fogOn ? 'Tắt bản đồ sương mù' : 'Bật bản đồ sương mù — đi tới đâu sáng tới đó'}
+              title="Bản đồ sương mù"
+              className={cn(
+                'flex h-10 items-center gap-1.5 rounded-full border px-3.5 text-sm font-semibold shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md transition-colors',
+                fogOn
+                  ? 'border-slate-900/20 bg-slate-900/90 text-emerald-300 hover:bg-slate-900'
+                  : 'border-white/70 bg-white/95 text-primary hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card',
+              )}
+            >
+              <CloudFog className="size-5" aria-hidden />
+              Sương mù
+            </button>
+            <button
+              type="button"
+              onClick={() => setArOpen(true)}
+              aria-label="Khám phá bằng camera (AR)"
+              title="Khám phá bằng camera (AR)"
+              className="flex h-10 items-center gap-1.5 rounded-full border border-white/70 bg-white/95 px-3.5 text-sm font-semibold text-primary shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md transition-colors hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card"
+            >
+              <ScanEye className="size-5" aria-hidden />
+              AR
+            </button>
+          </div>
+          {fogOn && (
+            <div className="absolute left-3 top-[4.25rem] z-10 flex max-w-[calc(100%-9.5rem)] items-center gap-2 rounded-2xl border border-slate-900/20 bg-slate-900/90 px-3 py-2 text-white shadow-lg backdrop-blur-md lg:left-4 lg:top-16 lg:max-w-xs">
+              <CloudFog className="size-5 shrink-0 text-emerald-300" aria-hidden />
+              <div className="min-w-0 text-xs leading-tight">
+                {fogGps === 'denied' ? (
+                  <p className="font-semibold">Bật định vị để xua sương mù</p>
+                ) : (
+                  <>
+                    <p className="font-semibold">
+                      Đã khám phá{' '}
+                      <span className="whitespace-nowrap">
+                        {(exploration.overview?.areaKm2 ?? 0).toLocaleString('vi-VN')} km²
+                      </span>
+                    </p>
+                    <p className="text-white/70">
+                      {exploration.overview?.cellCount ?? 0} ô
+                      {exploration.overview?.todayCount ? ` · +${exploration.overview.todayCount} hôm nay` : ''}
+                      {fogGps === 'waiting' ? ' · đang lấy GPS…' : ''}
+                    </p>
+                  </>
+                )}
+              </div>
+              {(exploration.overview?.cellCount ?? 0) > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Xoá toàn bộ vùng đã khám phá? Không hoàn tác được.')) {
+                      void exploration.clear();
+                    }
+                  }}
+                  className="grid size-7 shrink-0 place-items-center rounded-full text-white/60 hover:bg-white/10 hover:text-white"
+                  aria-label="Xoá dữ liệu vùng đã khám phá"
+                  title="Xoá dữ liệu vùng đã khám phá"
+                >
+                  <Trash2 className="size-4" aria-hidden />
+                </button>
+              )}
+            </div>
+          )}
           {/* Chỉ desktop: điện thoại đã chuyển màn bằng thanh tab dưới đáy. */}
           <button
             type="button"
@@ -3866,7 +4225,7 @@ export function LocationExplorer() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold">
                       {route && route.poiId === selectedPoi.id
-                        ? `${route.durationMinutes} phút · ${formatDistance(route.distanceMeters)}`
+                        ? `${route.durationMinutes} phút · ${formatMeters(route.distanceMeters)}`
                         : routeStatus === 'loading'
                           ? 'Đang tính đường đi…'
                           : 'Chỉ đường'}
@@ -3977,7 +4336,7 @@ export function LocationExplorer() {
                         ? 'Chưa có đánh giá'
                         : `★ ${selectedPoi.rating.toFixed(1)}`}
                     </span>
-                    <span>{formatDistance(selectedPoi.distanceMeters)}</span>
+                    <span>{formatMeters(selectedPoi.distanceMeters)}</span>
                     <Button size="sm" onClick={() => startNavigation(selectedPoi)}>
                       Chỉ đường
                     </Button>
@@ -4034,7 +4393,7 @@ export function LocationExplorer() {
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-semibold">
                             {route.durationMinutes} phút ·{' '}
-                            {formatDistance(route.distanceMeters)}
+                            {formatMeters(route.distanceMeters)}
                           </p>
                           {/* Nói rõ đây là ĐƯỜNG ĐI THẬT chứ không phải đường chim
                               bay — con số cũ (etaMinutes) tính bằng khoảng cách
@@ -4095,7 +4454,7 @@ export function LocationExplorer() {
                                   <span className="min-w-0 flex-1">{step.text}</span>
                                   {step.distanceMeters > 0 && (
                                     <span className="shrink-0 rounded-full bg-background/80 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
-                                      {formatDistance(step.distanceMeters)}
+                                      {formatMeters(step.distanceMeters)}
                                     </span>
                                   )}
                                 </span>
@@ -4278,6 +4637,7 @@ export function LocationExplorer() {
             position={position}
             language={uiLanguage.language}
             onViewPoi={(poiId) => openDetail(poiId, 'chat')}
+            onDirections={directionsFromChat}
             onFocusLocation={(latitude, longitude) => {
               mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 17, essential: true });
               showMapOnMobile();
@@ -4291,6 +4651,38 @@ export function LocationExplorer() {
           />
         )}
       </section>
+      {arOpen && (
+        <ArExplorer
+          apiBaseUrl={API_BASE_URL}
+          sessionId={telemetryState.sessionId}
+          fallbackPosition={position}
+          onPosition={(point) => void recordExploration(point)}
+          onOpenDetail={(poiId) => {
+            setArOpen(false);
+            void exploration.refresh();
+            flyToOnDetailRef.current = poiId;
+            openDetail(poiId, 'ar');
+          }}
+          onClose={() => {
+            setArOpen(false);
+            // Check-in trong AR cũng mở ô — vẽ lại sương mù cho khớp.
+            void exploration.refresh();
+          }}
+        />
+      )}
+      {voiceSearchOpen && (
+        <VoiceSearch
+          language={uiLanguage.language}
+          onResult={(spoken) => {
+            setQuery(spoken);
+            setSuggestionsOpen(false);
+            void runSearch(spoken, selectedCategory);
+            if (window.innerWidth < 1024) setMobileView('results');
+          }}
+          onOpenFullMode={() => setVoiceOpen(true)}
+          onClose={() => setVoiceSearchOpen(false)}
+        />
+      )}
       {voiceOpen && (
         <VoiceMode
           apiBaseUrl={API_BASE_URL}

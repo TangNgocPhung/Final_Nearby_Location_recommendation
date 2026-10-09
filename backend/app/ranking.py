@@ -602,6 +602,7 @@ def retrieve_candidates(
     category: str | None,
     limit_candidates: int,
     telemetry: dict[str, Any] | None = None,
+    semantic_text: str | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Truy xuất ứng viên đa kênh qua OpenSearch, tự rơi về PostGIS khi cần.
 
@@ -614,7 +615,7 @@ def retrieve_candidates(
     """
     candidates = multi_channel_candidates(
         latitude, longitude, radius, query_text, category, limit_candidates,
-        telemetry=telemetry,
+        telemetry=telemetry, semantic_text=semantic_text,
     )
     if candidates is not None:
         return candidates, "opensearch"
@@ -638,12 +639,16 @@ def rank_pois_detailed(
     graph_boost: set[str] | None = None,
     ranker: str = "linear",
     telemetry: dict[str, Any] | None = None,
+    semantic_text: str | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Như `rank_pois` nhưng trả kèm backend truy xuất đã dùng.
 
     Backend ("opensearch" | "postgis") phải lộ ra ngoài API: hệ thống rơi về
     PostGIS một cách im lặng, nên nếu không hiển thị thì không ai biết số liệu
     đo được là của kiến trúc đa kênh hay của đường dự phòng.
+
+    ``semantic_text``: chuỗi riêng cho kênh vector (mặc định = ``query_text``)
+    — chat gửi BM25 câu đã bỏ từ đệm nhưng embedding câu nguyên văn.
     """
     candidates, backend = retrieve_candidates(
         latitude,
@@ -653,6 +658,7 @@ def rank_pois_detailed(
         category,
         limit_candidates=max(limit * 4, 100),
         telemetry=telemetry,
+        semantic_text=semantic_text,
     )
     candidates = apply_trending_boost(candidates, latitude, longitude)
     candidates = apply_crowd_signal(candidates, latitude, longitude, radius)

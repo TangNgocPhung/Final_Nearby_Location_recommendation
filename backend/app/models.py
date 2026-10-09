@@ -87,6 +87,31 @@ class MeetupRequest(BaseModel):
     need_parking: bool = False
 
 
+class ExplorationPoint(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_meters: float | None = Field(default=None, ge=0, le=100_000)
+
+
+class ExplorationRequest(BaseModel):
+    """Điểm GPS cho bản đồ sương mù — xem `app/exploration.py`. Nhiều điểm một
+    lần để giao diện gửi bù sau khi mất mạng."""
+
+    points: list[ExplorationPoint] = Field(min_length=1, max_length=200)
+    session_id: UUID | None = None
+
+
+class CheckInRequest(BaseModel):
+    """Check-in khi khám phá AR — xem `app/checkins.check_in`. Khoảng cách tính
+    ở server từ toạ độ này; client không gửi khoảng cách."""
+
+    poi_id: UUID
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_meters: float | None = Field(default=None, ge=0, le=100_000)
+    session_id: UUID | None = None
+
+
 class ExploreDiscoverRequest(BaseModel):
     """Một lượt khám phá trong Săn địa danh — xem `app/explore.discover`.
 
@@ -143,6 +168,19 @@ class ChatRequest(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     radius: int = Field(default=3_000, ge=100, le=50_000)
+
+
+class ChatHistoryTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4_000)
+
+
+class ChatHistoryRestore(BaseModel):
+    """Mở lại một cuộc trò chuyện cũ từ lịch sử phía trình duyệt: nạp lại ngữ
+    cảnh để câu hỏi tiếp theo vẫn được hiểu như câu nối tiếp. Chỉ giữ vài lượt
+    cuối (`chat.HISTORY_MAX_TURNS`), giới hạn ở đây chỉ để chặn payload rác."""
+
+    turns: list[ChatHistoryTurn] = Field(max_length=200)
 
 
 class TranslateRequest(BaseModel):

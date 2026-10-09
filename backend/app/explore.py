@@ -287,7 +287,7 @@ def check_photo(image_bytes: bytes, name: str, intro: str | None, category: str 
         "stream": False,
         "think": False,
         "format": "json",
-        "keep_alive": "30m",
+        "keep_alive": settings.ollama_vision_keep_alive,
         "options": {"temperature": 0, "num_ctx": 4096, "num_predict": VISION_MAX_TOKENS},
         "messages": [
             {

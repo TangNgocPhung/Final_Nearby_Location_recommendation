@@ -76,7 +76,7 @@ export function useStreetViews(
 }
 
 /** Toạ độ x (0..1) trên ảnh 360° equirectangular ứng với hướng tới địa điểm. */
-function panoCenterX(image: StreetImage): number {
+export function panoCenterX(image: StreetImage): number {
   if (image.compassAngle == null) return 0.5;
   const x = (image.bearingToPoi - image.compassAngle) / 360 + 0.5;
   return ((x % 1) + 1) % 1;

@@ -21,7 +21,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from . import charging, directions
+from . import charging
 from .config import settings
 from .opening_hours import opening_status
 from .spatio_temporal import DEFAULT_TIMEZONE
@@ -153,22 +153,7 @@ def search_stations(
             rows = cursor.fetchall()
 
     candidates = filter_stations([build_station(row) for row in rows], brand, open_now)
-    routed = candidates[:MAX_ROUTED]
-    table = (
-        directions.duration_table(
-            [(latitude, longitude)], [(item["latitude"], item["longitude"]) for item in routed], vehicle
-        )
-        if routed
-        else None
-    )
-    approximate = charging.attach_drive_times(routed, table, vehicle)
-    routed.sort(key=lambda item: (item["driveMinutes"] is None, item["driveMinutes"] or 0, item["distanceMeters"]))
-    results = routed[:limit]
-    # Chỉ tra tên đường cho trạm SẼ hiển thị (có cache Redis, gọi lại gần như
-    # miễn phí).
-    for station in results:
-        if station["address"] is None:
-            station["streetAddress"] = directions.nearest_streets(station["latitude"], station["longitude"])
+    results, approximate = charging.rank_by_travel_time(latitude, longitude, candidates, vehicle, limit, MAX_ROUTED)
     return {
         "vehicle": vehicle,
         "brand": brand,

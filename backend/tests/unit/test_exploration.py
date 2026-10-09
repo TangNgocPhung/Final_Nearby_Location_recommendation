@@ -1,0 +1,81 @@
+"""Bản đồ sương mù — phần kiểm được mà không cần database.
+
+Ghi/đọc/xoá/gộp khi đăng nhập đã đo trên PostGIS dev khi dựng tính năng. Ở đây
+khoá lại việc đổi điểm GPS thành ô và đường bao trả cho giao diện.
+"""
+
+import h3
+import pytest
+from pydantic import ValidationError
+
+from app import exploration
+from app.models import ExplorationRequest
+from app.poi_features import h3_cells_geometry
+
+BEN_THANH = {"latitude": 10.7721, "longitude": 106.6983}
+
+
+def test_mot_diem_ra_mot_o_r9() -> None:
+    cells = exploration.cells_for_points([BEN_THANH])
+    assert len(cells) == 1
+    assert h3.get_resolution(next(iter(cells))) == exploration.RESOLUTION
+
+
+def test_hai_diem_cung_o_khong_nhan_doi() -> None:
+    nearby = {"latitude": BEN_THANH["latitude"] + 0.00005, "longitude": BEN_THANH["longitude"]}
+    assert len(exploration.cells_for_points([BEN_THANH, nearby])) == 1
+
+
+def test_bo_diem_sai_so_lon() -> None:
+    """±800 m mà vẫn tính thì mở app trong nhà cũng mở luôn ô hàng xóm."""
+    noisy = {**BEN_THANH, "accuracy_meters": 800}
+    assert exploration.cells_for_points([noisy]) == set()
+    ok = {**BEN_THANH, "accuracy_meters": exploration.MAX_ACCURACY_METERS}
+    assert len(exploration.cells_for_points([ok])) == 1
+
+
+def test_bo_diem_thieu_hoac_sai_toa_do() -> None:
+    assert exploration.cells_for_points([{"latitude": 10.7}, {"latitude": 95, "longitude": 106}]) == set()
+
+
+def test_dien_tich_ti_le_so_o() -> None:
+    assert exploration.area_km2(0) == 0
+    assert 0.09 < exploration.area_km2(1) < 0.12
+    assert exploration.area_km2(10) == pytest.approx(10 * h3.average_hexagon_area(9, unit="km^2"), abs=0.01)
+
+
+def test_tong_quan_rong_khong_co_duong_bao() -> None:
+    empty = exploration.empty_overview()
+    assert empty["cellCount"] == 0 and empty["shape"] is None
+
+
+def test_duong_bao_hop_nhat_o_ke_nhau_thanh_mot_vung() -> None:
+    """Bảy ô liền nhau phải ra MỘT vùng — trả từng ô thì giao diện vẽ bảy lục
+    giác chồng viền, sương mù có vệt kẻ giữa các ô."""
+    origin = h3.latlng_to_cell(BEN_THANH["latitude"], BEN_THANH["longitude"], exploration.RESOLUTION)
+    geo = h3_cells_geometry(h3.grid_disk(origin, 1))
+    assert geo is not None
+    polygons = [geo["coordinates"]] if geo["type"] == "Polygon" else geo["coordinates"]
+    assert len(polygons) == 1
+    outer = polygons[0][0]
+    assert outer[0] == outer[-1], "vòng phải đóng"
+    lng, lat = outer[0]
+    assert 106 < lng < 107 and 10 < lat < 11, "toạ độ phải theo thứ tự GeoJSON (lng, lat)"
+
+
+def test_hai_vung_tach_roi_ra_hai_polygon() -> None:
+    far = h3.latlng_to_cell(10.80, 106.72, exploration.RESOLUTION)
+    near = h3.latlng_to_cell(BEN_THANH["latitude"], BEN_THANH["longitude"], exploration.RESOLUTION)
+    geo = h3_cells_geometry([far, near])
+    assert geo is not None and geo["type"] == "MultiPolygon" and len(geo["coordinates"]) == 2
+
+
+def test_tap_rong_tra_none() -> None:
+    assert h3_cells_geometry([]) is None
+
+
+def test_request_gioi_han_so_diem() -> None:
+    with pytest.raises(ValidationError):
+        ExplorationRequest(points=[])
+    with pytest.raises(ValidationError):
+        ExplorationRequest(points=[BEN_THANH] * (exploration.MAX_POINTS_PER_REQUEST + 1))

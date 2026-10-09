@@ -55,7 +55,7 @@ import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatStreetAddress, type StreetAddress } from '@/lib/address';
 import { authHeaders, useAuth } from '@/lib/auth';
-import { cn } from '@/lib/utils';
+import { cn, formatMeters } from '@/lib/utils';
 
 /* ------------------------------------------------------------------ *
  * Kiểu dữ liệu — gõ ĐÚNG hợp đồng API, không thêm không bớt tên trường.
@@ -271,9 +271,7 @@ export type PoiRouteSummary = {
 
 function formatDistance(meters: number | null | undefined): string {
   if (meters == null || !Number.isFinite(meters)) return '—';
-  if (meters < 1000) return `${Math.round(meters)} m`;
-  // Dấu phẩy thập phân kiểu Việt Nam; toFixed luôn cho dấu chấm.
-  return `${(meters / 1000).toFixed(1).replace('.', ',')} km`;
+  return formatMeters(meters);
 }
 
 function formatMinutes(minutes: number | null | undefined): string {
@@ -584,7 +582,7 @@ function InfoRow({
   );
 }
 
-function PhotoCaption({
+export function PhotoCaption({
   photo,
   className,
 }: {
