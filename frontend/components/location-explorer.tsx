@@ -65,6 +65,9 @@ import {
   Merge,
   MessageCircle,
   Mic,
+  ScanEye,
+  CloudFog,
+  Trash2,
   Moon,
   Navigation,
   PanelLeftClose,
@@ -103,11 +106,13 @@ import {
 import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
 import { ChatWidget } from '@/components/chat-widget';
 import { VoiceMode } from '@/components/voice-mode';
+import { ArExplorer } from '@/components/ar-explorer';
 import { ChargingFinder } from '@/components/charging-finder';
 import { FuelFinder } from '@/components/fuel-finder';
 import { ParkingFinder, type ParkingRequest } from '@/components/parking-finder';
 import { useProximityNotifications } from '@/hooks/use-proximity';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
+import { fogGeometry, useExploration } from '@/hooks/use-exploration';
 import {
   PoiDetailPanel,
   type PoiRouteSummary,
@@ -874,6 +879,10 @@ export function LocationExplorer() {
   const [mapPicking, setMapPicking] = useState(false);
   // Chế độ giọng nói cho người khiếm thị (Alt+V, nút "Giọng nói" trên thanh trên).
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [arOpen, setArOpen] = useState(false);
+  // Bản đồ sương mù: bật thì ghi ô H3 đã đi qua (xem hooks/use-exploration.ts).
+  const [fogOn, setFogOn] = useState(false);
+  const [fogGps, setFogGps] = useState<'waiting' | 'ok' | 'denied'>('waiting');
   // Dưới lg bố cục là một ứng dụng ba màn: bản đồ luôn phủ kín vùng giữa, còn
   // "Tìm kiếm" và "Kết quả" là lớp phủ đè lên nó, chuyển bằng thanh tab dưới
   // đáy. Bản đồ KHÔNG bao giờ bị display:none — MapLibre đo khung 0×0 thì
@@ -1107,6 +1116,33 @@ export function LocationExplorer() {
   // thuộc `session_id` ẩn danh. Đăng nhập/đăng xuất đổi `authToken` nên danh
   // sách tự nạp lại theo chủ sở hữu mới — xem `_account_owner_id` ở backend.
   const { token: authToken } = useAuth();
+  const exploration = useExploration({
+    apiBaseUrl: API_BASE_URL,
+    sessionId: telemetryState.sessionId,
+    authToken,
+    active: fogOn,
+  });
+  const recordExploration = exploration.record;
+
+  // Chế độ sương mù có GPS RIÊNG, không dùng "Theo dõi vị trí": cái đó còn gửi
+  // ping telemetry, còn sương mù chỉ ghi ô — bật cái này không được kéo theo
+  // việc gửi thêm dữ liệu vị trí nào khác.
+  useEffect(() => {
+    if (!fogOn || !navigator.geolocation) return;
+    const id = navigator.geolocation.watchPosition(
+      ({ coords }) => {
+        setFogGps('ok');
+        void recordExploration({
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          accuracy: coords.accuracy,
+        });
+      },
+      () => setFogGps('denied'),
+      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 20_000 },
+    );
+    return () => navigator.geolocation.clearWatch(id);
+  }, [fogOn, recordExploration]);
   const reloadSavedPlaces = useCallback(async () => {
     const sessionId = telemetryState.sessionId;
     if (!sessionId) return;
@@ -1392,6 +1428,28 @@ export function LocationExplorer() {
     position.longitude,
     transportMode,
   ]);
+
+  // Vẽ sương mù. Dữ liệu cũng giữ trong ref: lượt nạp đầu có thể về TRƯỚC khi
+  // bản đồ dựng xong lớp, lúc đó initMapLayers lấy từ ref.
+  const fogDataRef = useRef<{ fog: GeoJSON.FeatureCollection; explored: GeoJSON.FeatureCollection }>({
+    fog: { type: 'FeatureCollection', features: [] },
+    explored: { type: 'FeatureCollection', features: [] },
+  });
+  const fogShape = exploration.overview?.shape ?? null;
+  useEffect(() => {
+    const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+    const asCollection = (geometry: GeoJSON.Geometry): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: [{ type: 'Feature', properties: {}, geometry }],
+    });
+    fogDataRef.current = fogOn
+      ? { fog: asCollection(fogGeometry(fogShape)), explored: fogShape ? asCollection(fogShape) : empty }
+      : { fog: empty, explored: empty };
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    (map.getSource('fog') as GeoJSONSource | undefined)?.setData(fogDataRef.current.fog);
+    (map.getSource('explored') as GeoJSONSource | undefined)?.setData(fogDataRef.current.explored);
+  }, [fogOn, fogShape]);
 
   // Vẽ vành hexagon H3 của lần tìm kiếm gần nhất.
   useEffect(() => {
@@ -1941,6 +1999,23 @@ export function LocationExplorer() {
         cluster: true,
         clusterRadius: 50,
         clusterMaxZoom: 14,
+      });
+
+      // Sương mù — thêm trước mọi lớp khác nên nằm ngay trên nền bản đồ, dưới
+      // vành H3, tuyến đường và POI: sương che phố, không che thứ người dùng bấm.
+      map.addSource('fog', { type: 'geojson', data: fogDataRef.current.fog });
+      map.addSource('explored', { type: 'geojson', data: fogDataRef.current.explored });
+      map.addLayer({
+        id: 'fog-fill',
+        type: 'fill',
+        source: 'fog',
+        paint: { 'fill-color': '#0b1220', 'fill-opacity': 0.62 },
+      });
+      map.addLayer({
+        id: 'explored-edge',
+        type: 'line',
+        source: 'explored',
+        paint: { 'line-color': '#34d399', 'line-width': 2.5, 'line-blur': 1.5, 'line-opacity': 0.9 },
       });
 
       // Vành hexagon H3 — vùng mà kênh 2 thật sự đã quét. Thêm ĐẦU TIÊN nên
@@ -3892,6 +3967,75 @@ export function LocationExplorer() {
               <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-sky-500/60 ring-2 ring-sky-500/15" /> Vành H3</span>
             </div>
           </div>
+          {/* Khám phá: AR và sương mù — điện thoại xếp dọc dưới thanh tìm kiếm
+              nổi, desktop xếp ngang ở góc trên phải. */}
+          <div className="absolute right-3 top-[4.25rem] z-10 flex flex-col items-end gap-2 lg:right-4 lg:top-4 lg:flex-row">
+            <button
+              type="button"
+              onClick={() => setFogOn((on) => !on)}
+              aria-pressed={fogOn}
+              aria-label={fogOn ? 'Tắt bản đồ sương mù' : 'Bật bản đồ sương mù — đi tới đâu sáng tới đó'}
+              title="Bản đồ sương mù"
+              className={cn(
+                'flex h-10 items-center gap-1.5 rounded-full border px-3.5 text-sm font-semibold shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md transition-colors',
+                fogOn
+                  ? 'border-slate-900/20 bg-slate-900/90 text-emerald-300 hover:bg-slate-900'
+                  : 'border-white/70 bg-white/95 text-primary hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card',
+              )}
+            >
+              <CloudFog className="size-5" aria-hidden />
+              Sương mù
+            </button>
+            <button
+              type="button"
+              onClick={() => setArOpen(true)}
+              aria-label="Khám phá bằng camera (AR)"
+              title="Khám phá bằng camera (AR)"
+              className="flex h-10 items-center gap-1.5 rounded-full border border-white/70 bg-white/95 px-3.5 text-sm font-semibold text-primary shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md transition-colors hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card"
+            >
+              <ScanEye className="size-5" aria-hidden />
+              AR
+            </button>
+          </div>
+          {fogOn && (
+            <div className="absolute left-3 top-[4.25rem] z-10 flex max-w-[calc(100%-9.5rem)] items-center gap-2 rounded-2xl border border-slate-900/20 bg-slate-900/90 px-3 py-2 text-white shadow-lg backdrop-blur-md lg:left-4 lg:top-16 lg:max-w-xs">
+              <CloudFog className="size-5 shrink-0 text-emerald-300" aria-hidden />
+              <div className="min-w-0 text-xs leading-tight">
+                {fogGps === 'denied' ? (
+                  <p className="font-semibold">Bật định vị để xua sương mù</p>
+                ) : (
+                  <>
+                    <p className="font-semibold">
+                      Đã khám phá{' '}
+                      <span className="whitespace-nowrap">
+                        {(exploration.overview?.areaKm2 ?? 0).toLocaleString('vi-VN')} km²
+                      </span>
+                    </p>
+                    <p className="text-white/70">
+                      {exploration.overview?.cellCount ?? 0} ô
+                      {exploration.overview?.todayCount ? ` · +${exploration.overview.todayCount} hôm nay` : ''}
+                      {fogGps === 'waiting' ? ' · đang lấy GPS…' : ''}
+                    </p>
+                  </>
+                )}
+              </div>
+              {(exploration.overview?.cellCount ?? 0) > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Xoá toàn bộ vùng đã khám phá? Không hoàn tác được.')) {
+                      void exploration.clear();
+                    }
+                  }}
+                  className="grid size-7 shrink-0 place-items-center rounded-full text-white/60 hover:bg-white/10 hover:text-white"
+                  aria-label="Xoá dữ liệu vùng đã khám phá"
+                  title="Xoá dữ liệu vùng đã khám phá"
+                >
+                  <Trash2 className="size-4" aria-hidden />
+                </button>
+              )}
+            </div>
+          )}
           {/* Chỉ desktop: điện thoại đã chuyển màn bằng thanh tab dưới đáy. */}
           <button
             type="button"
@@ -4422,6 +4566,25 @@ export function LocationExplorer() {
           />
         )}
       </section>
+      {arOpen && (
+        <ArExplorer
+          apiBaseUrl={API_BASE_URL}
+          sessionId={telemetryState.sessionId}
+          fallbackPosition={position}
+          onPosition={(point) => void recordExploration(point)}
+          onOpenDetail={(poiId) => {
+            setArOpen(false);
+            void exploration.refresh();
+            flyToOnDetailRef.current = poiId;
+            openDetail(poiId, 'ar');
+          }}
+          onClose={() => {
+            setArOpen(false);
+            // Check-in trong AR cũng mở ô — vẽ lại sương mù cho khớp.
+            void exploration.refresh();
+          }}
+        />
+      )}
       {voiceOpen && (
         <VoiceMode
           apiBaseUrl={API_BASE_URL}

@@ -475,8 +475,18 @@ def h3_ring_geometry(ring: "H3Ring") -> dict[str, Any] | None:
     đúng quy ước GeoJSON. Không dùng ``cell_to_boundary``: nó trả (lat, lng) và
     vòng hở, vẽ lên bản đồ sẽ ra hình méo mà không báo lỗi gì.
     """
+    return h3_cells_geometry(ring.cells)
+
+
+def h3_cells_geometry(cells: Iterable[str]) -> dict[str, Any] | None:
+    """Đường bao hợp nhất của một tập ô H3 bất kỳ (GeoJSON Polygon/MultiPolygon,
+    toạ độ làm tròn 5 chữ số). Dùng chung cho vành tìm kiếm và bản đồ sương mù
+    (`app/exploration.py`). ``None`` khi tập rỗng hoặc H3 từ chối."""
+    cells = list(cells)
+    if not cells:
+        return None
     try:
-        shape = h3.cells_to_h3shape(list(ring.cells), tight=True)
+        shape = h3.cells_to_h3shape(cells, tight=True)
         geo = h3.h3shape_to_geo(shape)
     except (ValueError, TypeError, AttributeError):
         return None

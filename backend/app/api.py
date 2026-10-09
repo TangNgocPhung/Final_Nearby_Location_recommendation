@@ -20,8 +20,10 @@ from . import (
     auth,
     charging,
     chat,
+    checkins,
     directions,
     embeddings,
+    exploration,
     explore,
     fuel,
     geofence,
@@ -49,7 +51,9 @@ from .models import (
     AdminUserUpdate,
     ChangePasswordRequest,
     ChatRequest,
+    CheckInRequest,
     EventBatch,
+    ExplorationRequest,
     ExploreDiscoverRequest,
     GeofenceRequest,
     GeoParseRequest,
@@ -1313,6 +1317,80 @@ def delete_saved_place(place_id: str, request: Request) -> Any:
     return {"deleted": place_id}
 
 
+@app.post("/api/v1/checkins")
+def create_checkin(payload: CheckInRequest, request: Request) -> Any:
+    """Check-in tại một POI khi đứng đủ gần (khám phá AR). Đi theo tài khoản như
+    địa điểm đã lưu — huy hiệu là thành quả người dùng muốn giữ khi đổi máy.
+
+    Luôn 200 với ``status`` cho các kết cục của trò chơi (``too_far``,
+    ``not_allowed``, ``already``) — đó là phản hồi cho người chơi, không phải
+    lỗi HTTP; giống `/api/v1/explore/{poi_id}/discover`.
+    """
+    owner_id = _account_owner_id(request, payload.session_id)
+    if not owner_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Cần X-Session-ID hoặc session_id trong body"},
+        )
+    result = checkins.check_in(
+        owner_id,
+        str(payload.poi_id),
+        payload.latitude,
+        payload.longitude,
+        payload.accuracy_meters,
+    )
+    if result["status"] == "not_found":
+        return JSONResponse(status_code=404, content={"detail": "Không có POI này"})
+    if result["status"] in ("checked_in", "already"):
+        # Đứng tại địa điểm thì ô đó cũng đã "sáng" trên bản đồ sương mù.
+        exploration.record(
+            owner_id,
+            [{"latitude": payload.latitude, "longitude": payload.longitude, "accuracy_meters": payload.accuracy_meters}],
+        )
+    return result
+
+
+@app.get("/api/v1/checkins")
+def list_checkins(request: Request) -> dict[str, Any]:
+    """Không có phiên thì trả rỗng (kèm huy hiệu chưa đạt), không phải lỗi:
+    màn AR gọi endpoint này ngay khi mở."""
+    owner_id = _account_owner_id(request)
+    if not owner_id:
+        return {**checkins.badge_summary_empty(), "reason": "no-session"}
+    return checkins.summary(owner_id)
+
+
+@app.post("/api/v1/exploration")
+def record_exploration(payload: ExplorationRequest, request: Request) -> Any:
+    """Ghi ô H3 vừa đi qua cho bản đồ sương mù; trả đường bao mới kèm ``added``.
+    Chỉ giữ ô, không giữ toạ độ hay giờ — xem migration 0033."""
+    owner_id = _account_owner_id(request, payload.session_id)
+    if not owner_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Cần X-Session-ID hoặc session_id trong body"},
+        )
+    return exploration.record(owner_id, [point.model_dump() for point in payload.points])
+
+
+@app.get("/api/v1/exploration")
+def get_exploration(request: Request) -> dict[str, Any]:
+    owner_id = _account_owner_id(request)
+    if not owner_id:
+        return {**exploration.empty_overview(), "reason": "no-session"}
+    return exploration.overview(owner_id)
+
+
+@app.delete("/api/v1/exploration")
+def clear_exploration(request: Request) -> Any:
+    """Người dùng tự xoá toàn bộ vùng đã khám phá — dữ liệu vị trí của họ, họ
+    phải xoá được bằng một nút."""
+    owner_id = _account_owner_id(request)
+    if not owner_id:
+        return JSONResponse(status_code=400, content={"detail": "Cần X-Session-ID"})
+    return {"deleted": exploration.clear(owner_id)}
+
+
 @app.get("/api/v1/notifications/stream")
 def notification_stream(request: Request) -> Response:
     """Server-Sent Events: đẩy thông báo tới gần xuống trình duyệt.
@@ -1372,6 +1450,8 @@ def _adopt_session_data(request: Request, user: AuthUser, payload_session: Any) 
     try:
         saved_places.transfer_owner(session_id, user.owner_id)
         reviews.transfer_owner(session_id, user.owner_id)
+        checkins.transfer_owner(session_id, user.owner_id)
+        exploration.transfer_owner(session_id, user.owner_id)
     except psycopg.Error as error:
         logger.warning("Không chuyển được dữ liệu phiên sang tài khoản: %s", error)
 
