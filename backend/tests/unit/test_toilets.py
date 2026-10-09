@@ -11,8 +11,21 @@ def _item(kind: str, fee: bool | None = None, wheelchair: str | None = None, ope
 def test_nguon_theo_loai_dia_diem() -> None:
     assert toilets.kind_of("toilets") == "public"
     assert toilets.kind_of("fuel") == "fuel"
-    assert toilets.kind_of("shopping_mall") == "mall"
-    assert toilets.kind_of("cafe") == "venue"
+    assert toilets.kind_of("shopping_mall", "Saigon Centre", {"shop": "mall"}) == "mall"
+    assert toilets.kind_of("cafe", "Highlands", {"toilets": "yes"}) == "venue"
+    # Không ghi toilets=yes thì không nhận là nơi có WC.
+    assert toilets.kind_of("cafe", "Highlands", {}) is None
+
+
+def test_department_store_chi_nhan_bach_hoa_lon_that() -> None:
+    """`shop=department_store` ở VN phần lớn là tạp hoá — không phải TTTM có WC."""
+    dep = {"shop": "department_store"}
+    assert toilets.kind_of("shopping_mall", "Lotte Department Store", dep) == "mall"
+    assert toilets.kind_of("shopping_mall", "Trung tâm Thương mại Thủ Đức", dep) == "mall"
+    assert toilets.kind_of("shopping_mall", "Tiffany & Co. Vietnam", dep) is None
+    assert toilets.kind_of("shopping_mall", "Tạp hóa cô Mai", dep) is None
+    # Tạp hoá mà ghi rõ có WC thì vẫn nhận, nhưng là "có WC cho khách".
+    assert toilets.kind_of("shopping_mall", "Tạp hóa cô Mai", {**dep, "toilets": "yes"}) == "venue"
 
 
 def test_phi_tu_the_fee_hoac_charge() -> None:

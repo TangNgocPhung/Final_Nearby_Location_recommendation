@@ -11,7 +11,10 @@ không phải WC công cộng, và LUÔN nói rõ nguồn của từng kết qu�
   loại khi nhập, xem `poi_features.normalize_osm_element`).
 - ``fuel``: cây xăng — đa số có WC cho khách, nhưng OSM hầu như không ghi, nên
   giao diện phải ghi "thường có", không khẳng định.
-- ``mall``: trung tâm thương mại.
+- ``mall``: trung tâm thương mại — CHỈ ``shop=mall`` hoặc bách hoá lớn có tên
+  thật (xem ``is_real_mall``). ``shop=department_store`` ở VN bị dùng tràn lan
+  cho tạp hoá ("bách hoá" dịch thẳng): 520 điểm, gần hết là "Tạp hóa cô Mai",
+  cả cửa hàng Tiffany (đo 2026-10-10) — coi hết là TTTM có WC là sai.
 - ``venue``: địa điểm khác có thẻ ``toilets=yes`` (quán cà phê, siêu thị...) —
   thường chỉ dành cho khách.
 
@@ -27,6 +30,7 @@ from psycopg.rows import dict_row
 
 from . import charging
 from .config import settings
+from .fuel import _fold
 from .opening_hours import opening_status
 from .spatio_temporal import DEFAULT_TIMEZONE
 
@@ -43,14 +47,39 @@ KIND_LABELS = {
 }
 
 
-def kind_of(category: str) -> str:
+# Bách hoá lớn thật gắn `shop=department_store` (đã bỏ dấu, viết liền).
+_DEPARTMENT_STORE_MARKERS = (
+    "lottedepartmentstore",
+    "parkson",
+    "takashimaya",
+    "unionsquare",
+    "trungtamthuongmai",
+    "tttm",
+    "vincom",
+)
+
+
+def is_real_mall(name: str | None, tags: dict[str, Any]) -> bool:
+    if tags.get("shop") == "mall":
+        return True
+    folded = _fold(name or "")
+    return any(marker in folded for marker in _DEPARTMENT_STORE_MARKERS)
+
+
+def kind_of(category: str, name: str | None = None, tags: dict[str, Any] | None = None) -> str | None:
+    """Nguồn WC của một địa điểm; ``None`` khi không nhận nó là nơi có WC
+    (``shop=department_store`` mà thật ra là tạp hoá, và không ghi
+    ``toilets=yes``)."""
+    tags = tags or {}
     if category == "toilets":
         return "public"
     if category == "fuel":
         return "fuel"
-    if category == "shopping_mall":
+    if category == "shopping_mall" and is_real_mall(name, tags):
         return "mall"
-    return "venue"
+    if tags.get("toilets") == "yes":
+        return "venue"
+    return None
 
 
 def fee_of(tags: dict[str, Any]) -> bool | None:
@@ -89,6 +118,7 @@ def filter_toilets(
 
 _SEARCH_QUERY = """
 SELECT p.id::text AS id, p.name, p.address, p.district, p.category, p.opening_hours, p.timezone,
+       p.amenities->>'toilets' AS "toiletsTag",
        ST_Y(p.location::geometry) AS latitude, ST_X(p.location::geometry) AS longitude,
        ST_Distance(p.location, ST_SetSRID(ST_Point(%(lng)s, %(lat)s), 4326)::geography) AS "distanceMeters",
        COALESCE(
@@ -101,13 +131,16 @@ WHERE (p.category IN ('toilets', 'fuel', 'shopping_mall') OR p.amenities->>'toil
   AND COALESCE(p.amenities->>'toilets', '') <> 'no'
   AND ST_DWithin(p.location, ST_SetSRID(ST_Point(%(lng)s, %(lat)s), 4326)::geography, %(radius)s)
 ORDER BY "distanceMeters"
-LIMIT 300
+LIMIT 400
 """
 
 
-def build_toilet(row: dict[str, Any]) -> dict[str, Any]:
+def build_toilet(row: dict[str, Any]) -> dict[str, Any] | None:
     tags = row["tags"] or {}
-    kind = kind_of(row["category"])
+    # POI không từ OSM không có thẻ gốc; `amenities.toilets` có ở mọi nguồn.
+    kind = kind_of(row["category"], row["name"], {**tags, "toilets": row.get("toiletsTag") or tags.get("toilets")})
+    if kind is None:
+        return None
     status = opening_status(row["opening_hours"], row["timezone"] or DEFAULT_TIMEZONE)
     # Thẻ chi tiết của WC: với WC công cộng là thẻ gốc, với nơi khác là thẻ
     # `toilets:*` (vd `toilets:wheelchair=yes` ở một quán cà phê).
@@ -159,7 +192,8 @@ def search_toilets(
             cursor.execute(_SEARCH_QUERY, {"lat": latitude, "lng": longitude, "radius": radius})
             rows = cursor.fetchall()
 
-    candidates = filter_toilets([build_toilet(row) for row in rows], source, free_only, wheelchair, open_now)
+    built = [item for item in (build_toilet(row) for row in rows) if item is not None]
+    candidates = filter_toilets(built, source, free_only, wheelchair, open_now)
     results, approximate = charging.rank_by_travel_time(latitude, longitude, candidates, mode, limit, MAX_ROUTED)
     return {
         "mode": mode,

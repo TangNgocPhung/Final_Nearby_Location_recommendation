@@ -46,6 +46,9 @@ CHAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("shop_go", "Shop&Go", ("shopgo",)),
     ("satrafoods", "Satrafoods", ("satrafood",)),
 )
+# Chuỗi đồ gia dụng / lifestyle mà OSM gắn `shop=variety_store` (→ danh mục
+# convenience): không bán đồ ăn uống, người tìm "cửa hàng tiện lợi" không cần.
+NOT_CONVENIENCE = ("miniso", "daiso", "muji")
 # "chain" = mọi chuỗi ở trên; "other" = tạp hoá / cửa hàng nhỏ không thuộc chuỗi.
 BRAND_FILTERS = ("any", "chain", *(code for code, _, _ in CHAINS), "other")
 
@@ -58,6 +61,11 @@ def chain_of(name: str | None, tags: dict[str, Any]) -> tuple[str, str | None]:
         if any(marker in text for marker in markers):
             return code, label
     return "other", None
+
+
+def is_convenience(name: str | None, tags: dict[str, Any]) -> bool:
+    text = _fold(" ".join(str(tags.get(key) or "") for key in ("brand", "operator")) + " " + (name or ""))
+    return not any(marker in text for marker in NOT_CONVENIENCE)
 
 
 def filter_stores(stores: list[dict[str, Any]], brand: str = "any", open_now: bool = False) -> list[dict[str, Any]]:
@@ -135,7 +143,8 @@ def search_stores(
             cursor.execute(_SEARCH_QUERY, {"lat": latitude, "lng": longitude, "radius": radius})
             rows = cursor.fetchall()
 
-    candidates = filter_stores([build_store(row) for row in rows], brand, open_now)
+    stores = [build_store(row) for row in rows if is_convenience(row["name"], row["tags"] or {})]
+    candidates = filter_stores(stores, brand, open_now)
     results, approximate = charging.rank_by_travel_time(latitude, longitude, candidates, mode, limit, MAX_ROUTED)
     return {
         "mode": mode,

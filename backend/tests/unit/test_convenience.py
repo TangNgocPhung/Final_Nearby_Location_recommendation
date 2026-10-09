@@ -29,3 +29,10 @@ def test_loc_chuoi_va_dang_mo() -> None:
     assert convenience.filter_stores(stores, brand="other") == [stores[2]]
     # "Đang mở" chỉ loại cửa hàng chắc chắn đóng — chưa rõ giờ vẫn giữ.
     assert convenience.filter_stores(stores, open_now=True) == [stores[0], stores[2]]
+
+
+def test_bo_chuoi_do_gia_dung_bi_gan_variety_store() -> None:
+    assert convenience.is_convenience("Miniso", {"shop": "variety_store", "brand": "Miniso"}) is False
+    assert convenience.is_convenience("Cửa hàng", {"brand": "Daiso"}) is False
+    assert convenience.is_convenience("Tạp hóa cô Mai", {"shop": "variety_store"}) is True
+    assert convenience.is_convenience("Circle K", {}) is True
