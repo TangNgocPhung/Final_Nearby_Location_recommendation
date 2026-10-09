@@ -30,7 +30,7 @@ OSM_FILTERS = {
         "school|university|college|kindergarten|library|"
         "bank|atm|post_office|police|townhall|marketplace|"
         "cinema|theatre|events_venue|"
-        "fuel|charging_station|car_wash|parking|motorcycle_parking|bus_station|"
+        "fuel|charging_station|car_wash|parking|motorcycle_parking|bus_station|toilets|"
         "place_of_worship"
     ),
     "tourism": (
@@ -55,6 +55,8 @@ OSM_FILTERS = {
     "railway": "station",
     "office": "government",
 }
+# Loại lấy cả khi KHÔNG có tên (tên tự sinh ở `poi_features._UNNAMED_FALLBACK_NAMES`).
+UNNAMED_AMENITIES = "parking|motorcycle_parking|charging_station|toilets"
 
 
 def parse_bbox(value: str) -> tuple[float, float, float, float]:
@@ -73,20 +75,30 @@ def build_overpass_query(bbox: tuple[float, float, float, float]) -> str:
         f'  nwr["name"]["{key}"~"^({values})$"]({bounds});'
         for key, values in OSM_FILTERS.items()
     )
-    # Bãi xe/trạm sạc lấy cả khi KHÔNG có tên — xem `_UNNAMED_FALLBACK_NAMES`
-    # trong poi_features.py.
+    # Bãi xe/trạm sạc/nhà vệ sinh lấy cả khi KHÔNG có tên — xem
+    # `_UNNAMED_FALLBACK_NAMES` trong poi_features.py.
     selectors += (
-        f'\n  nwr["amenity"~"^(parking|motorcycle_parking|charging_station)$"]({bounds});'
+        f'\n  nwr["amenity"~"^({UNNAMED_AMENITIES})$"]({bounds});'
     )
     return f"[out:json][timeout:180];\n(\n{selectors}\n);\nout center tags;"
+
+
+def build_amenity_query(bbox: tuple[float, float, float, float], amenity: str) -> str:
+    """Chỉ một loại ``amenity`` (có tên hay không) — để nhập bổ sung một loại
+    mới mà không phải tải lại cả TP.HCM. Bảng ``pois`` đã sát trần
+    ``OSM_MAX_POIS`` (24.900 điểm, đo 2026-10-10), chạy lại cả lượt thì phần
+    vượt trần bị cắt đi."""
+    bounds = ",".join(str(value) for value in bbox)
+    return f'[out:json][timeout:180];\n(\n  nwr["amenity"="{amenity}"]({bounds});\n);\nout center tags;'
 
 
 def fetch_overpass_elements(
     url: str,
     bbox: tuple[float, float, float, float],
     timeout_seconds: int = 210,
+    query: str | None = None,
 ) -> list[dict[str, Any]]:
-    body = urllib.parse.urlencode({"data": build_overpass_query(bbox)}).encode("utf-8")
+    body = urllib.parse.urlencode({"data": query or build_overpass_query(bbox)}).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=body,

@@ -80,6 +80,7 @@ CATEGORY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     # toàn, dù "cây xăng" và "sửa xe" là hai thứ người đi đường tìm nhiều nhất.
     ("amenity", "fuel"): ("fuel", "Cây xăng"),
     ("amenity", "charging_station"): ("charging_station", "Trạm sạc"),
+    ("amenity", "toilets"): ("toilets", "Nhà vệ sinh"),
     ("amenity", "car_wash"): ("car_wash", "Rửa xe"),
     ("shop", "car_repair"): ("car_repair", "Sửa xe"),
     ("shop", "motorcycle"): ("car_repair", "Sửa xe"),
@@ -257,6 +258,7 @@ CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "parking": ("bãi xe", "bãi đỗ xe", "bãi giữ xe", "chỗ đậu xe", "gửi xe", "parking"),
     # Xăng dầu và dịch vụ xe
     "fuel": ("cây xăng", "trạm xăng", "đổ xăng", "xăng dầu", "bơm xăng"),
+    "toilets": ("nhà vệ sinh", "nhà vệ sinh công cộng", "wc", "toilet", "đi vệ sinh"),
     "charging_station": ("trạm sạc", "sạc xe điện", "trụ sạc", "sạc pin xe"),
     "car_repair": (
         "sửa xe",
@@ -596,6 +598,8 @@ _UNNAMED_FALLBACK_NAMES: dict[tuple[str, str], str] = {
     ("amenity", "motorcycle_parking"): "Bãi giữ xe máy",
     ("amenity", "parking"): "Bãi đỗ xe",
     ("amenity", "charging_station"): "Trạm sạc xe điện",
+    # 147/157 nhà vệ sinh công cộng trên OSM không có tên (đo 2026-10-10).
+    ("amenity", "toilets"): "Nhà vệ sinh công cộng",
 }
 # Bãi riêng (của cơ quan, chung cư...) không phục vụ người ngoài — hiện ra chỉ
 # làm người dùng chạy tới rồi bị từ chối.
@@ -647,7 +651,7 @@ def normalize_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
     center = element.get("center") or element
     if not name or not category_value or "lat" not in center or "lon" not in center:
         return None
-    if category_value[0] in ("parking", "charging_station") and tags.get("access") in _PRIVATE_ACCESS:
+    if category_value[0] in ("parking", "charging_station", "toilets") and tags.get("access") in _PRIVATE_ACCESS:
         return None
     category, category_label = category_value
     latitude, longitude = float(center["lat"]), float(center["lon"])

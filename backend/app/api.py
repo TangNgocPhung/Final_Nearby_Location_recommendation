@@ -21,6 +21,7 @@ from . import (
     charging,
     chat,
     checkins,
+    convenience,
     directions,
     embeddings,
     exploration,
@@ -37,6 +38,7 @@ from . import (
     saved_places,
     storefront,
     streetview,
+    toilets,
     translate,
     tts,
     voice,
@@ -962,6 +964,58 @@ def fuel_search(
         longitude=lng,
         vehicle=vehicle,
         brand=brand,
+        open_now=open_now,
+        radius=radius,
+        limit=limit,
+    )
+
+
+@app.get("/api/v1/convenience/search")
+def convenience_search(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    mode: str = Query(default="foot", pattern="^(foot|motorbike)$"),
+    brand: str = Query(default="any", pattern="^(any|chain|circle_k|familymart|gs25|seven_eleven|ministop|winmart|bach_hoa_xanh|coop_food|bsmart|shop_go|satrafoods|other)$"),
+    open_now: bool = Query(default=False),
+    radius: int = Query(default=convenience.DEFAULT_RADIUS_METERS, ge=300, le=15_000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Cửa hàng tiện lợi theo chuỗi (Circle K, FamilyMart, GS25, 7-Eleven…),
+    đang mở cửa — xếp theo THỜI GIAN ĐI THẬT (đi bộ hoặc xe máy, OSRM). Xem
+    `app/convenience.py`."""
+    return convenience.search_stores(
+        latitude=lat,
+        longitude=lng,
+        mode=mode,
+        brand=brand,
+        open_now=open_now,
+        radius=radius,
+        limit=limit,
+    )
+
+
+@app.get("/api/v1/toilets/search")
+def toilets_search(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    mode: str = Query(default="foot", pattern="^(foot|motorbike)$"),
+    source: str = Query(default="all", pattern="^(all|public)$"),
+    free_only: bool = Query(default=False),
+    wheelchair: bool = Query(default=False),
+    open_now: bool = Query(default=False),
+    radius: int = Query(default=toilets.DEFAULT_RADIUS_METERS, ge=300, le=15_000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Nhà vệ sinh: WC công cộng, cộng cây xăng / trung tâm thương mại / quán
+    có WC cho khách (ghi rõ nguồn) — xếp theo THỜI GIAN ĐI THẬT. Xem
+    `app/toilets.py`."""
+    return toilets.search_toilets(
+        latitude=lat,
+        longitude=lng,
+        mode=mode,
+        source=source,
+        free_only=free_only,
+        wheelchair=wheelchair,
         open_now=open_now,
         radius=radius,
         limit=limit,

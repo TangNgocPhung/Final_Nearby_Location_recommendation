@@ -48,6 +48,7 @@ import {
   SprayCan,
   Store,
   Stethoscope,
+  Toilet,
   ToyBrick,
   TrainFront,
   Trees,
@@ -195,6 +196,10 @@ const COVER_STYLES: Record<string, CoverStyle> = {
   atm: {
     icon: CreditCard,
     surface: 'bg-teal-700 bg-linear-to-br from-teal-500 via-emerald-700 to-slate-900',
+  },
+  toilets: {
+    icon: Toilet,
+    surface: 'bg-teal-600 bg-linear-to-br from-teal-400 via-cyan-600 to-sky-800',
   },
   fuel: {
     icon: Fuel,

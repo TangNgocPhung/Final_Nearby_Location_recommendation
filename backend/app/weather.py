@@ -133,6 +133,7 @@ NECESSITY_CATEGORIES = frozenset(
         "dentist",
         "pet",
         "fuel",
+        "toilets",
         "charging_station",
         "car_repair",
         "parking",

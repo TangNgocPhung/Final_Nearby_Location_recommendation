@@ -92,6 +92,7 @@ import {
   Stethoscope,
   Store,
   Sun,
+  Toilet,
   TrainFront,
   Trees,
   Undo2,
@@ -109,7 +110,9 @@ import { VoiceMode } from '@/components/voice-mode';
 import { VoiceSearch } from '@/components/voice-search';
 import { ArExplorer } from '@/components/ar-explorer';
 import { ChargingFinder } from '@/components/charging-finder';
+import { ConvenienceFinder } from '@/components/convenience-finder';
 import { FuelFinder } from '@/components/fuel-finder';
+import { ToiletFinder } from '@/components/toilet-finder';
 import { ParkingFinder, type ParkingRequest } from '@/components/parking-finder';
 import { useProximityNotifications } from '@/hooks/use-proximity';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
@@ -709,6 +712,7 @@ const CATEGORY_CHIP_ICONS: Record<string, LucideIcon> = {
   'Tiệc cưới & sự kiện': Cake,
   'Cắt tóc': Scissors,
   'Cây xăng': Fuel,
+  'Nhà vệ sinh': Toilet,
   'Trạm sạc': BatteryCharging,
   'Sửa xe': Wrench,
   'Rửa xe': SprayCan,
@@ -747,7 +751,7 @@ const CATEGORY_COLOR_GROUPS: [string, string[]][] = [
   ['#65a30d', ['Công viên', 'Khu vui chơi']],
   ['#b91c1c', ['Y tế', 'Nha khoa']],
   ['#2563eb', ['Giáo dục', 'Mầm non']],
-  ['#0891b2', ['Dịch vụ', 'Bưu điện', 'Giặt ủi', 'Thú cưng']],
+  ['#0891b2', ['Dịch vụ', 'Bưu điện', 'Giặt ủi', 'Thú cưng', 'Nhà vệ sinh']],
   ['#c026d3', ['Spa', 'Làm đẹp', 'Cắt tóc']],
   ['#4f46e5', ['Lưu trú']],
   ['#9333ea', ['Giải trí', 'Xem phim', 'Tiệc cưới & sự kiện']],
@@ -868,6 +872,8 @@ export function LocationExplorer() {
   const [parkingOpen, setParkingOpen] = useState(false);
   const [chargingOpen, setChargingOpen] = useState(false);
   const [fuelOpen, setFuelOpen] = useState(false);
+  const [convenienceOpen, setConvenienceOpen] = useState(false);
+  const [toiletOpen, setToiletOpen] = useState(false);
   // Lớp vẽ tạm của trợ lý (tuyến tour, người trong nhóm hẹn, quán gợi ý) — xem
   // components/chat-widget.tsx. Tách khỏi 'route' để chỉ đường và tour không
   // xoá lẫn nhau.
@@ -3595,8 +3601,26 @@ export function LocationExplorer() {
               onOpenDetail={openParkingDetail}
               onClose={() => setFuelOpen(false)}
             />
+          ) : convenienceOpen ? (
+            <ConvenienceFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              onOpenDetail={openParkingDetail}
+              onClose={() => setConvenienceOpen(false)}
+            />
+          ) : toiletOpen ? (
+            <ToiletFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              onOpenDetail={openParkingDetail}
+              onClose={() => setToiletOpen(false)}
+            />
           ) : (
-            <div className="grid shrink-0 grid-cols-3 gap-2">
+            // 6 cột: hàng đầu 3 nút (mỗi nút 2 cột), hàng sau 2 nút (mỗi nút 3
+            // cột) — 5 nút mà chia lưới 3 thì hàng sau hụt một ô trông lệch.
+            <div className="grid shrink-0 grid-cols-6 gap-2">
               {(
                 [
                   {
@@ -3617,14 +3641,29 @@ export function LocationExplorer() {
                     tone: 'bg-amber-50 text-amber-600 ring-amber-600/10 dark:bg-amber-500/15 dark:text-amber-300',
                     open: () => setFuelOpen(true),
                   },
+                  {
+                    label: 'Cửa hàng tiện lợi',
+                    Icon: Store,
+                    tone: 'bg-blue-50 text-blue-600 ring-blue-600/10 dark:bg-blue-500/15 dark:text-blue-300',
+                    open: () => setConvenienceOpen(true),
+                  },
+                  {
+                    label: 'Nhà vệ sinh',
+                    Icon: Toilet,
+                    tone: 'bg-teal-50 text-teal-600 ring-teal-600/10 dark:bg-teal-500/15 dark:text-teal-300',
+                    open: () => setToiletOpen(true),
+                  },
                 ] as const
-              ).map(({ label, Icon, tone, open }) => (
+              ).map(({ label, Icon, tone, open }, index) => (
                 <Button
                   key={label}
                   type="button"
                   variant="outline"
                   onClick={open}
-                  className="glass-card group h-auto min-h-11 min-w-0 flex-col gap-2 rounded-2xl px-2 py-3 text-center text-[13px] leading-tight font-semibold whitespace-normal transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-white hover:shadow-[0_14px_32px_-10px_rgb(14_68_48/22%)] dark:hover:bg-card"
+                  className={cn(
+                    index < 3 ? 'col-span-2' : 'col-span-3',
+                    'glass-card group h-auto min-h-11 min-w-0 flex-col gap-2 rounded-2xl px-2 py-3 text-center text-[13px] leading-tight font-semibold whitespace-normal transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-white hover:shadow-[0_14px_32px_-10px_rgb(14_68_48/22%)] dark:hover:bg-card',
+                  )}
                 >
                   <span
                     className={cn(
