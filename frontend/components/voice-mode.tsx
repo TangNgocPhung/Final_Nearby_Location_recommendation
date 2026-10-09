@@ -873,7 +873,8 @@ export function VoiceMode({
         <div role="log" aria-live="polite" aria-label="Nhật ký hội thoại" className="mx-auto mt-2 max-h-16 max-w-3xl overflow-y-auto break-words text-sm text-white/70 sm:max-h-28">
           {lines.map((line, index) => (
             <p key={index}>
-              <span className="font-semibold">{line.who === 'user' ? 'Bạn' : 'Nearby'}:</span> {line.text}
+              {/* translate="no": tên app, bộ dịch giao diện từng dịch thành "Yaxınlaşanlar". */}
+              <span className="font-semibold" translate={line.who === 'user' ? undefined : 'no'}>{line.who === 'user' ? 'Bạn' : 'Nearby'}:</span> {line.text}
             </p>
           ))}
         </div>
