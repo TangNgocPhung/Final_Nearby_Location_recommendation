@@ -209,25 +209,36 @@ def build_document(row: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
+def has_embedding(document: dict[str, Any]) -> bool:
+    return "embedding" in document
+
+
+def _bulk_action(document: dict[str, Any]) -> dict[str, Any]:
+    """``index`` (ghi đè cả document) chỉ khi đã có vector mới. Thiếu vector
+    (Ollama lỗi/chưa chạy) thì dùng partial ``update`` + ``doc_as_upsert``:
+    POI chưa có trong chỉ mục vẫn được tạo (BM25 + geo dùng được ngay), còn
+    POI đã có giữ NGUYÊN vector cũ thay vì bị ghi đè bằng một document không
+    có ``embedding`` — đo được thật (2026-10-09): `_op_type: index` làm mất
+    vector của mọi POI rơi vào lúc Ollama chập chờn trong một lượt reindex."""
+    base = {"_index": INDEX_NAME, "_id": document["poi_id"]}
+    if has_embedding(document):
+        return {**base, "_op_type": "index", "_source": document}
+    return {**base, "_op_type": "update", "doc": document, "doc_as_upsert": True}
+
+
 def bulk_actions(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Dựng payload cho ``opensearchpy.helpers.bulk``."""
-    actions: list[dict[str, Any]] = []
-    for row in rows:
-        document = build_document(row)
-        actions.append(
-            {
-                "_op_type": "index",
-                "_index": INDEX_NAME,
-                "_id": document["poi_id"],
-                "_source": document,
-            }
-        )
-    return actions
+    return [_bulk_action(build_document(row)) for row in rows]
 
 
 def index_document(client: Any, row: dict[str, Any]) -> None:
     document = build_document(row)
-    client.index(index=INDEX_NAME, id=document["poi_id"], body=document)
+    if has_embedding(document):
+        client.index(index=INDEX_NAME, id=document["poi_id"], body=document)
+    else:
+        client.update(
+            index=INDEX_NAME, id=document["poi_id"], body={"doc": document, "doc_as_upsert": True}
+        )
 
 
 def delete_document(client: Any, poi_id: str) -> None:
