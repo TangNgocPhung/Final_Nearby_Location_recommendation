@@ -144,18 +144,22 @@ class Settings(BaseSettings):
     # trỏ vào chính container đó chứ không phải máy host.
     ollama_url: str = ""
     ollama_embedding_model: str = "bge-m3"
-    # Giữ bge-m3 trong RAM giữa các lượt tìm kiếm. Mặc định của Ollama là 5
-    # phút; nạp lại bge-m3 mất ~10.6s (đo 2026-10-08) — dài hơn timeout 10s
-    # của truy vấn, nên lượt tìm đầu sau khi model bị dỡ mất hẳn kênh vector.
-    ollama_embedding_keep_alive: str = "30m"
+    # Giữ bge-m3 trong RAM giữa các lượt tìm kiếm. Nạp lại bge-m3 mất ~10.6s
+    # (đo 2026-10-08) — dài hơn timeout 10s của truy vấn, nên lượt tìm đầu sau
+    # khi model bị dỡ mất hẳn kênh vector. Từng đặt 30m, nhưng giữ cả bge-m3,
+    # model chat lẫn qwen3.5:4b suốt 30 phút làm máy dev 15 GB cạn RAM: Windows
+    # đẩy RAM của VM Docker ra pagefile và Postgres dev crash hai lần (đo
+    # 2026-10-10, Event 2004 "low virtual memory"). Về lại mặc định 5m của Ollama.
+    ollama_embedding_keep_alive: str = "5m"
     # Model chat cho chatbot AI (Phase 14) — cùng Ollama local, khác endpoint
     # (/api/chat thay vì /api/embed). Chỉ dùng để hiểu ý định người dùng và
     # diễn giải kết quả bằng lời; KHÔNG bao giờ tự quyết định POI — xem
     # app/chat.py.
     ollama_chat_model: str = "llama3.2:3b"
-    # Giữ model chat trong RAM giữa các lượt chat. Mặc định của Ollama là 5
-    # phút — người dùng nghỉ lâu hơn thì lượt sau phải chờ nạp lại model.
-    ollama_chat_keep_alive: str = "30m"
+    # Giữ model chat trong RAM giữa các lượt chat — người dùng nghỉ lâu hơn
+    # thì lượt sau phải chờ nạp lại model. 5m (mặc định của Ollama) chứ không
+    # dài hơn: xem lý do RAM ở `ollama_embedding_keep_alive`.
+    ollama_chat_keep_alive: str = "5m"
     # Model riêng cho thuyết minh POI và dịch giao diện (app/translate.py) —
     # cần đa ngôn ngữ (134 ngôn ngữ, xem app/languages.py), việc mà
     # llama3.2:3b làm kém. Để trống thì dùng chung `ollama_chat_model`.
@@ -236,6 +240,10 @@ class Settings(BaseSettings):
     # Model thị giác đọc biển hiệu (`app/storefront.py`). qwen3.5 có sẵn khả
     # năng "vision"; bản 4b chạy được trên CPU máy dev (3-50 giây/ảnh).
     ollama_vision_model: str = "qwen3.5:4b"
+    # Dùng cho cả `app/explore.py`. 5m đủ giữ model giữa các ảnh liên tiếp
+    # của một lượt; dài hơn thì model vài GB chiếm RAM lâu sau khi xong việc
+    # (xem `ollama_embedding_keep_alive`).
+    ollama_vision_keep_alive: str = "5m"
     ollama_vision_timeout_seconds: float = 240.0
     # Săn địa danh (`app/explore.py`): người chơi đứng chờ trước màn hình nên
     # trần thấp hơn job nền đọc biển hiệu — và phải dưới proxy_read_timeout của
