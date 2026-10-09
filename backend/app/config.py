@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     # phút; nạp lại bge-m3 mất ~10.6s (đo 2026-10-08) — dài hơn timeout 10s
     # của truy vấn, nên lượt tìm đầu sau khi model bị dỡ mất hẳn kênh vector.
     ollama_embedding_keep_alive: str = "30m"
+    # Timeout embed cho truy vấn người dùng (search, voice). Quá hạn thì bỏ kênh
+    # vector lượt đó và nạp bge-m3 ở nền — xem `embeddings.query_embedding`.
+    # Đo 2026-10-10: bge-m3 đã nạp mất 230–270 ms, tới 1,6 s khi reindex đang
+    # tranh Ollama; nên 2,5 s đủ rộng cho lúc ấm mà vẫn cắt được lần nạp 10 s.
+    # Không ảnh hưởng reindex (vẫn dùng REQUEST_TIMEOUT_SECONDS).
+    ollama_query_embedding_timeout_seconds: float = 2.5
     # Model chat cho chatbot AI (Phase 14) — cùng Ollama local, khác endpoint
     # (/api/chat thay vì /api/embed). Chỉ dùng để hiểu ý định người dùng và
     # diễn giải kết quả bằng lời; KHÔNG bao giờ tự quyết định POI — xem
