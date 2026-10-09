@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Gauge, Keyboard, Mic, MicOff, Volume2, VolumeX, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { Gauge, Keyboard, Mic, MicOff, Settings2, Volume2, VolumeX, X } from 'lucide-react';
 
 import { useHeading } from '@/hooks/use-heading';
 import { useWakeLock } from '@/hooks/use-wake-lock';
@@ -78,6 +78,12 @@ type Phase = 'idle' | 'listening' | 'thinking' | 'speaking';
 const GREETING =
   'Chế độ giọng nói đã bật. Bạn muốn tìm gì? Ví dụ: “quán phở gần đây”. Nói “trợ giúp” để nghe hướng dẫn. ' +
   'Nhấn phím cách để nói, phím Escape để thoát.';
+// Người đã nghe lời chào đầy đủ một lần thì lần sau vào thẳng việc.
+const SHORT_GREETING = 'Bạn muốn tìm gì?';
+const GREETED_KEY = 'nearby.voice.greeted';
+// Hết giờ nghe mà chưa nghe được gì: lượt nghe TỰ ĐỘNG được mở lại bấy nhiêu lần
+// trước khi dừng hẳn — Chrome tắt micro chỉ sau vài giây im lặng.
+const AUTO_LISTEN_RETRIES = 1;
 
 // Ngưỡng dẫn đường (mét). GPS điện thoại trong phố sai 5-20 m.
 const ARRIVE_METERS = 20;
@@ -106,6 +112,54 @@ const CLOCK_WORDS: Record<number, string> = {
 
 type VoiceSettings = { selfVoice: boolean; autoListen: boolean; rate: number };
 
+/** Nút lệnh nhanh: bấm thì gửi đúng câu lệnh như khi nói — cùng một đường xử lý. */
+type QuickCommand = { label: string; command: string; ariaLabel?: string };
+
+// Số địa điểm đọc mỗi lượt — khớp PAGE_SIZE ở backend/app/voice.py.
+const PAGE_SIZE = 3;
+
+const START_COMMANDS: QuickCommand[] = [
+  { label: 'Quán phở', command: 'quán phở' },
+  { label: 'Cà phê', command: 'cà phê' },
+  { label: 'ATM', command: 'ATM' },
+  { label: 'Nhà thuốc', command: 'nhà thuốc' },
+  { label: 'Trạm xăng', command: 'trạm xăng' },
+  { label: 'Tôi đang ở đâu?', command: 'tôi đang ở đâu' },
+  { label: 'Trợ giúp', command: 'trợ giúp' },
+];
+
+const NAVIGATING_COMMANDS: QuickCommand[] = [
+  { label: 'Còn bao xa?', command: 'còn bao xa' },
+  { label: 'Tôi đang ở đâu?', command: 'tôi đang ở đâu' },
+  { label: 'Đọc lại', command: 'đọc lại' },
+  { label: 'Dừng dẫn đường', command: 'dừng' },
+];
+
+/** Lệnh nhanh theo bước hội thoại: chưa tìm → gợi ý tìm; có danh sách → chọn số; đã chọn → đi/nghe. */
+function quickCommands(turn: VoiceState, navigating: boolean): QuickCommand[] {
+  if (navigating) return NAVIGATING_COMMANDS;
+  const results = Array.isArray(turn?.results) ? (turn.results as { name?: string }[]) : [];
+  const page = typeof turn?.page === 'number' ? turn.page : 0;
+  if (turn?.stage === 'results' && results.length) {
+    const picks = results.slice(page, page + PAGE_SIZE).map((poi, offset) => {
+      const number = page + offset + 1;
+      return { label: `${number}. ${poi.name ?? ''}`, command: `số ${number}`, ariaLabel: `Chọn số ${number}: ${poi.name ?? ''}` };
+    });
+    const more = page + PAGE_SIZE < results.length ? [{ label: 'Xem thêm', command: 'xem thêm' }] : [];
+    return [...picks, ...more, { label: 'Đọc lại', command: 'đọc lại' }];
+  }
+  if (turn?.stage === 'selected') {
+    const selected = turn.selected as { hasStory?: boolean } | null;
+    return [
+      { label: 'Dẫn đường', command: 'dẫn đường' },
+      ...(selected?.hasStory ? [{ label: 'Thuyết minh', command: 'thuyết minh' }] : []),
+      ...(results.length ? [{ label: 'Danh sách', command: 'quay lại' }] : []),
+      { label: 'Đọc lại', command: 'đọc lại' },
+    ];
+  }
+  return START_COMMANDS;
+}
+
 function clampRate(rate: number): number {
   return Math.min(RATE_MAX, Math.max(RATE_MIN, Math.round(rate / RATE_STEP) * RATE_STEP));
 }
@@ -123,6 +177,17 @@ function loadSettings(): VoiceSettings {
   } catch {
     return fallback;
   }
+}
+
+/** Đã từng nghe lời chào đầy đủ chưa; đánh dấu luôn là đã nghe cho lần sau. */
+function takeGreeting(): string {
+  try {
+    if (localStorage.getItem(GREETED_KEY)) return SHORT_GREETING;
+    localStorage.setItem(GREETED_KEY, '1');
+  } catch {
+    // Bộ nhớ bị chặn: cứ đọc lời chào đầy đủ.
+  }
+  return GREETING;
 }
 
 function sayRate(rate: number): string {
@@ -235,6 +300,9 @@ export function VoiceMode({
   const [autoListen, setAutoListen] = useState(initialSettings.autoListen);
   const [rate, setRate] = useState(initialSettings.rate);
   const [typed, setTyped] = useState('');
+  // Bản sao `stateRef` để vẽ nút lệnh nhanh theo bước hội thoại.
+  const [turn, setTurn] = useState<VoiceState>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [recognitionSupported] = useState(() => getRecognition() !== null);
   const [navigation, setNavigation] = useState<Navigation | null>(null);
   const [livePosition, setLivePosition] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -242,6 +310,17 @@ export function VoiceMode({
   const stateRef = useRef<VoiceState>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // `audio.pause()` không phát sự kiện `ended`: giữ hàm kết thúc để dừng giọng
+  // máy chủ thì lời hứa đọc cũng xong theo.
+  const audioDoneRef = useRef<(() => void) | null>(null);
+  // Mỗi câu đọc mang một số; bị ngắt (người dùng nói chen, câu khác đè) thì số
+  // đổi, câu cũ đọc xong không được đặt lại trạng thái của câu/lượt nghe mới.
+  const speechIdRef = useRef(0);
+  // Lượt nghe đang mở có được tự mở lại khi im lặng không (tắt khi người dùng tự dừng).
+  const retryRef = useRef(false);
+  const [touchScreen] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true,
+  );
   const [player] = useState(() => new NarrationPlayer(apiBaseUrl));
   const [cues] = useState(() => new VoiceCues());
   const { read: readHeading, requestPermission: askCompass, reportGps } = useHeading();
@@ -345,6 +424,7 @@ export function VoiceMode({
             URL.revokeObjectURL(url);
             resolve(true);
           };
+          audioDoneRef.current = done;
           audio.onended = done;
           audio.onerror = done;
           audio.play().catch(done);
@@ -357,19 +437,28 @@ export function VoiceMode({
   );
 
   const stopSpeaking = useCallback(() => {
+    speechIdRef.current += 1;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
     audioRef.current?.pause();
     audioRef.current = null;
-  }, []);
+    audioDoneRef.current?.();
+    audioDoneRef.current = null;
+    player.stop();
+  }, [player]);
 
+  /** Đọc một câu. Trả `false` nếu câu bị ngắt giữa chừng (hoặc không đọc vì người dùng đang nói). */
   const say = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<boolean> => {
       addLine({ who: 'app', text });
-      if (!selfVoiceRef.current || closedRef.current) return;
+      // Người dùng đang nói thì không đọc chen vào micro — câu vẫn nằm trong nhật ký.
+      if (!selfVoiceRef.current || closedRef.current || recognitionRef.current) return !recognitionRef.current;
+      const id = ++speechIdRef.current;
       setPhase('speaking');
-      const ok = (await speakWithBrowser(text)) || (await speakWithServer(text));
-      if (!ok) await speakWithBrowser(text);
+      const ok = (await speakWithBrowser(text)) || (id === speechIdRef.current && (await speakWithServer(text)));
+      if (!ok && id === speechIdRef.current) await speakWithBrowser(text);
+      if (id !== speechIdRef.current) return false;
       if (!closedRef.current) setPhase('idle');
+      return true;
     },
     [addLine, speakWithBrowser, speakWithServer],
   );
@@ -377,19 +466,25 @@ export function VoiceMode({
   // --- Nghe --------------------------------------------------------------------
 
   const handleUtteranceRef = useRef<(text: string) => Promise<void>>(async () => undefined);
+  // Lượt nghe tự mở lại chính nó khi im lặng — qua ref vì hàm chưa khai báo xong.
+  const listenRef = useRef<(retries?: number) => void>(() => undefined);
 
-  const listen = useCallback(() => {
+  /** Mở micro. `retries`: số lần được tự mở lại nếu hết giờ mà chưa nghe được gì. */
+  const listen = useCallback((retries = 0) => {
     if (closedRef.current || busyRef.current) return;
     const recognition = getRecognition();
     if (!recognition) return;
     stopSpeaking();
     recognitionRef.current?.abort();
     recognitionRef.current = recognition;
+    retryRef.current = retries > 0;
     recognition.lang = 'vi-VN';
     recognition.interimResults = true;
     recognition.continuous = false;
     recognition.maxAlternatives = 1;
     let finalText = '';
+    let failed = false;
+    let denied = false;
     recognition.onresult = (event) => {
       let partial = '';
       for (let index = 0; index < event.results.length; index += 1) {
@@ -400,9 +495,10 @@ export function VoiceMode({
       setInterim(partial);
     };
     recognition.onerror = (event) => {
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        void say('Trình duyệt chưa cho phép dùng micro. Hãy cấp quyền micro rồi nhấn phím cách để nói.');
-      }
+      // "no-speech" chỉ là hết giờ im lặng; lỗi khác (micro bị chặn, mất mạng) thì đừng tự mở lại.
+      if (event.error !== 'no-speech') failed = true;
+      // Báo ở `onend`: lúc này lượt nghe còn mở nên `say()` sẽ không đọc to.
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') denied = true;
     };
     recognition.onend = () => {
       // Lượt nghe cũ bị `abort()` để mở lượt mới: đừng đè trạng thái của lượt mới.
@@ -410,9 +506,13 @@ export function VoiceMode({
       recognitionRef.current = null;
       setInterim('');
       if (closedRef.current) return;
-      if (finalText.trim()) {
+      if (denied) {
+        void say('Trình duyệt chưa cho phép dùng micro. Hãy cấp quyền micro rồi nhấn phím cách để nói.');
+      } else if (finalText.trim()) {
         cues.play('heard');
         void handleUtteranceRef.current(finalText.trim());
+      } else if (retryRef.current && !failed) {
+        listenRef.current(retries - 1);
       } else {
         cues.play('nothing');
         setPhase('idle');
@@ -423,12 +523,20 @@ export function VoiceMode({
       recognition.start();
       cues.play('listen');
     } catch {
+      recognitionRef.current = null;
       setPhase('idle');
     }
   }, [cues, say, stopSpeaking]);
 
+  useEffect(() => {
+    listenRef.current = listen;
+  }, [listen]);
+
   const afterSpeech = useCallback(() => {
-    if (autoListenRef.current && recognitionSupported && !closedRef.current) listen();
+    // Người dùng đã nói chen giữa câu đọc thì micro đang mở sẵn — đừng mở lại
+    // (mở lại sẽ huỷ lượt nghe đó và mất câu họ đang nói).
+    if (recognitionRef.current) return;
+    if (autoListenRef.current && recognitionSupported && !closedRef.current) listen(AUTO_LISTEN_RETRIES);
   }, [listen, recognitionSupported]);
 
   // --- Dẫn đường -----------------------------------------------------------------
@@ -544,6 +652,7 @@ export function VoiceMode({
       message = `Bạn đã tới ${nav.name}${facing == null ? '' : `, ${sayDirection(here, nav, facing)}`}. Đã kết thúc dẫn đường.`;
       cue = 'arrive';
       stateRef.current = { ...stateRef.current, stage: 'selected' };
+      setTurn(stateRef.current);
       stopNavigation();
     } else {
       // Lệch tuyến — chỉ đếm khi GPS báo vị trí MỚI (effect còn chạy lại khi
@@ -656,6 +765,7 @@ export function VoiceMode({
         return;
       }
       stateRef.current = response.state;
+      setTurn(response.state);
       const action = response.action;
       if (action?.type === 'exit') {
         await say(response.speech);
@@ -666,12 +776,14 @@ export function VoiceMode({
       await say(response.speech);
       if (action?.type === 'navigate') {
         await startNavigation(action);
-      } else if (action?.type === 'narrate') {
+      } else if (action?.type === 'narrate' && !recognitionRef.current) {
+        const id = ++speechIdRef.current;
         setPhase('speaking');
         await player.play(action.poiId, 'vi', (narration) => addLine({ who: 'app', text: narration }), {
           rate: rateRef.current,
         });
-        setPhase('idle');
+        // Bị ngắt để nghe người dùng nói: trạng thái giờ là của lượt nghe đó.
+        if (id === speechIdRef.current && !closedRef.current) setPhase('idle');
       }
       afterSpeech();
     },
@@ -681,6 +793,38 @@ export function VoiceMode({
   useEffect(() => {
     handleUtteranceRef.current = handleUtterance;
   }, [handleUtterance]);
+
+  /** Dừng nghe và dừng đọc để làm việc người dùng vừa bấm/gõ ngay. Trả về: micro có đang mở không. */
+  const interrupt = useCallback((): boolean => {
+    const recognition = recognitionRef.current;
+    retryRef.current = false;
+    // Bỏ ref TRƯỚC khi huỷ: `onend` của lượt nghe này thấy không còn là lượt hiện tại nên không làm gì.
+    recognitionRef.current = null;
+    recognition?.abort();
+    setInterim('');
+    stopSpeaking();
+    return recognition !== null;
+  }, [stopSpeaking]);
+
+  /** Lệnh gõ hoặc bấm nút nhanh — micro đang mở thì câu trả lời sẽ không được đọc, nên tắt trước. */
+  const sendCommand = useCallback(
+    (text: string) => {
+      if (busyRef.current) return;
+      interrupt();
+      void handleUtterance(text);
+    },
+    [handleUtterance, interrupt],
+  );
+
+  /** Đổi tốc độ từ phím/nút: đọc thử tốc độ mới, rồi nghe tiếp nếu trước đó đang nghe. */
+  const adjustRate = useCallback(
+    async (wanted: number) => {
+      const wasListening = interrupt();
+      await changeRate(wanted);
+      if (wasListening) afterSpeech();
+    },
+    [afterSpeech, changeRate, interrupt],
+  );
 
   // Mở chế độ: chào, rồi lắng nghe luôn.
   useEffect(() => {
@@ -693,7 +837,7 @@ export function VoiceMode({
       window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
     }
     const timer = setTimeout(() => {
-      void say(GREETING).then(afterSpeech);
+      void say(takeGreeting()).then(afterSpeech);
     }, 300);
     return () => {
       clearTimeout(timer);
@@ -716,9 +860,23 @@ export function VoiceMode({
   // quyền la bàn.
   const toggleListening = useCallback(() => {
     askCompass();
-    if (phase === 'listening') recognitionRef.current?.stop();
-    else listen();
+    if (phase === 'listening') {
+      // Người dùng tự dừng: im lặng cũng không tự mở lại micro.
+      retryRef.current = false;
+      recognitionRef.current?.stop();
+    } else listen();
   }, [askCompass, listen, phase]);
+
+  // Màn hình cảm ứng: chạm vào đâu trong vùng giữa cũng là nhấn nút micro — người
+  // không nhìn màn hình không phải dò tìm nút. Chuột thì không, để còn bôi đen chữ.
+  const onContentClick = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      if (!recognitionSupported || (event.target as HTMLElement).closest('button, a, input')) return;
+      const pointerType = (event.nativeEvent as PointerEvent).pointerType;
+      if (pointerType ? pointerType === 'touch' || pointerType === 'pen' : touchScreen) toggleListening();
+    },
+    [recognitionSupported, toggleListening, touchScreen],
+  );
 
   // Phím tắt: Space = nói, Esc = thoát, +/− = tốc độ đọc. Bỏ qua khi đang gõ trong ô nhập.
   useEffect(() => {
@@ -735,23 +893,65 @@ export function VoiceMode({
         toggleListening();
       } else if (event.key === '+' || event.key === '=') {
         event.preventDefault();
-        void changeRate(rateRef.current + RATE_STEP);
+        void adjustRate(rateRef.current + RATE_STEP);
       } else if (event.key === '-') {
         event.preventDefault();
-        void changeRate(rateRef.current - RATE_STEP);
+        void adjustRate(rateRef.current - RATE_STEP);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [changeRate, onClose, toggleListening]);
+  }, [adjustRate, onClose, toggleListening]);
 
-  const lastApp = [...lines].reverse().find((line) => line.who === 'app');
+  // Câu trả lời mới nhất đã hiện chữ to ở giữa: trong nhật ký chỉ để cho trình đọc màn hình.
+  const lastAppIndex = lines.map((line) => line.who).lastIndexOf('app');
+  const lastApp = lastAppIndex >= 0 ? lines[lastAppIndex] : undefined;
+  const quick = quickCommands(turn, navigation !== null);
   const phaseLabel = {
-    idle: recognitionSupported ? 'Nhấn để nói (phím cách)' : 'Gõ lệnh bên dưới',
+    idle: !recognitionSupported ? 'Gõ lệnh bên dưới' : touchScreen ? 'Chạm vào màn hình để nói' : 'Nhấn để nói (phím cách)',
     listening: 'Đang nghe…',
     thinking: 'Đang tìm…',
     speaking: 'Đang đọc…',
   }[phase];
+
+  const settingsButton = 'flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10';
+  const settings = (
+    <>
+      <button
+        type="button"
+        // Vòng qua các mức: tới nhanh nhất thì quay về chậm nhất.
+        onClick={() => void adjustRate(rate >= RATE_MAX ? RATE_MIN : rate + RATE_STEP)}
+        aria-label={`Tốc độ đọc ${sayRate(rate)} — nhấn để đổi (phím + và −)`}
+        title="Tốc độ đọc (phím + và −)"
+        className={cn(settingsButton, 'tabular-nums')}
+      >
+        <Gauge className="size-4" aria-hidden />
+        <span className="sm:hidden">Tốc độ đọc</span>
+        <span>{String(rate).replace('.', ',')}×</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => setSelfVoice((value) => !value)}
+        aria-pressed={selfVoice}
+        aria-label={selfVoice ? 'Tự đọc to: bật' : 'Tự đọc to: tắt'}
+        title="Tự đọc to"
+        className={settingsButton}
+      >
+        {selfVoice ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+        <span>{selfVoice ? 'Tự đọc to: bật' : 'Tự đọc to: tắt (dùng trình đọc màn hình)'}</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => setAutoListen((value) => !value)}
+        aria-pressed={autoListen}
+        aria-label={autoListen ? 'Tự nghe sau khi đọc: bật' : 'Tự nghe sau khi đọc: tắt'}
+        className={settingsButton}
+      >
+        <Mic className="size-4" aria-hidden />
+        <span>{autoListen ? 'Tự nghe sau khi đọc: bật' : 'Tự nghe sau khi đọc: tắt'}</span>
+      </button>
+    </>
+  );
 
   return (
     <div
@@ -764,41 +964,20 @@ export function VoiceMode({
       tabIndex={-1}
       className="voice-mode fixed inset-0 z-[60] flex h-dvh flex-col overflow-hidden bg-slate-950 text-white outline-none"
     >
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 px-3 py-2 sm:px-4 sm:py-3">
-        <p className="flex items-center gap-2 text-base font-bold sm:text-lg"><Mic className="size-5 shrink-0" aria-hidden /> Chế độ giọng nói</p>
-        <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-2 sm:px-4 sm:py-3">
+        <p className="flex min-w-0 items-center gap-2 text-base font-bold sm:text-lg"><Mic className="size-5 shrink-0" aria-hidden /> Chế độ giọng nói</p>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="hidden items-center gap-2 sm:flex">{settings}</div>
+          {/* Điện thoại: ba cài đặt gom vào một nút để thanh trên không chật. */}
           <button
             type="button"
-            // Vòng qua các mức: tới nhanh nhất thì quay về chậm nhất.
-            onClick={() => void changeRate(rate >= RATE_MAX ? RATE_MIN : rate + RATE_STEP)}
-            aria-label={`Tốc độ đọc ${sayRate(rate)} — nhấn để đổi (phím + và −)`}
-            title="Tốc độ đọc (phím + và −)"
-            className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm tabular-nums hover:bg-white/10"
+            onClick={() => setSettingsOpen((value) => !value)}
+            aria-expanded={settingsOpen}
+            aria-controls="voice-settings"
+            aria-label="Cài đặt giọng nói"
+            className={cn('rounded-lg border border-white/20 p-2 hover:bg-white/10 sm:hidden', settingsOpen && 'bg-white/10')}
           >
-            <Gauge className="size-4" aria-hidden />
-            <span>{String(rate).replace('.', ',')}×</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelfVoice((value) => !value)}
-            aria-pressed={selfVoice}
-            aria-label={selfVoice ? 'Tự đọc to: bật' : 'Tự đọc to: tắt'}
-            title="Tự đọc to"
-            className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10"
-          >
-            {selfVoice ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-            <span className="hidden sm:inline">{selfVoice ? 'Tự đọc to: bật' : 'Tự đọc to: tắt (dùng trình đọc màn hình)'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setAutoListen((value) => !value)}
-            aria-pressed={autoListen}
-            aria-label={autoListen ? 'Tự nghe sau khi đọc: bật' : 'Tự nghe sau khi đọc: tắt'}
-            className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10"
-          >
-            <Mic className="size-4" aria-hidden />
-            <span className="sm:hidden">Tự nghe</span>
-            <span className="hidden sm:inline">{autoListen ? 'Tự nghe sau khi đọc: bật' : 'Tự nghe sau khi đọc: tắt'}</span>
+            <Settings2 className="size-5" aria-hidden />
           </button>
           <button
             type="button"
@@ -810,8 +989,18 @@ export function VoiceMode({
           </button>
         </div>
       </div>
+      {settingsOpen && (
+        <div id="voice-settings" className="flex shrink-0 flex-col gap-2 border-b border-white/10 px-3 py-3 sm:hidden">
+          {settings}
+        </div>
+      )}
 
-      <div className="voice-content flex min-h-0 flex-1 flex-col items-center gap-4 overflow-y-auto overscroll-contain px-4 py-4 sm:gap-6 sm:py-6">
+      {/* Chạm-để-nói cho màn hình cảm ứng; bàn phím đã có phím cách, trình đọc màn hình có nút micro. */}
+      {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+      <div
+        onClick={onContentClick}
+        className="voice-content flex min-h-0 flex-1 flex-col items-center gap-4 overflow-y-auto overscroll-contain px-4 py-4 sm:gap-6 sm:py-6"
+      >
         <button
           type="button"
           onClick={toggleListening}
@@ -847,6 +1036,22 @@ export function VoiceMode({
       </div>
 
       <div className="shrink-0 border-t border-white/10 px-3 py-3 sm:px-4">
+        {/* Lệnh nhanh theo bước đang ở: khi ồn, khi ngại nói, hoặc với người nhìn được màn hình. */}
+        <fieldset className="mx-auto mb-2 flex min-w-0 max-w-3xl gap-2 overflow-x-auto border-0 p-0 pb-1 sm:flex-wrap sm:justify-center">
+          <legend className="sr-only">Lệnh nhanh</legend>
+          {quick.map((item) => (
+            <button
+              key={item.command}
+              type="button"
+              onClick={() => sendCommand(item.command)}
+              disabled={phase === 'thinking'}
+              aria-label={item.ariaLabel}
+              className="h-10 max-w-[16rem] shrink-0 truncate rounded-full border border-white/20 bg-white/5 px-4 text-sm hover:bg-white/10 disabled:opacity-40"
+            >
+              {item.label}
+            </button>
+          ))}
+        </fieldset>
         <form
           className="mx-auto flex max-w-3xl items-center gap-2"
           onSubmit={(event) => {
@@ -854,7 +1059,7 @@ export function VoiceMode({
             const text = typed.trim();
             if (!text) return;
             setTyped('');
-            void handleUtterance(text);
+            sendCommand(text);
           }}
         >
           <Keyboard className="hidden size-5 shrink-0 text-white/60 sm:block" aria-hidden />
@@ -872,7 +1077,7 @@ export function VoiceMode({
         {/* Nhật ký hội thoại: trình đọc màn hình đọc mỗi dòng mới (aria-live). */}
         <div role="log" aria-live="polite" aria-label="Nhật ký hội thoại" className="mx-auto mt-2 max-h-16 max-w-3xl overflow-y-auto break-words text-sm text-white/70 sm:max-h-28">
           {lines.map((line, index) => (
-            <p key={index}>
+            <p key={index} className={index === lastAppIndex ? 'sr-only' : undefined}>
               {/* translate="no": tên app, bộ dịch giao diện từng dịch thành "Yaxınlaşanlar". */}
               <span className="font-semibold" translate={line.who === 'user' ? undefined : 'no'}>{line.who === 'user' ? 'Bạn' : 'Nearby'}:</span> {line.text}
             </p>

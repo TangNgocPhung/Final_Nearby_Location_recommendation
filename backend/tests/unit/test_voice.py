@@ -203,6 +203,8 @@ def test_nhac_lai_cau_vua_noi() -> None:
 def test_thuyet_minh_chi_khi_co_bai() -> None:
     selected = _turn("số một", _turn("phở")["state"], story=True)
     assert "“thuyết minh”" in selected["speech"]
+    assert selected["state"]["selected"]["hasStory"] is True
+    assert _turn("số một", _turn("phở")["state"], story=False)["state"]["selected"]["hasStory"] is False
     narrate = _turn("thuyết minh", selected["state"], story=True)
     assert narrate["action"] == {"type": "narrate", "poiId": "p1", "name": "Phở Nhà Mình"}
     assert _turn("thuyết minh", selected["state"], story=False)["action"] is None

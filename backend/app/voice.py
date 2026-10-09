@@ -505,7 +505,9 @@ def respond(
                 stage="navigating",
                 selected=selected,
             )
-        return reply(say_details(selected, has_story(selected["id"])), stage="selected", selected=selected)
+        story = has_story(selected["id"])
+        # `hasStory` để client hiện nút "Thuyết minh" chỉ khi có bài.
+        return reply(say_details(selected, story), stage="selected", selected={**selected, "hasStory": story})
     if intent == "narrate":
         if not selected:
             return reply("Bạn chưa chọn địa điểm nào.")
