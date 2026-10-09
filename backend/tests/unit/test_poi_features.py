@@ -410,3 +410,18 @@ def test_dau_hieu_bach_hoa_lon_trong_migration_0035_khop_poi_features() -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module.MARKERS == _DEPARTMENT_STORE_MARKERS
+
+
+def test_ghi_de_tiffany_trong_migration_0037_la_danh_muc_co_that() -> None:
+    """Tiffany & Co. gắn `shop=department_store` — sau khi tạp hoá gắn thẻ này
+    thành cửa hàng tiện lợi, nó cần ghi đè riêng. Danh mục ghi đè phải là
+    một cặp (category, nhãn) có thật, nếu không chip lọc/ảnh bìa không nhận."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0037_tiffany_jewelry_override.py"
+    spec = importlib.util.spec_from_file_location("migration_0037", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.CATEGORY in set(CATEGORY_MAP.values())
+    assert osm_category({"shop": "jewelry"}) == module.CATEGORY
