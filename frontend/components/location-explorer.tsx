@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import maplibregl, {
   type GeoJSONSource,
   type Map as MapLibreMap,
@@ -2991,6 +2991,23 @@ export function LocationExplorer() {
     }
   }
 
+  // "Chỉ đường tới số 1" trong trợ lý chỉ mang poiId, còn startNavigation cần
+  // đủ Poi (toạ độ, tên) — mở panel chi tiết trước, chi tiết về thì bật chỉ đường.
+  const pendingChatDirectionsRef = useRef<string | null>(null);
+  const directionsFromChat = useCallback(
+    (poiId: string) => {
+      pendingChatDirectionsRef.current = poiId;
+      openDetail(poiId, 'chat');
+    },
+    [openDetail],
+  );
+  const navigateFromChat = useEffectEvent((poi: Poi) => startNavigation(poi));
+  useEffect(() => {
+    if (!detailAsPoi || pendingChatDirectionsRef.current !== detailAsPoi.id) return;
+    pendingChatDirectionsRef.current = null;
+    navigateFromChat(detailAsPoi);
+  }, [detailAsPoi]);
+
   return (
     <main className="nearby-app flex h-dvh flex-col overflow-hidden bg-transparent text-foreground">
       <header className="app-header relative z-30 shrink-0 border-b border-emerald-950/[0.07] bg-white/75 px-3 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 backdrop-blur-xl sm:px-6 sm:py-3 dark:border-white/[0.07] dark:bg-background/75">
@@ -4620,6 +4637,7 @@ export function LocationExplorer() {
             position={position}
             language={uiLanguage.language}
             onViewPoi={(poiId) => openDetail(poiId, 'chat')}
+            onDirections={directionsFromChat}
             onFocusLocation={(latitude, longitude) => {
               mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 17, essential: true });
               showMapOnMobile();

@@ -29,7 +29,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from . import geo_cache
+from . import chat_tools, geo_cache
 from .config import settings
 from .languages import ENGLISH_NAMES, LANGUAGE_CODES
 from .poi_detail import fetch_knowledge_map
@@ -322,6 +322,7 @@ def get_history(session_id: str) -> list[dict[str, str]]:
 def clear_history(session_id: str) -> None:
     """Nút "Cuộc trò chuyện mới": xoá ngữ cảnh để câu hỏi sau không bị hiểu
     như câu hỏi nối tiếp cuộc trò chuyện cũ."""
+    chat_tools.forget(session_id)
     client = geo_cache.get_client()
     if client is None:
         return
@@ -333,7 +334,11 @@ def clear_history(session_id: str) -> None:
 
 def set_history(session_id: str, turns: list[dict[str, str]]) -> None:
     """Mở lại cuộc trò chuyện cũ từ lịch sử: thay ngữ cảnh hiện tại bằng vài
-    lượt cuối của cuộc đó. Bỏ lượt rỗng (trợ lý lỗi giữa chừng) để prompt sạch."""
+    lượt cuối của cuộc đó. Bỏ lượt rỗng (trợ lý lỗi giữa chừng) để prompt sạch.
+
+    Danh sách địa điểm của cuộc cũ không lưu phía backend, nên bỏ luôn ngữ
+    cảnh "danh sách vừa xem" — "số 2" lúc này không còn trỏ vào đâu chắc chắn."""
+    chat_tools.forget(session_id)
     history = [
         {"role": turn["role"], "content": turn["content"].strip()}
         for turn in turns
@@ -574,9 +579,14 @@ def quick_search_intent(user_message: str) -> dict[str, Any] | None:
     }
 
 
-def summarize_results_fast(session_id: str, user_message: str, results: list[dict[str, Any]]) -> str:
-    """Phản hồi tức thì cho truy vấn rõ ràng; các thẻ POI mang phần chi tiết."""
+def summarize_results_fast(
+    session_id: str, user_message: str, results: list[dict[str, Any]], note: str | None = None
+) -> str:
+    """Phản hồi tức thì cho truy vấn rõ ràng; các thẻ POI mang phần chi tiết.
+    ``note``: câu giải thích bộ lọc (xem `chat_tools.filter_note`)."""
     reply = _results_listing(results) if results else _NO_RESULTS_REPLY
+    if note:
+        reply = f"{reply} {note}"
     _append_history(session_id, user_message, reply)
     return reply
 
@@ -826,3 +836,9 @@ def explain_results(session_id: str, user_message: str, results: list[dict[str, 
 
 def record_clarification(session_id: str, user_message: str, clarifying_question: str) -> None:
     _append_history(session_id, user_message, clarifying_question)
+
+
+def record_turn(session_id: str, user_message: str, reply: str) -> None:
+    """Lượt do code trả lời trọn (hỏi tiếp, công cụ chuyên biệt) — vẫn ghi vào
+    lịch sử để mở lại cuộc trò chuyện còn đủ ngữ cảnh."""
+    _append_history(session_id, user_message, reply)
