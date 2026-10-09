@@ -33,6 +33,19 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="vi" suppressHydrationWarning>
+      <head>
+        {/* Be Vietnam Pro vẽ dấu tiếng Việt cân hơn Inter/Segoe. Mất mạng thì
+            --font-app-sans tự lùi về font hệ thống, giao diện không vỡ.
+            Luật no-page-custom-font nhắm vào pages/_document của Pages Router;
+            đây là root layout của App Router nên font đã áp cho mọi trang. */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        {/* eslint-disable-next-line next/no-page-custom-font */}
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap"
+        />
+      </head>
       <body>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         {children}
