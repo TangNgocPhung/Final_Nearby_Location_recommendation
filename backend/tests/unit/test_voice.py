@@ -83,8 +83,28 @@ def test_chon_bang_ten() -> None:
 
 
 def test_bo_tu_dem_nhung_giu_dau_va_vi_tri() -> None:
-    assert voice.clean_query("tìm cho tôi quán phở gần đây") == "quán phở"
+    assert voice.clean_query("tìm cho tôi quán phở gần đây") == "phở"
     assert voice.clean_query("cà phê gần Bến Thành") == "cà phê gần Bến Thành"
+
+
+def test_bo_dai_tu_thua_ma_nhan_dang_giong_noi_chen_vao() -> None:
+    # Câu nhận dạng thật (2026-10-08) khi người dùng nói "quán phở".
+    assert voice.clean_query("Nhà tôi, quán phở tôi.") == "phở"
+    # So có dấu: "tối" không phải "tôi".
+    assert voice.clean_query("quán ăn tối") == "quán ăn tối"
+
+
+def test_bo_quan_tiem_chi_khi_khong_doi_loai_dia_diem() -> None:
+    assert voice.clean_query("quán phở") == "phở"
+    assert voice.clean_query("quán bún bò") == "bún bò"
+    # "quán ăn"/"quán nhậu"/"tiệm thuốc"/"tiệm bánh mì" là tên loại địa điểm — bỏ chữ đầu là mất loại.
+    assert voice.clean_query("tiệm bánh mì") == "tiệm bánh mì"
+    assert voice.clean_query("quán ăn") == "quán ăn"
+    assert voice.clean_query("quán nhậu") == "quán nhậu"
+    assert voice.clean_query("tiệm thuốc") == "tiệm thuốc"
+    assert voice.clean_query("cửa hàng tiện lợi") == "tiện lợi"
+    # Chỉ một chữ "quán" thì không bỏ.
+    assert voice.clean_query("quán") == "quán"
 
 
 # --- Soạn câu nói -------------------------------------------------------------------
