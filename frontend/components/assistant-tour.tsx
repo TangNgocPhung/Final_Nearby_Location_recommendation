@@ -14,6 +14,7 @@ import {
   Square,
 } from 'lucide-react';
 
+import { TourStage, TourThumb, useTourVisuals } from '@/components/tour-visual';
 import { Button } from '@/components/ui/button';
 import {
   NarrationPlayer,
@@ -43,6 +44,9 @@ const ARRIVE_RADIUS_METERS = 60;
  * - Đi thật: tới gần điểm nào (GPS) thì tự đọc thuyết minh điểm đó.
  * - "Phát cả tour": bay bản đồ qua lần lượt từng điểm và đọc liên tục — để
  *   nghe thử tại chỗ, không cần đi bộ.
+ *
+ * Nghe kèm nhìn: `TourStage` trình chiếu ảnh của điểm đang kể và tô sáng câu
+ * đang đọc (components/tour-visual.tsx).
  */
 export function AssistantTour({
   apiBaseUrl,
@@ -66,7 +70,11 @@ export function AssistantTour({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
-  const [nowText, setNowText] = useState<string | null>(null);
+  // Chữ thuyết minh gắn với điểm của nó — đọc xong vẫn giữ để đọc lại, nhưng
+  // không được hiện dưới ảnh của điểm khác.
+  const [nowText, setNowText] = useState<{ poiId: string; text: string } | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [visited, setVisited] = useState<string[]>([]);
   const [autoRun, setAutoRun] = useState(false);
   // Ngôn ngữ thuyết minh của tour — mặc định theo giao diện, đổi riêng được
@@ -114,6 +122,7 @@ export function AssistantTour({
       setPlan(data);
       setVisited([]);
       setNowText(null);
+      setSelectedId(null);
       if (data.status === 'ready') {
         onMapOverlay({
           line: data.geometry ?? null,
@@ -181,8 +190,16 @@ export function AssistantTour({
   const narrate = useCallback(
     async (stop: TourStop) => {
       setPlayingId(stop.poiId);
+      setSelectedId(stop.poiId);
       setNowText(null);
-      const outcome = await player.play(stop.poiId, narrationLanguage, setNowText);
+      setProgress(0);
+      const outcome = await player.play(
+        stop.poiId,
+        narrationLanguage,
+        (text) => setNowText({ poiId: stop.poiId, text }),
+        { onProgress: setProgress },
+      );
+      setProgress(null);
       if (outcome !== 'stopped') {
         setVisited((prev) => (prev.includes(stop.poiId) ? prev : [...prev, stop.poiId]));
       }
@@ -223,6 +240,10 @@ export function AssistantTour({
   }, [narrate, plan, playingId, position, visited]);
 
   const ready = plan?.status === 'ready';
+  const visuals = useTourVisuals(apiBaseUrl, ready && plan ? plan.stops : null);
+  const stageStop = ready
+    ? (plan.stops.find((stop) => stop.poiId === (playingId ?? selectedId)) ?? plan.stops[0])
+    : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -340,13 +361,20 @@ export function AssistantTour({
               minh.
             </p>
 
-            {nowText && (
-              <div className="rounded-lg bg-muted px-3 py-2 text-xs leading-relaxed">
-                <p className="mb-1 font-semibold text-primary">
-                  🎧 {plan.stops.find((stop) => stop.poiId === playingId)?.name ?? 'Đang thuyết minh'}
-                </p>
-                {nowText}
-              </div>
+            {stageStop && (
+              <TourStage
+                stops={plan.stops}
+                stop={stageStop}
+                images={visuals[stageStop.poiId]}
+                visited={visited}
+                playing={playingId === stageStop.poiId}
+                text={nowText?.poiId === stageStop.poiId ? nowText.text : null}
+                progress={progress}
+                onSelect={(stop) => {
+                  setSelectedId(stop.poiId);
+                  onFocusLocation(stop.latitude, stop.longitude);
+                }}
+              />
             )}
 
             <ol className="space-y-1.5">
@@ -363,18 +391,26 @@ export function AssistantTour({
                     )}
                     <div
                       className={cn(
-                        'flex items-start gap-2 rounded-lg border px-2.5 py-2',
+                        'flex items-start gap-2.5 rounded-lg border px-2.5 py-2',
                         isPlaying ? 'border-primary bg-primary/5' : 'border-border',
                       )}
                     >
-                      <span
-                        className={cn(
-                          'grid size-6 shrink-0 place-items-center rounded-full text-[11px] font-bold',
-                          done ? 'bg-emerald-600 text-white' : 'bg-violet-600 text-white',
-                        )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedId(stop.poiId);
+                          onFocusLocation(stop.latitude, stop.longitude);
+                        }}
+                        aria-label={`Xem ảnh ${stop.name}`}
+                        className="shrink-0"
                       >
-                        {stop.order}
-                      </span>
+                        <TourThumb
+                          images={visuals[stop.poiId]}
+                          order={stop.order}
+                          done={done}
+                          active={stageStop?.poiId === stop.poiId}
+                        />
+                      </button>
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-medium">{stop.name}</p>
                         {stop.teaser && (

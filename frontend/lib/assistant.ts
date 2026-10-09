@@ -191,6 +191,7 @@ export class NarrationPlayer {
   private abort: AbortController | null = null;
   private finish: (() => void) | null = null;
   private rate = 1;
+  private onProgress: ((fraction: number) => void) | null = null;
 
   constructor(private readonly apiBaseUrl: string) {}
 
@@ -198,10 +199,17 @@ export class NarrationPlayer {
     poiId: string,
     language: string,
     onText: (text: string) => void,
-    options: { rate?: number } = {},
+    options: {
+      rate?: number;
+      /** 0..1 — đã đọc được bao nhiêu phần bài, để giao diện tô câu đang đọc.
+       *  Với audio là tỉ lệ thời gian (xấp xỉ theo độ dài chữ), với giọng trình
+       *  duyệt là vị trí ký tự thật từ sự kiện `boundary`. */
+      onProgress?: (fraction: number) => void;
+    } = {},
   ): Promise<'ended' | 'stopped' | 'unavailable'> {
     this.stop();
     this.rate = options.rate ?? 1;
+    this.onProgress = options.onProgress ?? null;
     const controller = new AbortController();
     this.abort = controller;
     const lang = encodeURIComponent(language);
@@ -241,6 +249,9 @@ export class NarrationPlayer {
       this.finish = () => resolve('stopped');
       audio.onended = () => resolve('ended');
       audio.onerror = () => resolve('stopped');
+      audio.ontimeupdate = () => {
+        if (audio.duration > 0) this.onProgress?.(audio.currentTime / audio.duration);
+      };
       audio.play().catch(() => resolve('stopped'));
     });
   }
@@ -263,6 +274,7 @@ export class NarrationPlayer {
       this.finish = () => resolve('stopped');
       utterance.onend = () => resolve('ended');
       utterance.onerror = () => resolve('stopped');
+      utterance.onboundary = (event) => this.onProgress?.(event.charIndex / text.length);
       window.speechSynthesis.speak(utterance);
     });
   }
@@ -270,8 +282,10 @@ export class NarrationPlayer {
   stop(): void {
     this.abort?.abort();
     this.abort = null;
+    this.onProgress = null;
     if (this.audio) {
       this.audio.onended = null;
+      this.audio.ontimeupdate = null;
       this.audio.pause();
       this.audio = null;
     }

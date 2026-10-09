@@ -584,7 +584,7 @@ function InfoRow({
   );
 }
 
-function PhotoCaption({
+export function PhotoCaption({
   photo,
   className,
 }: {
