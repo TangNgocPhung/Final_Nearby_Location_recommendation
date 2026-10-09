@@ -263,6 +263,24 @@ def _upsert_lineage(cursor: psycopg.Cursor[Any], poi_id: str, poi: dict[str, Any
     )
 
 
+# OSM đôi khi gắn sai loại (vd "116 Culture Luxury" mang `shop=supermarket`
+# nên lọt vào kết quả "siêu thị"). Bản ghi đè nằm ở `poi_category_overrides`
+# (migration 0031) và được áp lại sau MỖI lượt import: POI mới chèn vào mang
+# nhãn sai của OSM, còn `_merge_poi` gộp lại `tags` nên thẻ sai quay về.
+_APPLY_CATEGORY_OVERRIDES = """
+    UPDATE pois AS p SET
+        category = o.category,
+        category_label = o.category_label,
+        tags = ARRAY(SELECT t FROM unnest(p.tags) AS t WHERE t <> ALL(o.drop_tags) ORDER BY t),
+        updated_at = NOW()
+    FROM poi_source_records AS r
+    JOIN poi_category_overrides AS o ON o.source = r.source AND o.source_id = r.source_id
+    WHERE r.source_type = 'poi'
+      AND r.canonical_poi_id = p.id
+      AND (p.category <> o.category OR p.category_label <> o.category_label OR p.tags && o.drop_tags)
+"""
+
+
 def import_osm_elements(
     database_url: str,
     elements: list[dict[str, Any]],
@@ -305,6 +323,8 @@ def import_osm_elements(
                         poi_id = _insert_poi(cursor, poi)
                         stats["inserted"] += 1
                     _upsert_lineage(cursor, poi_id, poi)
+                cursor.execute(_APPLY_CATEGORY_OVERRIDES)
+                stats["categoryOverrides"] = cursor.rowcount
                 cursor.execute(
                     """
                     UPDATE poi_import_runs SET
