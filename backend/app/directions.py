@@ -49,7 +49,8 @@ logger = logging.getLogger("nearby-directions")
 
 # v2: bước đi có thêm `location` (toạ độ điểm rẽ) — khoá mới để tuyến cũ trong
 # cache (thiếu trường này) không được trả cho chế độ dẫn đường bằng giọng nói.
-CACHE_PREFIX = "nearby:route:v2"
+# v3: bước đi có thêm `maneuver` (loại rẽ + hướng) để giao diện vẽ icon.
+CACHE_PREFIX = "nearby:route:v3"
 CACHE_TTL_SECONDS = 6 * 3600
 REQUEST_TIMEOUT_SECONDS = 4.0
 
@@ -176,6 +177,12 @@ def _shape_response(payload: dict[str, Any], mode: str, approximate: bool) -> di
             steps.append(
                 {
                     "text": _maneuver_text(step),
+                    # Dạng máy của câu chữ trên, để giao diện vẽ icon mũi tên
+                    # đúng hướng rẽ thay vì đoán lại từ câu tiếng Việt.
+                    "maneuver": {
+                        "type": kind or None,
+                        "modifier": ((step.get("maneuver") or {}).get("modifier")) or None,
+                    },
                     "distanceMeters": round(distance, 1),
                     "durationSeconds": round(float(step.get("duration") or 0.0), 1),
                     "name": (step.get("name") or "").strip() or None,

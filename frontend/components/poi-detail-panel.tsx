@@ -46,12 +46,14 @@ import { Button } from '@/components/ui/button';
 import type { UiLanguage } from '@/hooks/use-auto-translate';
 import { usePoiNarration } from '@/hooks/use-poi-narration';
 import { ParkingInfo } from '@/components/parking-info';
+import { PoiVideos, type PoiVideo } from '@/components/poi-videos';
 import { StreetView, useStreetViews } from '@/components/street-view';
 import { VerificationBadge } from '@/components/verification-badge';
 import { VisitorPhotos } from '@/components/visitor-photos';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import { authHeaders, useAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 
 /* ------------------------------------------------------------------ *
@@ -220,6 +222,8 @@ export type PoiDetail = {
   reviews: PoiReview[];
   similar: PoiSimilar[];
   knowledge: PoiKnowledge | null;
+  /** Video YouTube admin đã gắn (backend/app/poi_videos.py); thiếu ở backend cũ. */
+  videos?: PoiVideo[];
   provenance: PoiProvenance;
 };
 
@@ -765,6 +769,8 @@ export function PoiDetailPanel(props: {
 
   // Một phiên chỉ có một đánh giá cho mỗi địa điểm. Khi mở lại panel, nạp đánh
   // giá cũ vào form để người dùng sửa thay vì vô tình tạo nhiều bản sao.
+  // Đăng nhập/đăng xuất đổi chủ sở hữu nên phải nạp lại (authToken).
+  const { token: authToken } = useAuth();
   useEffect(() => {
     if (!poiId || !sessionId) return;
     const controller = new AbortController();
@@ -774,7 +780,8 @@ export function PoiDetailPanel(props: {
         const response = await fetch(
           `${apiBaseUrl}/api/v1/pois/${poiId}/reviews/me`,
           {
-            headers: { 'X-Session-ID': sessionId },
+            // Có token thì backend trả đánh giá của TÀI KHOẢN, không phải phiên.
+            headers: { 'X-Session-ID': sessionId, ...authHeaders() },
             signal: controller.signal,
           },
         );
@@ -801,7 +808,7 @@ export function PoiDetailPanel(props: {
       }
     })();
     return () => controller.abort();
-  }, [apiBaseUrl, poiId, sessionId]);
+  }, [apiBaseUrl, poiId, sessionId, authToken]);
 
   useEffect(() => {
     return () => {
@@ -944,6 +951,7 @@ export function PoiDetailPanel(props: {
           headers: {
             'Content-Type': 'application/json',
             'X-Session-ID': sessionId,
+            ...authHeaders(),
           },
           body: JSON.stringify({
             rating: reviewRating,
@@ -1710,6 +1718,18 @@ export function PoiDetailPanel(props: {
               <Separator />
             </>
           )}
+
+          {/* d3. VIDEO — admin gắn link YouTube; chưa có thì chỉ một dòng tìm kiếm. */}
+          <PoiVideos
+            key={detail.id}
+            apiBaseUrl={apiBaseUrl}
+            poiId={detail.id}
+            poiName={detail.name}
+            city={detail.city}
+            initialVideos={detail.videos ?? []}
+          />
+
+          <Separator />
 
           {/* e. ĐÁNH GIÁ -------------------------------------------------- */}
           <section className="px-4 py-4">

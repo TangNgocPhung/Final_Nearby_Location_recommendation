@@ -160,3 +160,68 @@ def get_user_review(
         "createdAt": row["created_at"].isoformat(),
         "updatedAt": row["updated_at"].isoformat(),
     }
+
+
+def delete_review(review_id: str, database_url: str | None = None) -> dict[str, Any] | None:
+    """Admin gỡ một đánh giá người dùng rồi tính lại điểm POI trong cùng
+    transaction. Trả None nếu không có đánh giá này.
+
+    Gỡ đánh giá CUỐI CÙNG thì `rating`/`rating_source` về NULL thay vì giữ
+    `rating_source = 'user'` với 0 lượt — NULL mở đường cho job Google điền lại
+    (`poi_ratings.save_match` chỉ chặn ghi đè khi nguồn đang là 'user').
+    """
+    database_url = database_url or DATABASE_URL
+    with psycopg.connect(database_url, row_factory=dict_row) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM poi_reviews
+                WHERE id = %(id)s::uuid AND source = 'user'
+                RETURNING poi_id::text AS poi_id
+                """,
+                {"id": review_id},
+            )
+            deleted = cursor.fetchone()
+            if deleted is None:
+                return None
+            poi_id = deleted["poi_id"]
+            cursor.execute(_AGGREGATE_SQL, {"poi_id": poi_id})
+            summary_row = cursor.fetchone()
+            if summary_row and summary_row["review_count"] == 0:
+                cursor.execute(
+                    """
+                    UPDATE pois SET rating = NULL, rating_source = NULL
+                    WHERE id = %(poi_id)s::uuid
+                    """,
+                    {"poi_id": poi_id},
+                )
+        connection.commit()
+    remaining = summary_row["review_count"] if summary_row else 0
+    average = summary_row["rating"] if summary_row and remaining else None
+    return {
+        "deleted": review_id,
+        "poiId": poi_id,
+        "ratingMean": float(average) if average is not None else None,
+        "ratingCount": remaining,
+    }
+
+
+def transfer_owner(from_owner: str, to_owner: str, database_url: str | None = None) -> int:
+    """Chuyển đánh giá của phiên ẩn danh sang tài khoản vừa đăng nhập. Bỏ qua
+    POI mà tài khoản đã có đánh giá — mỗi người một đánh giá cho mỗi POI."""
+    database_url = database_url or DATABASE_URL
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE poi_reviews AS r SET user_id = %(to_owner)s
+                WHERE r.user_id = %(from_owner)s AND r.source = 'user'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM poi_reviews AS t
+                      WHERE t.user_id = %(to_owner)s AND t.source = 'user'
+                        AND t.poi_id = r.poi_id
+                  )
+                """,
+                {"from_owner": from_owner, "to_owner": to_owner},
+            )
+            return cursor.rowcount

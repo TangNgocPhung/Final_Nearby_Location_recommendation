@@ -195,8 +195,8 @@ def transfer_owner(
 ) -> int:
     """Chuyển địa điểm đã lưu từ phiên ẩn danh sang tài khoản vừa đăng nhập.
 
-    Chưa có đường đăng nhập nào gọi hàm này — nó tồn tại để ghi rõ đường di cư
-    đã được tính trước, và để lúc dựng đăng nhập không ai phải nghĩ lại từ đầu.
+    Gọi từ `/api/v1/auth/login` và `/register` (migration 0029): đăng nhập trên
+    trình duyệt đã lưu địa điểm ẩn danh thì danh sách đi theo sang tài khoản.
     Bỏ qua dòng gây trùng (đã lưu cùng POI ở cả hai bên) thay vì đổ lỗi.
     """
     with _connect(database_url) as connection:

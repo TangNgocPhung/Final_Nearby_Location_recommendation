@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
@@ -9,12 +10,14 @@ from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import psycopg
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import (
+    admin,
     assistant,
+    auth,
     charging,
     chat,
     directions,
@@ -26,6 +29,7 @@ from . import (
     parking,
     photos,
     poi_detail,
+    poi_videos,
     reviews,
     saved_places,
     storefront,
@@ -39,14 +43,20 @@ from .config import settings
 from .geocoding import parse_location, reverse_geocode
 from .ingestion import ingestion_status, persist_events, publish_events
 from .ltr import model as ltr_model
+from .auth import AuthError, AuthUser
 from .models import (
+    AdminUserUpdate,
+    ChangePasswordRequest,
     ChatRequest,
     EventBatch,
     ExploreDiscoverRequest,
     GeofenceRequest,
     GeoParseRequest,
+    LoginRequest,
     MeetupRequest,
     ParkingReportRequest,
+    PoiVideoRequest,
+    RegisterRequest,
     ReviewRequest,
     SavedPlaceRequest,
     TourRequest,
@@ -80,6 +90,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     narration.start_prewarm()
     chat.start_warmup()
     embeddings.start_warmup()
+    # Thread riêng vì database có thể chưa sẵn sàng: kết nối treo không được
+    # chặn API khởi động.
+    threading.Thread(target=auth.ensure_bootstrap_admin, name="bootstrap-admin", daemon=True).start()
     yield
 
 
@@ -96,7 +109,8 @@ app.add_middleware(
     allow_credentials=True,
     # DELETE cần cho /api/v1/geofences/{id}: thiếu nó thì trình duyệt chặn ở
     # bước preflight và nút "bỏ nhắc" hỏng lặng lẽ, chỉ thấy lỗi trong console.
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    # PATCH cho /api/v1/admin/users/{id} (đổi vai trò, khoá tài khoản).
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     # X-Narration-*: /narration/audio (Phase 16.2) trả text đã đọc kèm audio
     # qua header — không expose thì frontend gọi được audio nhưng
@@ -497,9 +511,8 @@ def create_review(poi_id: str, payload: ReviewRequest, request: Request) -> Any:
     """
     if not is_postgres_uuid(poi_id):
         return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
-    session_id = getattr(request.state, "session_id", None) or (
-        str(payload.session_id) if payload.session_id else None
-    )
+    user = auth.optional_user(request)
+    session_id = _account_owner_id(request, payload.session_id)
     if not session_id:
         return JSONResponse(
             status_code=400,
@@ -509,7 +522,8 @@ def create_review(poi_id: str, payload: ReviewRequest, request: Request) -> Any:
         poi_id=poi_id,
         session_id=session_id,
         rating=payload.rating,
-        author_name=payload.author_name,
+        # Đã đăng nhập thì tên hiển thị lấy từ tài khoản khi form để trống.
+        author_name=payload.author_name or (user.label if user else None),
         title=payload.title,
         body=payload.body,
     )
@@ -523,7 +537,7 @@ def get_my_review(poi_id: str, request: Request) -> Any:
     """Đánh giá của phiên hiện tại, dùng để điền lại form khi người dùng sửa."""
     if not is_postgres_uuid(poi_id):
         return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
-    session_id = getattr(request.state, "session_id", None)
+    session_id = _account_owner_id(request)
     if not session_id:
         return JSONResponse(status_code=400, content={"detail": "Cần X-Session-ID"})
     return {"review": reviews.get_user_review(poi_id, session_id)}
@@ -1206,9 +1220,9 @@ def delete_geofence(subscription_id: str, request: Request) -> dict[str, Any]:
 
 # --- Địa điểm đã lưu ----------------------------------------------------------
 #
-# Chủ sở hữu hiện là `session_id` ẩn danh. Khi có đăng nhập, chỗ duy nhất phải
-# sửa là hàm dưới đây (trả user id thay vì session id) — xem
-# `saved_places.transfer_owner` cho bước di cư dữ liệu cũ.
+# Chủ sở hữu là tài khoản (`user:<id>`) khi đã đăng nhập, ngược lại là
+# `session_id` ẩn danh — xem `_account_owner_id`. Đăng nhập thì dữ liệu ẩn danh
+# được chuyển sang tài khoản qua `saved_places.transfer_owner`.
 
 
 def _owner_id(request: Request, payload_session: Any = None) -> str | None:
@@ -1217,10 +1231,21 @@ def _owner_id(request: Request, payload_session: Any = None) -> str | None:
     )
 
 
+def _account_owner_id(request: Request, payload_session: Any = None) -> str | None:
+    """Chủ sở hữu cho dữ liệu đi theo TÀI KHOẢN (địa điểm đã lưu, đánh giá):
+    ``user:<id>`` khi có token hợp lệ, ngược lại là phiên ẩn danh như cũ.
+
+    Tách khỏi `_owner_id` có chủ đích: lịch sử chat, săn địa danh, gợi ý trợ lý
+    vẫn ghi theo phiên — đổi chủ sở hữu ở đó thì ghi một nơi, xoá một nẻo.
+    """
+    user = auth.optional_user(request)
+    return user.owner_id if user else _owner_id(request, payload_session)
+
+
 @app.post("/api/v1/saved", status_code=201)
 def create_saved_place(payload: SavedPlaceRequest, request: Request) -> Any:
     """Lưu một POI hoặc một điểm tự do. Lưu lại cùng POI là cập nhật, không nhân đôi."""
-    owner_id = _owner_id(request, payload.session_id)
+    owner_id = _account_owner_id(request, payload.session_id)
     if not owner_id:
         return JSONResponse(
             status_code=400,
@@ -1248,7 +1273,7 @@ def create_saved_place(payload: SavedPlaceRequest, request: Request) -> Any:
 def list_saved_places(request: Request) -> dict[str, Any]:
     """Không có phiên thì trả danh sách rỗng, không phải lỗi: giao diện luôn
     gọi endpoint này lúc khởi động, kể cả trước khi người dùng lưu gì."""
-    owner_id = _owner_id(request)
+    owner_id = _account_owner_id(request)
     if not owner_id:
         return {"places": [], "reason": "no-session"}
     return {"places": saved_places.list_places(owner_id)}
@@ -1256,7 +1281,7 @@ def list_saved_places(request: Request) -> dict[str, Any]:
 
 @app.delete("/api/v1/saved/{place_id}")
 def delete_saved_place(place_id: str, request: Request) -> Any:
-    owner_id = _owner_id(request)
+    owner_id = _account_owner_id(request)
     if not owner_id:
         return JSONResponse(status_code=400, content={"detail": "Cần X-Session-ID"})
     if not saved_places.delete_place(owner_id, place_id):
@@ -1302,3 +1327,157 @@ def get_ltr_status() -> dict[str, Any]:
     "LTR" có thật sự chạy LTR hay không.
     """
     return ltr_model.info()
+
+
+# --- Đăng nhập & phân quyền ----------------------------------------------------
+#
+# Hai vai trò: `user` (mặc định khi đăng ký) và `admin`. Xem `app/auth.py` về
+# token và `app/admin.py` về các chốt chặn khi đổi quyền.
+
+
+def _session_payload(user: AuthUser) -> dict[str, Any]:
+    return {"token": auth.issue_token(user.id), "user": user.public()}
+
+
+def _adopt_session_data(request: Request, user: AuthUser, payload_session: Any) -> None:
+    """Đăng nhập trên trình duyệt đã có dữ liệu ẩn danh thì chuyển nó sang tài
+    khoản. Lỗi ở bước này không được làm hỏng việc đăng nhập."""
+    session_id = _owner_id(request, payload_session)
+    if not session_id:
+        return
+    try:
+        saved_places.transfer_owner(session_id, user.owner_id)
+        reviews.transfer_owner(session_id, user.owner_id)
+    except psycopg.Error as error:
+        logger.warning("Không chuyển được dữ liệu phiên sang tài khoản: %s", error)
+
+
+@app.post("/api/v1/auth/register", status_code=201)
+def register(payload: RegisterRequest, request: Request) -> Any:
+    try:
+        user = auth.create_user(
+            payload.username, payload.password, display_name=payload.display_name, role="user"
+        )
+    except AuthError as error:
+        return JSONResponse(status_code=400, content={"detail": str(error)})
+    _adopt_session_data(request, user, payload.session_id)
+    return _session_payload(user)
+
+
+@app.post("/api/v1/auth/login")
+def login(payload: LoginRequest, request: Request) -> Any:
+    try:
+        user = auth.authenticate(payload.username, payload.password)
+    except AuthError as error:
+        return JSONResponse(status_code=401, content={"detail": str(error)})
+    _adopt_session_data(request, user, payload.session_id)
+    return _session_payload(user)
+
+
+@app.get("/api/v1/auth/me")
+def get_me(user: AuthUser = Depends(auth.require_user)) -> dict[str, Any]:
+    return {"user": user.public()}
+
+
+@app.post("/api/v1/auth/password")
+def post_change_password(
+    payload: ChangePasswordRequest, user: AuthUser = Depends(auth.require_user)
+) -> Any:
+    try:
+        auth.change_password(user, payload.current_password, payload.new_password)
+    except AuthError as error:
+        return JSONResponse(status_code=400, content={"detail": str(error)})
+    return {"changed": True}
+
+
+@app.get("/api/v1/admin/overview")
+def admin_overview(_admin: AuthUser = Depends(auth.require_admin)) -> dict[str, Any]:
+    return admin.overview()
+
+
+@app.get("/api/v1/admin/users")
+def admin_list_users(
+    q: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _admin: AuthUser = Depends(auth.require_admin),
+) -> dict[str, Any]:
+    return admin.list_users(q, limit, offset)
+
+
+@app.patch("/api/v1/admin/users/{user_id}")
+def admin_update_user(
+    user_id: str, payload: AdminUserUpdate, actor: AuthUser = Depends(auth.require_admin)
+) -> Any:
+    try:
+        updated = admin.update_user(
+            actor,
+            user_id,
+            role=payload.role,
+            is_active=payload.is_active,
+            display_name=payload.display_name,
+            password=payload.password,
+        )
+    except AuthError as error:
+        return JSONResponse(status_code=400, content={"detail": str(error)})
+    if updated is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có tài khoản này"})
+    return {"user": updated}
+
+
+@app.get("/api/v1/admin/reviews")
+def admin_list_reviews(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _admin: AuthUser = Depends(auth.require_admin),
+) -> dict[str, Any]:
+    return admin.list_reviews(limit, offset)
+
+
+@app.delete("/api/v1/admin/reviews/{review_id}")
+def admin_delete_review(review_id: str, _admin: AuthUser = Depends(auth.require_admin)) -> Any:
+    if not is_postgres_uuid(review_id):
+        return JSONResponse(status_code=400, content={"detail": "review_id phải là UUID"})
+    result = reviews.delete_review(review_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có đánh giá này"})
+    return result
+
+
+# Video YouTube gắn vào địa điểm: admin dán link, `app/poi_videos.py` chuẩn hoá
+# về id video. Trang chi tiết đọc chúng qua `videos` của `/api/v1/pois/{id}`.
+
+
+@app.get("/api/v1/admin/videos")
+def admin_list_videos(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _admin: AuthUser = Depends(auth.require_admin),
+) -> dict[str, Any]:
+    return poi_videos.list_recent(limit, offset)
+
+
+@app.post("/api/v1/admin/pois/{poi_id}/videos", status_code=201)
+def admin_add_video(
+    poi_id: str, payload: PoiVideoRequest, actor: AuthUser = Depends(auth.require_admin)
+) -> Any:
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    try:
+        video = poi_videos.add_video(actor, poi_id, payload.url, payload.title)
+    except poi_videos.DuplicateVideoError as error:
+        return JSONResponse(status_code=409, content={"detail": str(error)})
+    except poi_videos.VideoError as error:
+        return JSONResponse(status_code=400, content={"detail": str(error)})
+    if video is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có địa điểm này"})
+    return {"video": video}
+
+
+@app.delete("/api/v1/admin/videos/{video_id}")
+def admin_delete_video(video_id: str, _admin: AuthUser = Depends(auth.require_admin)) -> Any:
+    if not is_postgres_uuid(video_id):
+        return JSONResponse(status_code=400, content={"detail": "video_id phải là UUID"})
+    if not poi_videos.delete_video(video_id):
+        return JSONResponse(status_code=404, content={"detail": "Không có video này"})
+    return {"deleted": True}

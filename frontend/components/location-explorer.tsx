@@ -9,6 +9,9 @@ import maplibregl, {
 import {
   Activity,
   ArrowLeft,
+  ArrowUp,
+  ArrowUpLeft,
+  ArrowUpRight,
   Baby,
   BatteryCharging,
   Bell,
@@ -23,6 +26,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  CornerUpLeft,
+  CornerUpRight,
   Church,
   CircleParking,
   Clock,
@@ -35,6 +40,7 @@ import {
   Dumbbell,
   FerrisWheel,
   Film,
+  Flag,
   Flame,
   Flower,
   Flower2,
@@ -56,6 +62,7 @@ import {
   Mailbox,
   Map as MapIcon,
   MapPin,
+  Merge,
   MessageCircle,
   Mic,
   Moon,
@@ -66,6 +73,7 @@ import {
   PawPrint,
   Plane,
   Radio,
+  RotateCw,
   Route,
   Scissors,
   Search,
@@ -75,6 +83,7 @@ import {
   SlidersHorizontal,
   Smile,
   Sparkles,
+  Split,
   SprayCan,
   Star,
   Stethoscope,
@@ -82,6 +91,7 @@ import {
   Sun,
   TrainFront,
   Trees,
+  Undo2,
   UtensilsCrossed,
   Volleyball,
   WashingMachine,
@@ -119,6 +129,8 @@ import {
 import { useTheme } from '@/hooks/use-theme';
 import { useAutoTranslate } from '@/hooks/use-auto-translate';
 import { getTelemetry, type TelemetryState } from '@/lib/telemetry';
+import { authHeaders, useAuth } from '@/lib/auth';
+import { AccountMenu } from '@/components/account-menu';
 import type { AssistantOverlay } from '@/lib/assistant';
 import { cn } from '@/lib/utils';
 
@@ -429,7 +441,69 @@ type RouteStep = {
   distanceMeters: number;
   durationSeconds: number;
   name: string | null;
+  // Loại rẽ của OSRM (`turn`/`depart`/`arrive`/`roundabout`…) và hướng
+  // (`left`/`slight right`/`uturn`…). Tuyến cũ trong cache có thể thiếu.
+  maneuver?: { type: string | null; modifier: string | null } | null;
 };
+
+type StepVisual = { icon: LucideIcon; tone: string; label: string };
+
+// Màu theo NGHĨA của bước: xanh lá xuất phát, đỏ tới nơi, xanh dương rẽ trái,
+// tím rẽ phải, cam vòng xoay/quay đầu — liếc là biết sắp rẽ hướng nào.
+const STEP_TONES = {
+  depart: 'bg-emerald-500 text-white shadow-emerald-500/30',
+  arrive: 'bg-rose-500 text-white shadow-rose-500/30',
+  left: 'bg-sky-500 text-white shadow-sky-500/30',
+  right: 'bg-violet-500 text-white shadow-violet-500/30',
+  straight: 'bg-slate-500 text-white shadow-slate-500/30',
+  special: 'bg-amber-500 text-white shadow-amber-500/30',
+} as const;
+
+/** Icon + màu cho một bước chỉ đường. Ưu tiên `maneuver` của backend; tuyến
+ * cũ không có trường đó thì đọc lại từ câu tiếng Việt do `_maneuver_text` sinh. */
+function stepVisual(step: RouteStep): StepVisual {
+  let type = step.maneuver?.type ?? '';
+  let modifier = step.maneuver?.modifier ?? '';
+  if (!type) {
+    const text = step.text.toLowerCase();
+    if (text.startsWith('bắt đầu')) type = 'depart';
+    else if (text.startsWith('tới nơi')) type = 'arrive';
+    else if (text.includes('vòng xoay')) type = 'roundabout';
+    else if (text.startsWith('nhập làn')) type = 'merge';
+    else if (text.startsWith('tại ngã ba')) type = 'fork';
+    else type = 'turn';
+    if (text.includes('quay đầu')) modifier = 'uturn';
+    else if (text.includes('gắt sang trái')) modifier = 'sharp left';
+    else if (text.includes('gắt sang phải')) modifier = 'sharp right';
+    else if (text.includes('chếch sang trái')) modifier = 'slight left';
+    else if (text.includes('chếch sang phải')) modifier = 'slight right';
+    else if (text.includes('rẽ trái')) modifier = 'left';
+    else if (text.includes('rẽ phải')) modifier = 'right';
+  }
+
+  if (type === 'depart') return { icon: Navigation, tone: STEP_TONES.depart, label: 'Xuất phát' };
+  if (type === 'arrive') return { icon: Flag, tone: STEP_TONES.arrive, label: 'Tới nơi' };
+  if (type === 'roundabout' || type === 'rotary') {
+    return { icon: RotateCw, tone: STEP_TONES.special, label: 'Vòng xoay' };
+  }
+  if (modifier === 'uturn') return { icon: Undo2, tone: STEP_TONES.special, label: 'Quay đầu' };
+  const side = modifier.includes('right') ? STEP_TONES.right : STEP_TONES.left;
+  if (type === 'merge') return { icon: Merge, tone: side, label: 'Nhập làn' };
+  if (type === 'fork') return { icon: Split, tone: side, label: 'Ngã ba' };
+  if (modifier === 'slight left') {
+    return { icon: ArrowUpLeft, tone: STEP_TONES.left, label: 'Chếch trái' };
+  }
+  if (modifier === 'slight right') {
+    return { icon: ArrowUpRight, tone: STEP_TONES.right, label: 'Chếch phải' };
+  }
+  if (modifier === 'left' || modifier === 'sharp left') {
+    return { icon: CornerUpLeft, tone: STEP_TONES.left, label: 'Rẽ trái' };
+  }
+  if (modifier === 'right' || modifier === 'sharp right') {
+    return { icon: CornerUpRight, tone: STEP_TONES.right, label: 'Rẽ phải' };
+  }
+  return { icon: ArrowUp, tone: STEP_TONES.straight, label: 'Đi thẳng' };
+}
 
 type TransportMode = 'car' | 'motorbike' | 'foot';
 
@@ -916,15 +990,19 @@ export function LocationExplorer() {
   // Nạp lại vùng nhắc đã đăng ký khi có phiên: người dùng tải lại trang vẫn
   // --- Địa điểm đã lưu --------------------------------------------------------
   //
-  // Danh sách thuộc về `session_id` ẩn danh, không phải tài khoản (chưa có
-  // đăng nhập). Backend gọi khoá đó là `owner_id` để hôm có tài khoản thật thì
-  // chỉ đổi thứ điền vào, không phải đổi schema — xem migration 0016.
+  // Đã đăng nhập thì danh sách thuộc về tài khoản (gửi kèm token), chưa thì
+  // thuộc `session_id` ẩn danh. Đăng nhập/đăng xuất đổi `authToken` nên danh
+  // sách tự nạp lại theo chủ sở hữu mới — xem `_account_owner_id` ở backend.
+  const { token: authToken } = useAuth();
   const reloadSavedPlaces = useCallback(async () => {
     const sessionId = telemetryState.sessionId;
     if (!sessionId) return;
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/saved`, {
-        headers: { 'X-Session-ID': sessionId },
+        headers: {
+          'X-Session-ID': sessionId,
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
       });
       if (!response.ok) return;
       const data = (await response.json()) as { places?: SavedPlace[] };
@@ -933,7 +1011,7 @@ export function LocationExplorer() {
       // Mất mạng thì giữ nguyên danh sách đang hiện, đừng xoá trắng: danh sách
       // rỗng trông giống "bạn chưa lưu gì" và người dùng sẽ lưu lại lần nữa.
     }
-  }, [telemetryState.sessionId]);
+  }, [telemetryState.sessionId, authToken]);
 
   useEffect(() => {
     // Fetch rồi setState — đúng mẫu effect chính đáng theo tài liệu React
@@ -969,7 +1047,7 @@ export function LocationExplorer() {
         if (existing && kind === 'saved') {
           await fetch(`${API_BASE_URL}/api/v1/saved/${existing.id}`, {
             method: 'DELETE',
-            headers: { 'X-Session-ID': sessionId },
+            headers: { 'X-Session-ID': sessionId, ...authHeaders() },
           });
           setStatus(`Đã bỏ lưu "${poi.name}"`);
         } else {
@@ -978,6 +1056,7 @@ export function LocationExplorer() {
             headers: {
               'Content-Type': 'application/json',
               'X-Session-ID': sessionId,
+              ...authHeaders(),
             },
             // KHÔNG gửi toạ độ: backend lấy thẳng từ pois.location, cùng lý do
             // với geofence — lỗi phía này sẽ ghim "nhà" ở sai chỗ.
@@ -1010,7 +1089,7 @@ export function LocationExplorer() {
       try {
         await fetch(`${API_BASE_URL}/api/v1/saved/${place.id}`, {
           method: 'DELETE',
-          headers: { 'X-Session-ID': sessionId },
+          headers: { 'X-Session-ID': sessionId, ...authHeaders() },
         });
         setStatus(`Đã bỏ lưu "${place.label}"`);
         await reloadSavedPlaces();
@@ -2728,6 +2807,11 @@ export function LocationExplorer() {
             >
               <Mic className="size-5" />
             </Button>
+            <AccountMenu
+              apiBaseUrl={API_BASE_URL}
+              sessionId={telemetryState.sessionId}
+              compact
+            />
             <Popover>
               <PopoverTrigger
                 render={
@@ -2812,6 +2896,7 @@ export function LocationExplorer() {
                 </output>
               )}
             </label>
+            <AccountMenu apiBaseUrl={API_BASE_URL} sessionId={telemetryState.sessionId} />
             <Button
               variant="outline"
               size="sm"
@@ -3877,21 +3962,41 @@ export function LocationExplorer() {
                         )}
                       </div>
                       {showSteps && (
-                        <ol className="max-h-44 space-y-1.5 overflow-y-auto pr-1 text-xs">
-                          {route.steps.map((step, index) => (
-                            <li
-                              key={`${index}-${step.text}`}
-                              className="flex items-start gap-2 rounded-lg bg-muted/60 px-2.5 py-1.5"
-                            >
-                              <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-primary/15 text-[9px] font-bold text-primary">
-                                {index + 1}
-                              </span>
-                              <span className="min-w-0 flex-1">{step.text}</span>
-                              <span className="shrink-0 tabular-nums text-muted-foreground">
-                                {formatDistance(step.distanceMeters)}
-                              </span>
-                            </li>
-                          ))}
+                        <ol className="max-h-44 overflow-y-auto pr-1 text-xs">
+                          {route.steps.map((step, index) => {
+                            const visual = stepVisual(step);
+                            const StepIcon = visual.icon;
+                            const last = index === route.steps.length - 1;
+                            return (
+                              <li
+                                key={`${index}-${step.text}`}
+                                className="relative flex items-center gap-2.5 py-1"
+                              >
+                                {/* Đường nối các icon thành một "dòng thời gian"
+                                    chạy dọc từ điểm xuất phát tới nơi. */}
+                                {!last && (
+                                  <span
+                                    aria-hidden
+                                    className="absolute left-[13px] top-1/2 h-full w-0.5 bg-gradient-to-b from-primary/30 to-primary/10"
+                                  />
+                                )}
+                                <span
+                                  title={visual.label}
+                                  className={`relative z-10 grid size-7 shrink-0 place-items-center rounded-full shadow-md ring-2 ring-background ${visual.tone}`}
+                                >
+                                  <StepIcon className="size-3.5" strokeWidth={2.5} />
+                                </span>
+                                <span className="flex min-w-0 flex-1 items-center gap-2 rounded-lg bg-muted/60 px-2.5 py-1.5">
+                                  <span className="min-w-0 flex-1">{step.text}</span>
+                                  {step.distanceMeters > 0 && (
+                                    <span className="shrink-0 rounded-full bg-background/80 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                                      {formatDistance(step.distanceMeters)}
+                                    </span>
+                                  )}
+                                </span>
+                              </li>
+                            );
+                          })}
                         </ol>
                       )}
                     </div>

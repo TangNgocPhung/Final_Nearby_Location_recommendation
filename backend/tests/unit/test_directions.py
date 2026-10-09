@@ -260,6 +260,14 @@ def test_giu_lai_buoc_dau_va_buoc_cuoi_du_ngan() -> None:
     assert texts[-1] == "Tới nơi"
 
 
+def test_moi_buoc_mang_loai_re_de_ve_icon() -> None:
+    """Giao diện chọn icon mũi tên theo `maneuver`, không đoán lại từ câu chữ."""
+    steps = directions._shape_response(OSRM_OK, "car", False)["steps"]
+    assert steps[0]["maneuver"] == {"type": "depart", "modifier": "straight"}
+    assert steps[1]["maneuver"] == {"type": "turn", "modifier": "left"}
+    assert steps[-1]["maneuver"]["type"] == "arrive"
+
+
 def test_khong_co_tuyen_thi_tra_none() -> None:
     assert directions._shape_response({"code": "Ok", "routes": []}, "car", False) is None
     assert directions._shape_response({}, "car", False) is None
