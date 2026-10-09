@@ -149,3 +149,92 @@ def test_multi_channel_falls_back_when_cluster_unreachable(monkeypatch) -> None:
     assert retrieval.multi_channel_candidates(10.0, 106.0, 1000, "phở", None, 50) is None
 
     reset_client_cache()
+
+
+# --- Hit BM25 chỉ khớp nhờ gộp nhầm dấu ------------------------------------------
+#
+# Đo 2026-10-10 (chế độ giọng nói, "quán phở" quanh 10.7757, 106.7009): BM25
+# trả 11 quán phở rồi tới "Nhà Hát Thành Phố", "Bảo tàng Thành phố"… vì
+# vi_folded biến cả "phở" lẫn "phố" thành "pho". Diversify kéo ngay POI khác
+# loại đầu tiên lên sau hai quán phở → "Nhà Hát Thành Phố" đứng hạng 3.
+
+
+def _hit(poi_id: str, name: str, label: str = "Ăn uống", tags: list[str] | None = None) -> dict:
+    return {
+        "_score": 1.0,
+        "_source": {"poi_id": poi_id, "name": name, "category_label": label, "tags": tags or []},
+    }
+
+
+def _bm25_response() -> dict:
+    return {
+        "hits": {
+            "hits": [
+                _hit("pho-nha-minh", "Phở Nhà Mình", tags=["restaurant"]),
+                _hit("pho-hien", "Pho Hien", tags=["restaurant"]),
+                _hit("nha-hat", "Nhà Hát Thành Phố", "Ga tàu"),
+                _hit("bao-tang", "Bảo tàng Thành phố", "Văn hóa", ["museum"]),
+                _hit("phong-kham", "Trung Tâm Y Tế Dự Phòng - Phòng Khám", "Y tế", ["hospital"]),
+            ]
+        }
+    }
+
+
+def test_bm25_bo_hit_pho_khop_nham_pho() -> None:
+    filtered = retrieval._drop_mark_collisions(_bm25_response(), "phở")
+
+    ids = [poi_id for poi_id, _ in retrieval.query_builder.extract_ranked_hits(filtered)]
+    assert ids == ["pho-nha-minh", "pho-hien"]
+
+
+def test_bm25_khong_loc_khi_go_khong_dau() -> None:
+    response = _bm25_response()
+
+    assert retrieval._drop_mark_collisions(response, "pho") is response
+
+
+def test_bm25_giu_nguyen_khi_loc_het() -> None:
+    """Gõ sai dấu ("phơ") thì không hit nào khớp đúng dấu — khớp nhờ bỏ dấu
+    vẫn hơn trả rỗng. ("Pho Hien" không dấu thì vẫn khớp nên bỏ khỏi đây.)"""
+    response = _bm25_response()
+    response["hits"]["hits"] = [
+        hit for hit in response["hits"]["hits"] if hit["_source"]["poi_id"] != "pho-hien"
+    ]
+
+    assert retrieval._drop_mark_collisions(response, "phơ") is response
+
+
+class _Bm25OnlyClient:
+    def __init__(self) -> None:
+        self.bodies: list[dict] = []
+
+    def search(self, index: str, body: dict) -> dict:
+        self.bodies.append(body)
+        if "multi_match" in str(body["query"]):
+            return _bm25_response()
+        # Kênh không gian: mọi POI, cái khớp nhầm dấu ở gần nhất.
+        ids = ["nha-hat", "bao-tang", "phong-kham", "pho-nha-minh", "pho-hien"]
+        return {"hits": {"hits": [{"_source": {"poi_id": poi_id}, "_score": None} for poi_id in ids]}}
+
+
+def test_multi_channel_khong_dua_poi_khop_nham_dau_vao_ung_vien(monkeypatch) -> None:
+    client = _Bm25OnlyClient()
+    hydrated: dict = {}
+
+    def fake_hydrate(ranked, *args, **kwargs):
+        hydrated["ids"] = [poi_id for poi_id, _ in ranked]
+        hydrated["bm25"] = kwargs["bm25_scores"]
+        return []
+
+    monkeypatch.setattr(retrieval, "search_available", lambda: True)
+    monkeypatch.setattr(retrieval, "get_client", lambda: client)
+    monkeypatch.setattr(retrieval, "_trending_ids", lambda *args: [])
+    monkeypatch.setattr(retrieval, "hydrate_candidates", fake_hydrate)
+    monkeypatch.setattr(settings, "opensearch_knn_enabled", False, raising=False)
+
+    retrieval.multi_channel_candidates(10.7757, 106.7009, 2000, "phở", None, 100)
+
+    assert sorted(hydrated["ids"]) == ["pho-hien", "pho-nha-minh"]
+    assert set(hydrated["bm25"]) == {"pho-hien", "pho-nha-minh"}
+    bm25_body = next(body for body in client.bodies if "multi_match" in str(body["query"]))
+    assert {"name", "tags", "search_keywords"} <= set(bm25_body["_source"])

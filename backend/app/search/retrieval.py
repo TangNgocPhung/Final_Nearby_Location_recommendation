@@ -12,7 +12,12 @@ from typing import Any
 from .. import geo_cache
 from ..config import settings
 from ..embeddings import semantic_embedding
-from ..poi_features import categories_for_query, h3_ring_geometry, h3_ring_ids
+from ..poi_features import (
+    categories_for_query,
+    h3_ring_geometry,
+    h3_ring_ids,
+    matches_query_marks,
+)
 from . import query as query_builder
 from .client import get_client, search_available
 from .enrichment import hydrate_candidates
@@ -59,6 +64,35 @@ MAX_SEMANTIC_BACKFILL = 10
 def _search_hits(client: Any, body: dict[str, Any]) -> list[tuple[str, float]]:
     response = client.search(index=INDEX_NAME, body=body)
     return query_builder.extract_ranked_hits(response)
+
+
+def _hit_texts(hit: dict[str, Any]) -> list[str]:
+    source = hit.get("_source") or {}
+    texts: list[str] = []
+    for field in query_builder.BM25_TEXT_FIELDS:
+        value = source.get(field)
+        if isinstance(value, list):
+            texts.extend(str(item) for item in value if item)
+        elif value:
+            texts.append(str(value))
+    return texts
+
+
+def _drop_mark_collisions(response: dict[str, Any], clean_query: str) -> dict[str, Any]:
+    """Bỏ hit BM25 chỉ khớp nhờ bỏ dấu gộp nhầm chữ khác ("phở" -> "Thành Phố").
+
+    Lọc ở đây chứ không chỉ hạ điểm: `_gate_by_text_relevance` coi MỌI hit BM25
+    là bằng chứng liên quan, và ``ranking.diversify`` kéo ngay ứng viên khác loại
+    đầu tiên lên sau hai quán phở — đúng cách "Nhà Hát Thành Phố" lên hạng 3.
+
+    Bỏ hết thì giữ nguyên: người dùng có thể gõ sai dấu ("phơ"), và khi đó khớp
+    nhờ bỏ dấu vẫn hơn không có kết quả nào.
+    """
+    hits = (response or {}).get("hits", {}).get("hits", [])
+    kept = [hit for hit in hits if matches_query_marks(clean_query, _hit_texts(hit))]
+    if not kept or len(kept) == len(hits):
+        return response
+    return {**response, "hits": {**response["hits"], "hits": kept}}
 
 
 def _search_ids(client: Any, body: dict[str, Any]) -> list[str]:
@@ -230,11 +264,14 @@ def multi_channel_candidates(
     try:
         clean_query = query_text.strip() if query_text else ""
         if clean_query:
-            bm25_hits = _search_hits(
-                client,
-                query_builder.bm25_body(
+            bm25_response = client.search(
+                index=INDEX_NAME,
+                body=query_builder.bm25_body(
                     clean_query, latitude, longitude, radius, category, PER_CHANNEL_SIZE
                 ),
+            )
+            bm25_hits = query_builder.extract_ranked_hits(
+                _drop_mark_collisions(bm25_response, clean_query)
             )
             channels["bm25"] = [poi_id for poi_id, _score in bm25_hits]
             bm25_scores = dict(bm25_hits)
