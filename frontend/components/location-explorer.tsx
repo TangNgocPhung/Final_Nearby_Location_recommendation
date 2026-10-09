@@ -567,6 +567,14 @@ function formatDistance(distance = 0) {
     : `${(distance / 1_000).toFixed(1)} km`;
 }
 
+// Updater cho setSelectedPoiId: giữ lựa chọn cũ nếu POI đó vẫn còn trong danh
+// sách mới. Đặt ngoài component vì React Compiler báo invariant khi closure
+// trong khối `catch` bắt lại biến cục bộ của chính khối đó.
+function keepSelectionIn(pois: readonly { id: string }[]) {
+  return (prev: string | null) =>
+    prev && pois.some((poi) => poi.id === prev) ? prev : null;
+}
+
 function enrichSamplePois(
   position: Position,
   query: string,
@@ -2287,9 +2295,7 @@ export function LocationExplorer() {
       // KHÔNG tự chọn kết quả nào: thẻ "Đang chọn" chỉ hiện khi người dùng bấm.
       // Chỉ giữ lựa chọn cũ nếu POI đó vẫn còn trong kết quả mới.
       setDirectionsPoiId(null);
-      setSelectedPoiId((prev) =>
-        prev && data.results.some((poi) => poi.id === prev) ? prev : null,
-      );
+      setSelectedPoiId(keepSelectionIn(data.results));
       setGatewayStatus(`Gateway OK · ${data.requestId.slice(0, 8)}`);
       if (data.parsedLocation.matched && data.parsedLocation.bestMatch) {
         setParserStatus(
@@ -2339,9 +2345,7 @@ export function LocationExplorer() {
       // trong khi màn hình đang là 6 POI mẫu bịa sẵn.
       setSearchMeta(null);
       setDirectionsPoiId(null);
-      setSelectedPoiId((prev) =>
-        prev && fallback.some((poi) => poi.id === prev) ? prev : null,
-      );
+      setSelectedPoiId(keepSelectionIn(fallback));
       setStatus(
         `${fallback.length} kết quả mẫu · khởi động backend để dùng PostGIS`,
       );
