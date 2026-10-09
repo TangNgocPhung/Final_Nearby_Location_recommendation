@@ -413,7 +413,8 @@ const OSM_RASTER_STYLE = {
   glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
   layers: [{ id: 'osm', type: 'raster' as const, source: 'osm' }],
 };
-const DEFAULT_POINT_COLOR = '#f97316';
+// Màu chấm POI có nhãn lạ, không nằm trong CATEGORY_COLORS.
+const DEFAULT_POINT_COLOR = '#64748b';
 // Màu pin của POI đang chọn — đỏ quen mắt kiểu ghim Google Maps, tách hẳn khỏi
 // bảng cam/xanh của các chấm POI để nhìn phát biết ngay "đây là chỗ vừa bấm".
 const SELECTED_PIN_COLOR = '#ea4335';
@@ -606,7 +607,11 @@ function poisToFeatureCollection(
     type: 'FeatureCollection',
     features: pois.map((poi) => ({
       type: 'Feature',
-      properties: { id: poi.id },
+      properties: {
+        id: poi.id,
+        color: categoryColor(poi.categoryLabel),
+        icon: `${POI_ICON_PREFIX}${poi.categoryLabel}`,
+      },
       geometry: { type: 'Point', coordinates: [poi.longitude, poi.latitude] },
     })),
   };
@@ -619,7 +624,7 @@ function pointColorExpression(
     'case',
     ['==', ['get', 'id'], selectedPoiId ?? ''],
     SELECTED_POINT_COLOR,
-    DEFAULT_POINT_COLOR,
+    ['get', 'color'],
   ];
 }
 
@@ -729,6 +734,112 @@ const CATEGORY_CHIP_ICONS: Record<string, LucideIcon> = {
 
 function categoryChipIcon(label: string): LucideIcon {
   return CATEGORY_CHIP_ICONS[label] ?? MapPin;
+}
+
+// Màu chấm POI trên bản đồ theo NHÓM danh mục — 40 nhãn mà 40 màu thì mắt
+// không phân biệt nổi, gom thành ~12 họ màu (ăn uống cam, y tế đỏ, mua sắm
+// hồng...). Tránh xanh lục emerald vì đó là màu của cụm, và đỏ #ea4335 đã
+// dành cho ghim POI đang chọn nên y tế dùng đỏ đậm hơn.
+const CATEGORY_COLOR_GROUPS: [string, string[]][] = [
+  ['#f97316', ['Ăn uống']],
+  ['#92400e', ['Cà phê']],
+  ['#db2777', ['Mua sắm', 'Chợ', 'Giày dép', 'Tiệm vàng', 'Kính mắt', 'Tiệm hoa']],
+  ['#65a30d', ['Công viên', 'Khu vui chơi']],
+  ['#b91c1c', ['Y tế', 'Nha khoa']],
+  ['#2563eb', ['Giáo dục', 'Mầm non']],
+  ['#0891b2', ['Dịch vụ', 'Bưu điện', 'Giặt ủi', 'Thú cưng']],
+  ['#c026d3', ['Spa', 'Làm đẹp', 'Cắt tóc']],
+  ['#4f46e5', ['Lưu trú']],
+  ['#9333ea', ['Giải trí', 'Xem phim', 'Tiệc cưới & sự kiện']],
+  ['#0d9488', ['Thể thao', 'Bể bơi', 'Sân thể thao']],
+  ['#ca8a04', ['Văn hóa', 'Địa danh', 'Tín ngưỡng']],
+  ['#475569', ['Cây xăng', 'Trạm sạc', 'Sửa xe', 'Rửa xe', 'Bãi xe', 'Bến xe', 'Ga tàu', 'Sân bay']],
+  ['#1e3a8a', ['Công an', 'Hành chính']],
+];
+const CATEGORY_COLORS: Record<string, string> = Object.fromEntries(
+  CATEGORY_COLOR_GROUPS.flatMap(([color, labels]) =>
+    labels.map((label) => [label, color]),
+  ),
+);
+
+function categoryColor(label: string): string {
+  return CATEGORY_COLORS[label] ?? DEFAULT_POINT_COLOR;
+}
+
+// Ảnh icon của chấm POI đăng ký với MapLibre dưới id `poi-icon:<nhãn>`, tạo
+// lười trong `styleimagemissing` — chỉ nhãn nào thật sự xuất hiện mới tốn canvas.
+const POI_ICON_PREFIX = 'poi-icon:';
+const POI_ICON_SIZE = 15;
+const POI_ICON_PIXEL_RATIO = 2;
+const POI_ICON_MIN_ZOOM = 15;
+
+type LucideIconNode = [string, Record<string, string | number>][];
+
+// Lấy danh sách phần tử SVG của icon lucide. lucide-react không export
+// `__iconNode` qua entry chính, nhưng mỗi icon là forwardRef mà hàm render chỉ
+// trả `createElement(Icon, { iconNode, ... })` (không hook) — gọi thẳng là đọc
+// được. Đổi phiên bản lucide mà cấu trúc khác thì trả null, chấm vẫn có màu.
+function lucideIconNode(icon: LucideIcon): LucideIconNode | null {
+  try {
+    const element = (
+      icon as unknown as {
+        render: (props: object, ref: null) => { props: { iconNode?: LucideIconNode } };
+      }
+    ).render({}, null);
+    return element.props.iconNode ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Vẽ icon trắng lên canvas bằng Path2D thay vì nạp SVG qua <img>: nạp ảnh là
+// bất đồng bộ, mà `styleimagemissing` cần addImage NGAY trong handler — trễ một
+// nhịp là MapLibre đã dựng tile không có icon và không tự vẽ lại.
+function renderPoiIcon(icon: LucideIcon): ImageData | null {
+  const nodes = lucideIconNode(icon);
+  const pixels = POI_ICON_SIZE * POI_ICON_PIXEL_RATIO;
+  const canvas = document.createElement('canvas');
+  canvas.width = pixels;
+  canvas.height = pixels;
+  const context = canvas.getContext('2d');
+  if (!nodes || !context) return null;
+  // viewBox lucide là 24×24, nét 2.
+  context.scale(pixels / 24, pixels / 24);
+  context.strokeStyle = '#ffffff';
+  context.lineWidth = 2.25;
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  const num = (value: string | number | undefined) => Number(value ?? 0);
+  for (const [tag, attrs] of nodes) {
+    let path: Path2D;
+    if (tag === 'path') {
+      path = new Path2D(String(attrs.d));
+    } else if (tag === 'circle') {
+      path = new Path2D();
+      path.arc(num(attrs.cx), num(attrs.cy), num(attrs.r), 0, Math.PI * 2);
+    } else if (tag === 'rect') {
+      path = new Path2D();
+      path.roundRect(
+        num(attrs.x),
+        num(attrs.y),
+        num(attrs.width),
+        num(attrs.height),
+        num(attrs.rx),
+      );
+    } else if (tag === 'line') {
+      path = new Path2D(
+        `M${num(attrs.x1)} ${num(attrs.y1)}L${num(attrs.x2)} ${num(attrs.y2)}`,
+      );
+    } else if (tag === 'polyline' || tag === 'polygon') {
+      path = new Path2D(
+        `M${String(attrs.points)}${tag === 'polygon' ? 'Z' : ''}`,
+      );
+    } else {
+      continue;
+    }
+    context.stroke(path);
+  }
+  return context.getImageData(0, 0, pixels, pixels);
 }
 
 // Số chip danh mục hiện khi thu gọn — vừa đủ hai hàng trong cột 430px.
@@ -1822,6 +1933,14 @@ export function LocationExplorer() {
     // style được parse xong — đủ điều kiện để addSource/addLayer — và không phụ thuộc
     // vào việc tile tải được hay không.
     const initMapLayers = () => {
+      map.on('styleimagemissing', (event) => {
+        if (!event.id.startsWith(POI_ICON_PREFIX) || map.hasImage(event.id)) return;
+        const image = renderPoiIcon(
+          categoryChipIcon(event.id.slice(POI_ICON_PREFIX.length)),
+        );
+        if (image) map.addImage(event.id, image, { pixelRatio: POI_ICON_PIXEL_RATIO });
+      });
+
       map.addSource('pois', {
         type: 'geojson',
         data: poisToFeatureCollection(poisRef.current),
@@ -1922,10 +2041,28 @@ export function LocationExplorer() {
         source: 'pois',
         filter: ['!', ['has', 'point_count']],
         paint: {
-          'circle-radius': 9,
-          'circle-stroke-width': 3,
+          // Dưới zoom 15 không có icon (xem 'unclustered-icon') nên thu chấm
+          // lại cho đỡ rối; từ 15 trở lên phóng to cho icon đủ chỗ.
+          'circle-radius': ['step', ['zoom'], 8, POI_ICON_MIN_ZOOM, 13],
+          'circle-stroke-width': 2.5,
           'circle-stroke-color': '#ffffff',
           'circle-color': pointColorExpression(selectedPoiIdRef.current),
+        },
+      });
+      // Icon loại địa điểm vẽ đè lên chấm màu, chỉ khi đã zoom đủ gần — xa hơn
+      // thì khu trung tâm dày đặc icon, nhìn rối mà cũng không đọc nổi. Không
+      // bắt click riêng: handler của 'unclustered-point' vẫn nhận cú bấm vì
+      // chấm nằm ngay bên dưới.
+      map.addLayer({
+        id: 'unclustered-icon',
+        type: 'symbol',
+        source: 'pois',
+        minzoom: POI_ICON_MIN_ZOOM,
+        filter: ['!', ['has', 'point_count']],
+        layout: {
+          'icon-image': ['get', 'icon'],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
         },
       });
 
@@ -3756,7 +3893,7 @@ export function LocationExplorer() {
           <div className="pointer-events-none absolute left-[4.25rem] top-4 z-10 hidden h-10 items-center rounded-full border border-white/70 bg-white/90 px-4 text-xs shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md lg:flex dark:border-white/10 dark:bg-card/90">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
               <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-sky-500 ring-2 ring-sky-500/20" /> Vị trí của bạn</span>
-              <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-orange-500 ring-2 ring-orange-500/20" /> POI</span>
+              <span className="flex items-center gap-1.5"><span className="flex -space-x-1"><span className="size-2.5 rounded-full bg-orange-500 ring-1 ring-white" /><span className="size-2.5 rounded-full bg-pink-600 ring-1 ring-white" /><span className="size-2.5 rounded-full bg-blue-600 ring-1 ring-white" /></span> POI theo loại</span>
               <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-500/20" /> Cụm</span>
               <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-sky-500/60 ring-2 ring-sky-500/15" /> Vành H3</span>
             </div>
