@@ -12,7 +12,7 @@ không phải WC công cộng, và LUÔN nói rõ nguồn của từng kết qu�
 - ``fuel``: cây xăng — đa số có WC cho khách, nhưng OSM hầu như không ghi, nên
   giao diện phải ghi "thường có", không khẳng định.
 - ``mall``: trung tâm thương mại — CHỈ ``shop=mall`` hoặc bách hoá lớn có tên
-  thật (xem ``is_real_mall``). ``shop=department_store`` ở VN bị dùng tràn lan
+  thật (xem ``poi_features.is_real_mall``). ``shop=department_store`` ở VN bị dùng tràn lan
   cho tạp hoá ("bách hoá" dịch thẳng): 520 điểm, gần hết là "Tạp hóa cô Mai",
   cả cửa hàng Tiffany (đo 2026-10-10) — coi hết là TTTM có WC là sai.
 - ``venue``: địa điểm khác có thẻ ``toilets=yes`` (quán cà phê, siêu thị...) —
@@ -30,8 +30,8 @@ from psycopg.rows import dict_row
 
 from . import charging
 from .config import settings
-from .fuel import _fold
 from .opening_hours import opening_status
+from .poi_features import is_real_mall
 from .spatio_temporal import DEFAULT_TIMEZONE
 
 MODES = ("foot", "motorbike")
@@ -45,25 +45,6 @@ KIND_LABELS = {
     "mall": "Trung tâm thương mại",
     "venue": "Có WC cho khách",
 }
-
-
-# Bách hoá lớn thật gắn `shop=department_store` (đã bỏ dấu, viết liền).
-_DEPARTMENT_STORE_MARKERS = (
-    "lottedepartmentstore",
-    "parkson",
-    "takashimaya",
-    "unionsquare",
-    "trungtamthuongmai",
-    "tttm",
-    "vincom",
-)
-
-
-def is_real_mall(name: str | None, tags: dict[str, Any]) -> bool:
-    if tags.get("shop") == "mall":
-        return True
-    folded = _fold(name or "")
-    return any(marker in folded for marker in _DEPARTMENT_STORE_MARKERS)
 
 
 def kind_of(category: str, name: str | None = None, tags: dict[str, Any] | None = None) -> str | None:

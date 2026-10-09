@@ -568,6 +568,29 @@ def _has_vietnamese_marks(value: str) -> bool:
     return bool(folded) and folded != re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
+# Bách hoá lớn thật gắn `shop=department_store` (đã bỏ dấu, viết liền). Ở VN
+# thẻ này bị dùng tràn lan cho tạp hoá ("bách hoá" dịch thẳng): đo 2026-10-10
+# có 520 POI, gần hết là "Tạp hóa cô Mai", chỉ vài nơi là bách hoá lớn thật.
+_DEPARTMENT_STORE_MARKERS = (
+    "lottedepartmentstore",
+    "parkson",
+    "takashimaya",
+    "unionsquare",
+    "trungtamthuongmai",
+    "tttm",
+    "vincom",
+)
+
+
+def is_real_mall(name: str | None, tags: dict[str, Any]) -> bool:
+    """``shop=mall``, hoặc ``shop=department_store`` mang tên một bách hoá lớn
+    thật (Lotte, Parkson, Vincom...). Còn lại là tạp hoá gắn nhầm thẻ."""
+    if tags.get("shop") == "mall":
+        return True
+    folded = normalize_text(name).replace(" ", "")
+    return any(marker in folded for marker in _DEPARTMENT_STORE_MARKERS)
+
+
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
     # Thứ tự khoá là thứ tự ƯU TIÊN, không phải tuỳ ý: một POI mang nhiều thẻ
     # (nhà thờ vừa `amenity=place_of_worship` vừa `tourism=attraction`) sẽ lấy
@@ -586,6 +609,10 @@ def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
     ):
         value = tags.get(key)
         if value and (key, value) in CATEGORY_MAP:
+            if (key, value) == ("shop", "department_store") and not is_real_mall(
+                tags.get("name") or tags.get("name:vi"), tags
+            ):
+                return ("convenience", "Mua sắm")
             return CATEGORY_MAP[(key, value)]
     return None
 
