@@ -415,3 +415,73 @@ def available(mode: str = DEFAULT_MODE) -> bool:
             return json.load(response).get("code") == "Ok"
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         return False
+
+
+# Bán kính tối đa để coi một con đường là "đường của địa điểm". Cây xăng, bãi xe
+# nằm sát mặt đường nên đoạn gần nhất thường cách < 30 m; xa hơn 60 m thì tên
+# đường dễ là đường song song phía sau, nói ra thành sai.
+NEAREST_STREET_MAX_METERS = 60.0
+STREET_CACHE_PREFIX = "nearby:street:v2"
+STREET_CACHE_TTL_SECONDS = 30 * 24 * 3600
+
+
+def streets_from_waypoints(
+    waypoints: list[dict[str, Any]], max_meters: float = NEAREST_STREET_MAX_METERS
+) -> dict[str, Any] | None:
+    """Rút tên đường (không trùng, gần trước) từ ``waypoints`` của OSRM
+    /nearest. Đoạn không tên (đường nội bộ, lối vào cây xăng) bị bỏ qua — chúng
+    không giúp người dùng tìm ra chỗ."""
+    streets: list[str] = []
+    nearest_meters: float | None = None
+    for waypoint in waypoints:
+        name = (waypoint.get("name") or "").strip()
+        meters = float(waypoint.get("distance") or 0.0)
+        if not name or meters > max_meters:
+            continue
+        if nearest_meters is None:
+            nearest_meters = meters
+        # "Hẻm 702 Hồng Bàng" đã nói đủ "Hồng Bàng": không ghép thành "góc"
+        # của hai tên trùng nghĩa.
+        if any(name in other for other in streets):
+            continue
+        streets = [other for other in streets if other not in name]
+        streets.append(name)
+    if not streets:
+        return None
+    return {"streets": streets[:2], "distanceMeters": round(nearest_meters or 0.0)}
+
+
+def nearest_streets(latitude: float, longitude: float, client: Any | None = None) -> dict[str, Any] | None:
+    """Tên đường sát một toạ độ — OSRM /nearest trên đồ thị ô tô.
+
+    Dùng làm địa chỉ ƯỚC LƯỢNG cho địa điểm mà nguồn dữ liệu không có thẻ
+    ``addr:*`` (đo 2026-10-09: 362/520 cây xăng ở TP.HCM). Trả
+    ``{"streets": ["Nguyễn Thị Nhỏ", "Lê Quang Sung"], "distanceMeters": 21}`` —
+    hai tên nghĩa là địa điểm nằm ở góc giao lộ. Kết quả cache Redis dài hạn vì
+    địa điểm và mạng đường gần như không đổi.
+    """
+    resolved = _base_url("car")
+    if resolved is None:
+        return None
+    base_url, profile, _ = resolved
+    key = f"{STREET_CACHE_PREFIX}:{round(latitude, 5):.5f},{round(longitude, 5):.5f}"
+    client = client if client is not None else _get_redis()
+    if client is not None:
+        try:
+            cached = client.get(key)
+            if cached is not None:
+                return json.loads(cached) or None
+        except (redis.RedisError, ValueError):
+            pass
+    payload = _osrm_get(f"{base_url}/nearest/v1/{profile}/{longitude:.6f},{latitude:.6f}?number=5", "car")
+    if payload is None:
+        return None
+    result = streets_from_waypoints(payload.get("waypoints") or [])
+    if client is not None:
+        try:
+            # Cache cả kết quả rỗng ("{}") để điểm không có đường tên không gọi
+            # lại OSRM mỗi lần.
+            client.setex(key, STREET_CACHE_TTL_SECONDS, json.dumps(result or {}, ensure_ascii=False))
+        except redis.RedisError:
+            pass
+    return result

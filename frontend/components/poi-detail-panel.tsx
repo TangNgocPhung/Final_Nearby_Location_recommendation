@@ -53,6 +53,7 @@ import { VisitorPhotos } from '@/components/visitor-photos';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import { formatStreetAddress, type StreetAddress } from '@/lib/address';
 import { authHeaders, useAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 
@@ -193,6 +194,7 @@ export type PoiDetail = {
     name: string;
     distanceMeters: number;
   } | null;
+  streetAddress?: StreetAddress | null;
   district: string | null;
   city: string;
   countryCode: string;
@@ -1476,6 +1478,13 @@ export function PoiDetailPanel(props: {
                     Ước lượng — cạnh {detail.nearbyAddress.name} (
                     {detail.nearbyAddress.distanceMeters} m), nguồn dữ liệu chưa
                     có số nhà
+                  </p>
+                </>
+              ) : detail.streetAddress ? (
+                <>
+                  <p>{formatStreetAddress(detail.streetAddress)}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Ước lượng theo bản đồ đường — nguồn dữ liệu chưa có số nhà
                   </p>
                 </>
               ) : (

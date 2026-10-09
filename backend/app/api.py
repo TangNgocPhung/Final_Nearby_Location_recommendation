@@ -23,6 +23,7 @@ from . import (
     directions,
     embeddings,
     explore,
+    fuel,
     geofence,
     languages,
     narration,
@@ -922,6 +923,29 @@ def charging_search(
         longitude=lng,
         vehicle=vehicle,
         network=network,
+        open_now=open_now,
+        radius=radius,
+        limit=limit,
+    )
+
+
+@app.get("/api/v1/fuel/search")
+def fuel_search(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    vehicle: str = Query(default="motorbike", pattern="^(motorbike|car)$"),
+    brand: str = Query(default="any", pattern="^(any|petrolimex|pvoil|saigon_petro|comeco|mipec|other)$"),
+    open_now: bool = Query(default=False),
+    radius: int = Query(default=fuel.DEFAULT_RADIUS_METERS, ge=500, le=30_000),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Trạm xăng theo hãng (Petrolimex, PVOIL, Saigon Petro, Comeco…), đang mở
+    cửa — xếp theo THỜI GIAN CHẠY XE THẬT tới trạm (OSRM). Xem `app/fuel.py`."""
+    return fuel.search_stations(
+        latitude=lat,
+        longitude=lng,
+        vehicle=vehicle,
+        brand=brand,
         open_now=open_now,
         radius=radius,
         limit=limit,

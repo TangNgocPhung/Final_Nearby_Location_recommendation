@@ -104,6 +104,7 @@ import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
 import { ChatWidget } from '@/components/chat-widget';
 import { VoiceMode } from '@/components/voice-mode';
 import { ChargingFinder } from '@/components/charging-finder';
+import { FuelFinder } from '@/components/fuel-finder';
 import { ParkingFinder, type ParkingRequest } from '@/components/parking-finder';
 import { useProximityNotifications } from '@/hooks/use-proximity';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
@@ -749,6 +750,7 @@ export function LocationExplorer() {
   // trái quá rối. Mở bằng nút gọn ở cột trái hoặc nút "Gửi xe" ở panel chi tiết.
   const [parkingOpen, setParkingOpen] = useState(false);
   const [chargingOpen, setChargingOpen] = useState(false);
+  const [fuelOpen, setFuelOpen] = useState(false);
   // Lớp vẽ tạm của trợ lý (tuyến tour, người trong nhóm hẹn, quán gợi ý) — xem
   // components/chat-widget.tsx. Tách khỏi 'route' để chỉ đường và tour không
   // xoá lẫn nhau.
@@ -3288,8 +3290,16 @@ export function LocationExplorer() {
               onOpenDetail={openParkingDetail}
               onClose={() => setChargingOpen(false)}
             />
+          ) : fuelOpen ? (
+            <FuelFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              onOpenDetail={openParkingDetail}
+              onClose={() => setFuelOpen(false)}
+            />
           ) : (
-            <div className="grid shrink-0 grid-cols-2 gap-2">
+            <div className="grid shrink-0 grid-cols-3 gap-2">
               <Button
                 type="button"
                 variant="outline"
@@ -3307,6 +3317,15 @@ export function LocationExplorer() {
               >
                 <Zap className="size-5 text-sky-600" aria-hidden />
                 Trạm sạc xe điện
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setFuelOpen(true)}
+                className="h-auto min-h-11 min-w-0 justify-start gap-2 whitespace-normal rounded-2xl border-emerald-950/10 bg-white/80 px-3 py-2 text-left text-sm font-semibold shadow-[0_12px_40px_rgb(14_68_48/8%)] dark:border-white/10 dark:bg-card/80"
+              >
+                <Fuel className="size-5 shrink-0 text-amber-600" aria-hidden />
+                Tìm trạm xăng
               </Button>
             </div>
           )}
