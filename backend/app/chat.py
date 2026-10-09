@@ -46,33 +46,17 @@ REQUEST_TIMEOUT_SECONDS = 90.0
 HISTORY_KEY_PREFIX = "nearby:chat:history"
 HISTORY_TTL_SECONDS = 30 * 60
 HISTORY_MAX_TURNS = 6  # 6 cặp user/assistant gần nhất — đủ ngữ cảnh, không phình prompt
-CHAT_RESULT_CARDS = 5  # số thẻ địa điểm khung chat hiện (MAX_RESULT_CARDS ở chat-widget.tsx)
 
 _EXPLAIN_SYSTEM_PROMPT = """Bạn là trợ lý của app tìm địa điểm gần đây tên Nearby.
-Bạn sẽ nhận được câu hỏi của người dùng và một danh sách POI (địa điểm) THẬT do hệ thống tìm kiếm trả về.
-Nhiệm vụ: viết một đoạn trả lời ngắn gọn, tự nhiên bằng tiếng Việt, giới thiệu các kết quả này.
+Hệ thống ĐÃ tự liệt kê tên và khoảng cách các địa điểm cho người dùng. Bạn chỉ
+nhận thêm field "knowledge" của một vài địa điểm trong số đó, và nhiệm vụ DUY
+NHẤT là viết thêm phần giới thiệu ngắn từ dữ liệu này.
 
 Quy tắc bắt buộc:
-- CHỈ nhắc tới POI có trong danh sách được cung cấp. TUYỆT ĐỐI không bịa thêm địa điểm nào khác.
-- Không tự đánh giá/xếp hạng lại — giữ đúng thứ tự đã cho, có thể nêu 3-5 kết quả đầu.
-- POI nào rõ ràng KHÔNG hợp yêu cầu (vd người dùng hỏi quán cà phê mà POI là trường học, sân bóng) thì bỏ qua, đừng giới thiệu.
-- Không gán cho POI đặc điểm mà dữ liệu không có (yên tĩnh, rộng rãi, có wifi...). Không biết thì đừng nói.
-- Nếu danh sách rỗng, xin lỗi và gợi ý người dùng thử từ khoá khác hoặc mở rộng bán kính.
-- Trả lời ngắn (2-5 câu), giọng thân thiện, không markdown.
+- Viết 1-2 câu tiếng Việt, giọng thân thiện, không markdown, không gạch đầu dòng.
+- KHÔNG liệt kê lại danh sách, KHÔNG nhắc khoảng cách, KHÔNG nhắc địa điểm nào ngoài dữ liệu được cung cấp.
+- Không khen/chê hay so sánh các địa điểm (đông vui, tiện nghi, nhiều lựa chọn...).
 - CHỈ dùng tiếng Việt, không chèn từ tiếng Anh (kể cả từ đơn giản như "today").
-
-Về thời tiết (nếu có trong dữ liệu): hệ thống ĐÃ dùng thời tiết để ưu tiên kết
-quả (trời mưa thì ưu tiên chỗ trong nhà) — bạn chỉ cần NHẮC LẠI ngắn gọn lý do
-đó nếu phù hợp câu hỏi, không cần tự suy luận thêm.
-
-Về độ đông (nếu có trong dữ liệu, field "busyness"): đây là ƯỚC TÍNH từ lượt
-tương tác gần đây trên chính app Nearby, KHÔNG PHẢI dữ liệu real-time chính
-xác. Bắt buộc:
-- CHỈ nhắc độ đông khi "estimated" là true. Không có nghĩa là "estimated"
-  false thì POI đó vắng — nghĩa là CHƯA ĐỦ DỮ LIỆU, đừng nói gì về độ đông của
-  POI đó cả.
-- Luôn dùng từ "ước tính" khi nhắc tới, KHÔNG được nói chắc như đang đo thời
-  gian thực (vd nói "có vẻ đang khá đông" chứ không nói "đang đông 85%").
 
 Về kiến thức/lịch sử (nếu có trong dữ liệu, field "knowledge" của một POI —
 gồm intro/specialty/historicalContext/historicalEvents/interestingFacts):
@@ -85,9 +69,6 @@ nhớ ra. Quy tắc TUYỆT ĐỐI, vi phạm là lỗi nghiêm trọng nhất c
   Đây là quy tắc chống bịa (hallucination), vì mọi claim lịch sử trong
   "knowledge" đã được đối chiếu nguồn thật, còn kiến thức nội tại của bạn thì
   KHÔNG kiểm chứng được và có thể sai.
-- POI nào KHÔNG có field "knowledge" (hoặc "knowledge" là null) thì ĐỪNG kể
-  bất kỳ điều gì về lịch sử/nguồn gốc của POI đó — chỉ nói về tên/loại/
-  khoảng cách/rating như bình thường.
 - Nếu "knowledge.verified" là false, thêm ý "chưa được kiểm chứng đầy đủ"
   khi nhắc tới nội dung đó.
 """
@@ -429,6 +410,10 @@ def _ollama_chat(
     return content if isinstance(content, str) and content.strip() else None
 
 
+class ReplyTruncated(Exception):
+    """Model dừng vì chạm ``num_predict`` chứ không phải vì đã nói xong."""
+
+
 def _ollama_chat_stream(messages: list[dict[str, str]], *, max_tokens: int) -> Iterator[str]:
     """Như ``_ollama_chat`` (model chat) nhưng ``stream: true`` — trả từng mẩu
     chữ ngay khi model sinh ra. Trên CPU ~7-8 token/giây, đoạn diễn giải
@@ -436,7 +421,8 @@ def _ollama_chat_stream(messages: list[dict[str, str]], *, max_tokens: int) -> I
     vài giây thay vì nhìn spinner suốt nửa phút.
 
     Lỗi (Ollama tắt, timeout giữa hai mẩu) thì dừng im lặng — bên gọi tự
-    nhận ra khi chưa nhận được chữ nào và trả lời dự phòng. ``timeout`` của
+    nhận ra khi chưa nhận được chữ nào và trả lời dự phòng. Hết ``max_tokens``
+    giữa chừng thì raise ``ReplyTruncated`` sau mẩu cuối. ``timeout`` của
     ``urlopen`` áp cho TỪNG lần đọc socket, không phải cả request, nên câu dài
     không bị cắt ngang miễn là model vẫn đang sinh chữ đều.
     """
@@ -465,6 +451,8 @@ def _ollama_chat_stream(messages: list[dict[str, str]], *, max_tokens: int) -> I
                 if isinstance(piece, str) and piece:
                     yield piece
                 if chunk.get("done"):
+                    if chunk.get("done_reason") == "length":
+                        raise ReplyTruncated
                     return
     except (urllib.error.URLError, OSError, ValueError) as error:
         logger.warning("Gọi Ollama chat (stream) thất bại: %s", error)
@@ -567,15 +555,7 @@ def quick_search_intent(user_message: str) -> dict[str, Any] | None:
 
 def summarize_results_fast(session_id: str, user_message: str, results: list[dict[str, Any]]) -> str:
     """Phản hồi tức thì cho truy vấn rõ ràng; các thẻ POI mang phần chi tiết."""
-    if not results:
-        reply = "Mình chưa tìm thấy địa điểm phù hợp gần bạn. Hãy thử đổi từ khóa hoặc mở rộng bán kính nhé."
-    else:
-        # Không nêu len(results): đó là trần truy vấn (20), không phải số địa
-        # điểm có thật, và khung chat chỉ hiện CHAT_RESULT_CARDS thẻ. Kết quả
-        # xếp theo độ phù hợp nên không gọi là "gần nhất".
-        shown = min(len(results), CHAT_RESULT_CARDS)
-        names = ", ".join(poi.get("name", "") for poi in results[:3] if poi.get("name"))
-        reply = f"Đây là {shown} chỗ hợp nhất gần bạn, nổi bật: {names}."
+    reply = _results_listing(results) if results else _NO_RESULTS_REPLY
     _append_history(session_id, user_message, reply)
     return reply
 
@@ -649,90 +629,164 @@ def rule_based_intent(user_message: str) -> dict[str, Any]:
     }
 
 
-# Số POI đưa vào prompt diễn giải. Model chỉ được dặn nêu 3-5 kết quả đầu,
-# đưa 10 POI (kèm knowledge) chỉ làm prompt dài thêm — trên CPU, đọc prompt
-# cũng tốn thời gian đáng kể.
-_EXPLAIN_TOP_N = 5
+# Số POI câu trả lời nêu tên — các thẻ bên dưới mang phần còn lại.
+_LISTED_TOP_N = 3
+# Tiếng Việt có dấu tốn token gấp mấy lần tiếng Anh với tokenizer của
+# llama3.2 — 220 token từng cắt câu trả lời giữa chừng ("VinMart+ (khoảng 16").
+_EXPLAIN_MAX_TOKENS = 300
+# Prompt dặn 1-2 câu nhưng model 3B vẫn viết 5 câu (đo thật với Dinh Độc Lập,
+# ~60s) — cắt bằng code.
+_KNOWLEDGE_MAX_SENTENCES = 2
+_NO_RESULTS_REPLY = "Mình chưa tìm thấy địa điểm phù hợp gần bạn. Bạn thử đổi từ khoá hoặc mở rộng bán kính xem sao."
 
 
-def _explain_messages(user_message: str, results: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Dựng prompt diễn giải từ danh sách POI THẬT.
+def _format_distance(meters: Any) -> str | None:
+    if not isinstance(meters, (int, float)):
+        return None
+    if round(meters) < 1000:
+        return f"{round(meters)} m"
+    return f"{meters / 1000:.1f}".replace(".", ",") + " km"
 
-    Thời tiết/độ đông đã được tính sẵn trong từng candidate bởi
-    ``spatio_temporal.enrich_candidates`` (chạy TRƯỚC khi tới đây, bên trong
-    ``rank_pois_detailed``) — hàm này chỉ ĐỌC lại để mô tả bằng lời, không tự
-    tính toán gì thêm.
+
+def _join_vi(items: list[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " và " + items[-1]
+
+
+def _results_listing(results: list[dict[str, Any]]) -> str:
+    """Câu liệt kê tên + khoảng cách do CODE ghép từ kết quả thật.
+
+    Trước đây LLM tự viết đoạn này và đo được thật (2026-10-09): đổi sai đơn
+    vị ("11,6 km" cho POI cách 1,2 km), bỏ sót POI đứng thứ 3, và tự khen
+    "nhiều lựa chọn, tiện nghi nhất" dù dữ liệu không có — prompt cấm cũng
+    không ngăn được model 3B.
     """
-    top_results = results[:_EXPLAIN_TOP_N]
-    # Tra `poi_knowledge` cho ĐÚNG các POI đang định nhắc tới — không phải cả
-    # 8891 POI. DB lỗi thì coi như không POI nào có knowledge (an toàn: LLM
-    # đã được dặn không kể lịch sử khi thiếu field này), không được làm hỏng
+    items = []
+    for poi in results[:_LISTED_TOP_N]:
+        name = poi.get("name")
+        if not name:
+            continue
+        distance = _format_distance(poi.get("distanceMeters"))
+        items.append(f"{name} ({distance})" if distance else name)
+    if not items:
+        return "Mình tìm được vài chỗ gần bạn, bạn xem các thẻ bên dưới nhé."
+    return f"Gần bạn có {_join_vi(items)}."
+
+
+def _context_sentences(results: list[dict[str, Any]]) -> list[str]:
+    """Thời tiết/độ đông đã được tính sẵn trong từng candidate bởi
+    ``spatio_temporal.enrich_candidates`` — chỉ ĐỌC lại thành câu cố định."""
+    sentences = []
+    # Thời tiết tính một lần ở tâm truy vấn. Chỉ nhắc khi nó THỰC SỰ làm đổi
+    # thứ hạng (`weather_factor` khác 1.0) — mưa mà toàn POI thiết yếu thì
+    # thời tiết không ảnh hưởng gì.
+    weather = results[0].get("weather") or {}
+    if weather.get("isWet") and any(poi.get("weatherFactor", 1.0) != 1.0 for poi in results):
+        rain = "mưa to" if weather.get("isHeavyRain") else "mưa"
+        sentences.append(f"Trời đang {rain} nên mình đã ưu tiên chỗ trong nhà.")
+    # Độ đông là ƯỚC TÍNH từ lượt tương tác trên app, không phải real-time.
+    # "estimated" false nghĩa là chưa đủ dữ liệu, không phải vắng — im lặng.
+    for poi in results[:_LISTED_TOP_N]:
+        busyness = poi.get("busyness") or {}
+        if busyness.get("estimated") and busyness.get("level") and poi.get("name"):
+            sentences.append(f"Theo ước tính, {poi['name']} có vẻ đang {busyness['level'].lower()}.")
+    return sentences
+
+
+def _knowledge_messages(user_message: str, results: list[dict[str, Any]]) -> list[dict[str, str]] | None:
+    """Prompt cho phần LLM còn lại: diễn đạt lại `poi_knowledge` đã kiểm
+    chứng của các POI vừa liệt kê. ``None`` khi không POI nào có knowledge —
+    khi đó không gọi LLM (đỡ ~30s trên CPU)."""
+    listed = results[:_LISTED_TOP_N]
+    # Tra `poi_knowledge` cho ĐÚNG các POI vừa nhắc tới — không phải cả 8891
+    # POI. DB lỗi thì coi như không POI nào có knowledge, không được làm hỏng
     # cả câu trả lời chỉ vì tra thêm ngữ cảnh thất bại.
     try:
-        knowledge_map = fetch_knowledge_map([poi["id"] for poi in top_results])
+        knowledge_map = fetch_knowledge_map([poi["id"] for poi in listed])
     except Exception:  # noqa: BLE001
         logger.warning("Không tra được poi_knowledge cho lượt chat, bỏ qua ngữ cảnh lịch sử")
         knowledge_map = {}
-
-    # Bỏ field null: phần lớn POI không có rating/knowledge, giữ "null" chỉ
-    # tốn token mà model cũng không dùng được gì.
-    summary = [
-        {
-            key: value
-            for key, value in {
-                "name": poi.get("name"),
-                "category": poi.get("categoryLabel") or poi.get("category"),
-                "distanceMeters": poi.get("distanceMeters"),
-                "rating": poi.get("rating"),
-                "busyness": poi.get("busyness"),
-                "knowledge": knowledge_map.get(poi["id"]),
-            }.items()
-            if value is not None
-        }
-        for poi in top_results
+    entries = [
+        {"name": poi.get("name"), "knowledge": knowledge_map[poi["id"]]}
+        for poi in listed
+        if knowledge_map.get(poi["id"])
     ]
-    # Thời tiết là ngữ cảnh của CẢ lượt tìm kiếm (tính một lần ở tâm truy vấn),
-    # không phải của riêng từng POI — lấy từ candidate đầu tiên nếu có.
-    weather = results[0].get("weather") if results else None
-    content = f"Câu hỏi của người dùng: {user_message!r}\n"
-    if weather is not None:
-        content += f"Thời tiết hiện tại (JSON): {json.dumps(weather, ensure_ascii=False)}\n"
-    content += f"Danh sách POI tìm được (JSON): {json.dumps(summary, ensure_ascii=False)}"
+    if not entries:
+        return None
+    content = (
+        f"Câu hỏi của người dùng: {user_message!r}\n"
+        f"Dữ liệu (JSON): {json.dumps(entries, ensure_ascii=False, default=str)}"
+    )
     return [
         {"role": "system", "content": _EXPLAIN_SYSTEM_PROMPT},
         {"role": "user", "content": content},
     ]
 
 
-def _explain_fallback(results: list[dict[str, Any]]) -> str:
-    # Ollama không tới được: vẫn trả lời có ích bằng cách liệt kê thẳng kết
-    # quả thật, không bịa văn xuôi.
-    if not results:
-        return "Mình chưa tìm thấy địa điểm phù hợp gần bạn. Bạn thử đổi từ khoá hoặc mở rộng bán kính xem sao."
-    names = ", ".join(poi.get("name", "") for poi in results[:5] if poi.get("name"))
-    return f"Mình tìm được vài chỗ gần bạn: {names}."
+# Hết câu: dấu câu theo sau là khoảng trắng (để "Co.opmart" không bị tính),
+# hoặc xuống dòng.
+_SENTENCE_END_RE = re.compile(r"[.!?…](?=\s)|\n")
+
+
+def _complete_sentences(stream: Iterator[str]) -> Iterator[str]:
+    """Trả TỪNG câu hoàn chỉnh: model hết token giữa chừng thì bỏ nửa câu dở
+    thay vì để khung chat dừng ở "(khoảng 16"."""
+    emitted = False
+    pending = ""
+    truncated = False
+    try:
+        for piece in stream:
+            pending += piece
+            start = 0
+            for match in _SENTENCE_END_RE.finditer(pending):
+                emitted = True
+                yield pending[start : match.end()]
+                start = match.end()
+            pending = pending[start:]
+    except ReplyTruncated:
+        truncated = True
+    finally:
+        # Bên gọi dừng sớm (close) thì đóng luôn stream tới Ollama.
+        close = getattr(stream, "close", None)
+        if close is not None:
+            close()
+    if pending.strip() and not (truncated and emitted):
+        # Hết token mà chưa trọn câu nào: giữ phần đã có, đánh dấu còn dở.
+        yield pending.rstrip() + "…" if truncated else pending
 
 
 def explain_results_stream(session_id: str, user_message: str, results: list[dict[str, Any]]) -> Iterator[str]:
-    """Diễn giải bằng lời danh sách POI THẬT đã có sẵn — không gọi lại search.
-    Trả từng mẩu chữ ngay khi LLM sinh ra (xem ``_ollama_chat_stream``)."""
+    """Diễn giải danh sách POI THẬT đã có sẵn — không gọi lại search.
+
+    Danh sách tên/khoảng cách, thời tiết, độ đông do code ghép và trả NGAY;
+    LLM chỉ viết thêm phần giới thiệu từ `poi_knowledge` khi có, stream từng
+    câu (xem ``_ollama_chat_stream``). Ollama tắt thì phần đầu vẫn đủ ý.
+    """
     if not results:
-        # Không có gì để diễn giải — câu xin lỗi cố định trả ngay, không chờ
-        # LLM nói lại đúng ý đó.
-        reply = _explain_fallback(results)
-        _append_history(session_id, user_message, reply)
-        yield reply
+        _append_history(session_id, user_message, _NO_RESULTS_REPLY)
+        yield _NO_RESULTS_REPLY
         return
 
-    pieces: list[str] = []
-    for piece in _ollama_chat_stream(_explain_messages(user_message, results), max_tokens=220):
-        pieces.append(piece)
-        yield piece
-    reply = "".join(pieces).strip()
-    if not reply:
-        reply = _explain_fallback(results)
-        yield reply
-    _append_history(session_id, user_message, reply)
+    head = " ".join([_results_listing(results), *_context_sentences(results)])
+    pieces = [head]
+    yield head
+    messages = _knowledge_messages(user_message, results)
+    if messages is not None:
+        sentences = _complete_sentences(_ollama_chat_stream(messages, max_tokens=_EXPLAIN_MAX_TOKENS))
+        count = 0
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
+            text = " " + sentence.strip()
+            pieces.append(text)
+            yield text
+            count += 1
+            if count >= _KNOWLEDGE_MAX_SENTENCES:
+                break
+        # Dừng sớm thì đóng luôn kết nối tới Ollama để model thôi sinh chữ.
+        sentences.close()
+    _append_history(session_id, user_message, "".join(pieces).strip())
 
 
 def explain_results(session_id: str, user_message: str, results: list[dict[str, Any]]) -> str:
