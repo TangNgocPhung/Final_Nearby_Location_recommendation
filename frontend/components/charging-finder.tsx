@@ -7,7 +7,7 @@ import { Bike, Car, Clock, LoaderCircle, MapPin, PlugZap, Zap, X } from 'lucide-
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatPrice, type ParkingResult } from '@/lib/parking';
-import { cn } from '@/lib/utils';
+import { cn, formatMeters } from '@/lib/utils';
 
 type EvVehicle = 'any' | 'motorbike' | 'car';
 type Network = 'any' | 'vinfast' | 'other';
@@ -39,11 +39,6 @@ const NETWORK_OPTIONS: { value: Network; label: string }[] = [
 ];
 
 const SUPPORT_LABEL: Record<string, string> = { yes: 'có', no: 'không', unknown: 'chưa rõ' };
-
-function formatKm(meters: number | null): string {
-  if (meters == null) return '';
-  return meters < 1000 ? `${meters} m` : `${(meters / 1000).toFixed(1)} km`;
-}
 
 /**
  * Tìm trạm sạc xe điện — xem backend/app/charging.py. Khác "Tìm chỗ gửi xe":
@@ -246,7 +241,7 @@ export function ChargingFinder({
                           <span className="block text-[11px] text-muted-foreground">Không có đường</span>
                         )}
                         <span className="block text-[11px] text-muted-foreground">
-                          {formatKm(station.driveMeters ?? station.distanceMeters)}
+                          {formatMeters(station.driveMeters ?? station.distanceMeters)}
                         </span>
                       </span>
                     </button>

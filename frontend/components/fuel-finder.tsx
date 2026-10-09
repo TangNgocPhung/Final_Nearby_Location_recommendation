@@ -7,7 +7,7 @@ import { Bike, Car, Clock, Fuel, LoaderCircle, MapPin, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatStreetAddress, type StreetAddress } from '@/lib/address';
-import { cn } from '@/lib/utils';
+import { cn, formatMeters } from '@/lib/utils';
 
 type Vehicle = 'motorbike' | 'car';
 type Brand = 'any' | 'petrolimex' | 'pvoil' | 'saigon_petro' | 'comeco' | 'other';
@@ -51,11 +51,6 @@ const BRAND_OPTIONS: { value: Brand; label: string }[] = [
   { value: 'comeco', label: 'Comeco' },
   { value: 'other', label: 'Hãng khác' },
 ];
-
-function formatKm(meters: number | null): string {
-  if (meters == null) return '';
-  return meters < 1000 ? `${meters} m` : `${(meters / 1000).toFixed(1)} km`;
-}
 
 function stationAddress(station: Station): { text: string; approx: boolean } | null {
   if (station.address) return { text: station.address, approx: false };
@@ -253,7 +248,7 @@ export function FuelFinder({
                             <span className="block text-[11px] text-muted-foreground">Không có đường</span>
                           )}
                           <span className="block text-[11px] text-muted-foreground">
-                            {formatKm(station.driveMeters ?? station.distanceMeters)}
+                            {formatMeters(station.driveMeters ?? station.distanceMeters)}
                           </span>
                         </span>
                       </button>

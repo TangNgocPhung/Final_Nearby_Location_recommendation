@@ -162,11 +162,6 @@ function PlaceCard({
   );
 }
 
-function formatDistance(meters: number | null | undefined): string | null {
-  if (meters == null) return null;
-  return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
-}
-
 // Ước tính từ tương tác gần đây trên Nearby, KHÔNG PHẢI dữ liệu real-time
 // thật — xem `spatio_temporal._busyness_estimate` phía backend. Màu chỉ là
 // gợi ý trực quan, chữ "(ước tính)" luôn đi kèm để không đọc nhầm thành số đo.
@@ -183,7 +178,7 @@ function ChatPoiCard({
   poi: ChatPoiResult;
   onView: (poiId: string) => void;
 }) {
-  const distance = formatDistance(poi.distanceMeters);
+  const distance = formatMeters(poi.distanceMeters);
   const busyLevel = poi.busyness?.estimated ? poi.busyness.level : null;
   return (
     <button

@@ -132,10 +132,7 @@ export type AssistantOverlay = {
   }[];
 };
 
-export function formatMeters(meters: number | null | undefined): string {
-  if (meters == null) return '';
-  return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
-}
+export { formatMeters } from '@/lib/utils';
 
 export function formatMinutes(minutes: number | null | undefined): string {
   if (minutes == null) return '';

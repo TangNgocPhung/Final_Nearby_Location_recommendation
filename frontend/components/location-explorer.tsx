@@ -133,7 +133,7 @@ import { getTelemetry, type TelemetryState } from '@/lib/telemetry';
 import { authHeaders, useAuth } from '@/lib/auth';
 import { AccountMenu } from '@/components/account-menu';
 import type { AssistantOverlay } from '@/lib/assistant';
-import { cn } from '@/lib/utils';
+import { cn, formatMeters } from '@/lib/utils';
 
 type Poi = {
   id: string;
@@ -560,12 +560,6 @@ function distanceInMeters(from: Position, to: Position) {
   return (
     radius * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
   );
-}
-
-function formatDistance(distance = 0) {
-  return distance < 1_000
-    ? `${Math.round(distance)} m`
-    : `${(distance / 1_000).toFixed(1)} km`;
 }
 
 function enrichSamplePois(
@@ -3278,7 +3272,7 @@ export function LocationExplorer() {
                           </span>
                           {suggestion.distanceMeters != null && (
                             <span className="shrink-0 text-xs text-muted-foreground">
-                              {formatDistance(suggestion.distanceMeters)}
+                              {formatMeters(suggestion.distanceMeters)}
                             </span>
                           )}
                         </div>
@@ -3681,7 +3675,7 @@ export function LocationExplorer() {
                           </span>
                         )}
                         <span className="text-muted-foreground">
-                          {formatDistance(poi.distanceMeters)}
+                          {formatMeters(poi.distanceMeters)}
                         </span>
                       </div>
                     </button>
@@ -3765,7 +3759,7 @@ export function LocationExplorer() {
                         )}
                         <span className="ml-auto flex items-center gap-1 font-medium text-primary">
                           <Navigation className="size-3.5" />
-                          {formatDistance(poi.distanceMeters)}
+                          {formatMeters(poi.distanceMeters)}
                         </span>
                       </div>
                       {/* Tín hiệu riêng của TỪNG POI. traffic đổi theo vị trí
@@ -4003,7 +3997,7 @@ export function LocationExplorer() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold">
                       {route && route.poiId === selectedPoi.id
-                        ? `${route.durationMinutes} phút · ${formatDistance(route.distanceMeters)}`
+                        ? `${route.durationMinutes} phút · ${formatMeters(route.distanceMeters)}`
                         : routeStatus === 'loading'
                           ? 'Đang tính đường đi…'
                           : 'Chỉ đường'}
@@ -4114,7 +4108,7 @@ export function LocationExplorer() {
                         ? 'Chưa có đánh giá'
                         : `★ ${selectedPoi.rating.toFixed(1)}`}
                     </span>
-                    <span>{formatDistance(selectedPoi.distanceMeters)}</span>
+                    <span>{formatMeters(selectedPoi.distanceMeters)}</span>
                     <Button size="sm" onClick={() => startNavigation(selectedPoi)}>
                       Chỉ đường
                     </Button>
@@ -4171,7 +4165,7 @@ export function LocationExplorer() {
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-semibold">
                             {route.durationMinutes} phút ·{' '}
-                            {formatDistance(route.distanceMeters)}
+                            {formatMeters(route.distanceMeters)}
                           </p>
                           {/* Nói rõ đây là ĐƯỜNG ĐI THẬT chứ không phải đường chim
                               bay — con số cũ (etaMinutes) tính bằng khoảng cách
@@ -4232,7 +4226,7 @@ export function LocationExplorer() {
                                   <span className="min-w-0 flex-1">{step.text}</span>
                                   {step.distanceMeters > 0 && (
                                     <span className="shrink-0 rounded-full bg-background/80 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
-                                      {formatDistance(step.distanceMeters)}
+                                      {formatMeters(step.distanceMeters)}
                                     </span>
                                   )}
                                 </span>
