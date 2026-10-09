@@ -52,7 +52,6 @@ from .auth import AuthError, AuthUser
 from .models import (
     AdminUserUpdate,
     ChangePasswordRequest,
-    ChatHistoryRestore,
     ChatRequest,
     CheckInRequest,
     EventBatch,
@@ -118,7 +117,7 @@ app.add_middleware(
     # DELETE cần cho /api/v1/geofences/{id}: thiếu nó thì trình duyệt chặn ở
     # bước preflight và nút "bỏ nhắc" hỏng lặng lẽ, chỉ thấy lỗi trong console.
     # PATCH cho /api/v1/admin/users/{id} (đổi vai trò, khoá tài khoản).
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     # X-Narration-*: /narration/audio (Phase 16.2) trả text đã đọc kèm audio
     # qua header — không expose thì frontend gọi được audio nhưng
@@ -455,17 +454,6 @@ def delete_chat_history(request: Request) -> Response:
     if not owner_id:
         return JSONResponse(status_code=400, content={"detail": "Thiếu X-Session-ID"})
     chat.clear_history(owner_id)
-    return Response(status_code=204)
-
-
-@app.put("/api/v1/chat/history", status_code=204)
-def restore_chat_history(payload: ChatHistoryRestore, request: Request) -> Response:
-    """Mở lại một cuộc trò chuyện cũ (lịch sử lưu ở trình duyệt): nạp lại ngữ
-    cảnh của phiên để câu hỏi tiếp theo được hiểu là câu nối tiếp."""
-    owner_id = _owner_id(request)
-    if not owner_id:
-        return JSONResponse(status_code=400, content={"detail": "Thiếu X-Session-ID"})
-    chat.set_history(owner_id, [turn.model_dump() for turn in payload.turns])
     return Response(status_code=204)
 
 

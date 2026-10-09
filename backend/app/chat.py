@@ -330,26 +330,6 @@ def clear_history(session_id: str) -> None:
         logger.warning("Không xoá được lịch sử chat cho session %s", session_id)
 
 
-def set_history(session_id: str, turns: list[dict[str, str]]) -> None:
-    """Mở lại cuộc trò chuyện cũ từ lịch sử: thay ngữ cảnh hiện tại bằng vài
-    lượt cuối của cuộc đó. Bỏ lượt rỗng (trợ lý lỗi giữa chừng) để prompt sạch."""
-    history = [
-        {"role": turn["role"], "content": turn["content"].strip()}
-        for turn in turns
-        if turn.get("role") in ("user", "assistant") and turn.get("content", "").strip()
-    ][-(HISTORY_MAX_TURNS * 2) :]
-    if not history:
-        clear_history(session_id)
-        return
-    client = geo_cache.get_client()
-    if client is None:
-        return
-    try:
-        client.set(_history_key(session_id), json.dumps(history, ensure_ascii=False), ex=HISTORY_TTL_SECONDS)
-    except Exception:  # noqa: BLE001 - nạp hụt thì câu sau chỉ mất ngữ cảnh, vẫn trả lời được
-        logger.warning("Không nạp lại được lịch sử chat cho session %s", session_id)
-
-
 def _append_history(session_id: str, user_message: str, assistant_reply: str) -> None:
     client = geo_cache.get_client()
     if client is None:
