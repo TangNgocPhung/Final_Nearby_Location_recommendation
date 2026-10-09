@@ -215,6 +215,12 @@ body {
     min-width: 0;
   }
 
+  /* Cột biểu đồ ở trang quản trị: 14 cột × 44px tràn ngang màn điện thoại.
+     Mỗi cột đã cao cả khung biểu đồ nên vùng chạm theo chiều dọc vẫn đủ. */
+  [data-slot='dialog-content'] button.admin-chart-bar {
+    min-width: 0;
+  }
+
   /* Ô tab dưới đáy tự cao 56px; quy tắc 44px ở trên không được đội nó lên. */
   .nearby-app .mobile-tabbar button {
     min-height: 52px;
