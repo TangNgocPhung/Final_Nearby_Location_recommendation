@@ -2204,6 +2204,40 @@ export function LocationExplorer() {
     selectedMarkerRef.current = marker;
   }, [selectedPoi]);
 
+  // Backend không trả lời: hiện dữ liệu mẫu. Tách khỏi khối `catch` của
+  // runSearch vì callback bắt biến khai báo TRONG `catch` làm React Compiler của
+  // oxlint vấp lỗi nội bộ ("consistently local or context references") và CI
+  // lint đỏ.
+  function showSampleFallback(
+    searchOrigin: Position,
+    searchQuery: string,
+    searchRadius: number,
+    category: string | null,
+  ) {
+    const fallback = enrichSamplePois(
+      searchOrigin,
+      searchQuery,
+      searchRadius,
+      category,
+    );
+    // Dữ liệu mẫu không thuộc lần tìm kiếm nào; xoá ngữ cảnh để click sau đó
+    // không bị đóng dấu request_id cũ.
+    lastSearchRef.current = null;
+    setPois(fallback);
+    // Xoá metadata: giữ lại thì bảng tín hiệu vẫn khoe "truy xuất đa kênh"
+    // trong khi màn hình đang là 6 POI mẫu bịa sẵn.
+    setSearchMeta(null);
+    setDirectionsPoiId(null);
+    setSelectedPoiId((prev) =>
+      prev && fallback.some((poi) => poi.id === prev) ? prev : null,
+    );
+    setStatus(
+      `${fallback.length} kết quả mẫu · khởi động backend để dùng PostGIS`,
+    );
+    setGatewayStatus('Gateway ngoại tuyến · dùng dữ liệu mẫu');
+    fitMapToResults(mapRef.current, searchOrigin, fallback);
+  }
+
   // `origin` cho phép tìm kiếm tại một toạ độ CHƯA kịp vào state. setPosition là
   // bất đồng bộ, nên gọi runSearch ngay sau nó vẫn đọc được `position` cũ trong
   // closure này và sẽ hỏi backend quanh vị trí trước đó.
@@ -2325,28 +2359,7 @@ export function LocationExplorer() {
           : 'PostGIS dự phòng';
       setStatus(`${data.results.length} kết quả · ${duong}`);
     } catch {
-      const fallback = enrichSamplePois(
-        searchOrigin,
-        searchQuery,
-        searchRadius,
-        category,
-      );
-      // Dữ liệu mẫu không thuộc lần tìm kiếm nào; xoá ngữ cảnh để click sau đó
-      // không bị đóng dấu request_id cũ.
-      lastSearchRef.current = null;
-      setPois(fallback);
-      // Xoá metadata: giữ lại thì bảng tín hiệu vẫn khoe "truy xuất đa kênh"
-      // trong khi màn hình đang là 6 POI mẫu bịa sẵn.
-      setSearchMeta(null);
-      setDirectionsPoiId(null);
-      setSelectedPoiId((prev) =>
-        prev && fallback.some((poi) => poi.id === prev) ? prev : null,
-      );
-      setStatus(
-        `${fallback.length} kết quả mẫu · khởi động backend để dùng PostGIS`,
-      );
-      setGatewayStatus('Gateway ngoại tuyến · dùng dữ liệu mẫu');
-      fitMapToResults(mapRef.current, searchOrigin, fallback);
+      showSampleFallback(searchOrigin, searchQuery, searchRadius, category);
     } finally {
       setIsLoading(false);
     }
