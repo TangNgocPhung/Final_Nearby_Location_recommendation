@@ -364,6 +364,8 @@ from app.poi_features import matches_query_marks  # noqa: E402
         ["Nhà Hát Thành Phố"],
         ["Bảo tàng Thành phố", "Văn hóa", "museum"],
         ["Trường Trung học phổ thông Lương Thế Vinh"],
+        # Gặp lại trong chế độ giọng nói 2026-10-10: hạng 3 của "phở", cách 360 m.
+        ["Trường Trung học phổ thông Nam Kỳ Khởi Nghĩa", "Giáo dục", "school"],
         ["Trung Tâm Y Tế Dự Phòng - Phòng Khám Tiêm Phòng"],
     ],
 )
