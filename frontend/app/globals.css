@@ -84,7 +84,7 @@ body {
      trang voi chu trang: khong doc duoc gi ca. Khong the sua bang class
      Tailwind vi popup nam ngoai cay DOM cua trang. */
   color-scheme: light;
-  --font-app-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-app-sans: "Be Vietnam Pro", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-app-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --background: oklch(0.982 0.012 162);
   --foreground: oklch(0.22 0.025 166);
@@ -122,37 +122,39 @@ body {
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  /* Nền tối ngả xanh rêu thay vì xám trung tính: cùng họ màu với giao diện
+     sáng nên chuyển qua lại không thấy như hai ứng dụng khác nhau. */
+  --background: oklch(0.17 0.014 172);
+  --foreground: oklch(0.96 0.008 165);
+  --card: oklch(0.215 0.016 170);
+  --card-foreground: oklch(0.96 0.008 165);
+  --popover: oklch(0.225 0.016 170);
+  --popover-foreground: oklch(0.96 0.008 165);
+  --primary: oklch(0.72 0.15 162);
+  --primary-foreground: oklch(0.18 0.03 168);
+  --secondary: oklch(0.28 0.03 168);
+  --secondary-foreground: oklch(0.92 0.02 162);
+  --muted: oklch(0.26 0.016 170);
+  --muted-foreground: oklch(0.72 0.02 165);
+  --accent: oklch(0.3 0.045 165);
+  --accent-foreground: oklch(0.95 0.02 162);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.68 0.14 162);
+  --chart-1: oklch(0.72 0.15 162);
+  --chart-2: oklch(0.74 0.13 105);
+  --chart-3: oklch(0.72 0.14 50);
+  --chart-4: oklch(0.66 0.12 235);
+  --chart-5: oklch(0.68 0.15 320);
+  --sidebar: oklch(0.2 0.015 170);
+  --sidebar-foreground: oklch(0.96 0.008 165);
+  --sidebar-primary: oklch(0.72 0.15 162);
+  --sidebar-primary-foreground: oklch(0.18 0.03 168);
+  --sidebar-accent: oklch(0.28 0.03 168);
+  --sidebar-accent-foreground: oklch(0.95 0.02 162);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-ring: oklch(0.68 0.14 162);
 }
 
 @layer base {
@@ -281,8 +283,109 @@ body {
 
 body {
   background:
-    radial-gradient(circle at 10% 0%, oklch(0.94 0.055 154 / 45%), transparent 34rem),
+    radial-gradient(60rem 36rem at 0% -10%, oklch(0.93 0.06 160 / 55%), transparent 70%),
+    radial-gradient(48rem 30rem at 100% 0%, oklch(0.95 0.04 210 / 45%), transparent 70%),
     var(--background);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.dark body {
+  background:
+    radial-gradient(60rem 36rem at 0% -10%, oklch(0.32 0.06 165 / 35%), transparent 70%),
+    radial-gradient(48rem 30rem at 100% 0%, oklch(0.3 0.05 220 / 25%), transparent 70%),
+    var(--background);
+  background-attachment: fixed;
+}
+
+/* Thanh cuộn mảnh, cùng tông màu — thanh cuộn mặc định của Windows dày và
+   xám, đặt cạnh các thẻ bo tròn trông như vá víu. */
+.nearby-app *,
+[data-slot='dialog-content'],
+[data-slot='dialog-content'] * {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.49 0.14 164 / 28%) transparent;
+}
+
+.dark .nearby-app *,
+.dark [data-slot='dialog-content'],
+.dark [data-slot='dialog-content'] * {
+  scrollbar-color: oklch(1 0 0 / 18%) transparent;
+}
+
+/* Thẻ "kính mờ" dùng chung cho các khối nổi trên nền gradient. */
+.glass-card {
+  background-color: rgb(255 255 255 / 82%);
+  border: 1px solid rgb(6 78 59 / 8%);
+  box-shadow:
+    0 1px 2px rgb(14 68 48 / 4%),
+    0 12px 32px -8px rgb(14 68 48 / 10%);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+
+.dark .glass-card {
+  background-color: oklch(0.215 0.016 170 / 78%);
+  border-color: rgb(255 255 255 / 8%);
+  box-shadow: 0 12px 32px -8px rgb(0 0 0 / 45%);
+}
+
+.brand-mark {
+  background: linear-gradient(135deg, oklch(0.62 0.15 160), oklch(0.45 0.13 172));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 25%),
+    0 6px 16px -4px oklch(0.49 0.14 164 / 55%);
+}
+
+.brand-wordmark {
+  background: linear-gradient(120deg, oklch(0.42 0.12 168), oklch(0.58 0.15 158));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.dark .brand-wordmark {
+  background-image: linear-gradient(120deg, oklch(0.9 0.08 160), oklch(0.75 0.15 158));
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(16 185 129 / 55%);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgb(16 185 129 / 0%);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(16 185 129 / 0%);
+  }
+}
+
+.live-dot {
+  animation: live-pulse 2s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+  }
+}
+
+.maplibregl-ctrl-group {
+  border-radius: 12px !important;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgb(14 68 48 / 14%) !important;
+}
+
+.dark .maplibregl-ctrl-group {
+  background: oklch(0.215 0.016 170);
+}
+
+.dark .maplibregl-ctrl-group button + button {
+  border-top-color: rgb(255 255 255 / 10%);
+}
+
+.dark .maplibregl-ctrl-group .maplibregl-ctrl-icon {
+  filter: invert(1);
 }
 
 .maplibregl-map {

@@ -69,7 +69,7 @@ export function AccountMenu({
         <Button
           variant={compact ? 'ghost' : 'outline'}
           size={compact ? 'icon' : 'sm'}
-          className={cn(compact && 'rounded-full')}
+          className={cn('rounded-full', !compact && 'h-9 px-3.5 text-[13px]')}
           onClick={() => setAuthOpen(true)}
           aria-label="Đăng nhập"
           title="Đăng nhập"
@@ -98,7 +98,7 @@ export function AccountMenu({
             <Button
               variant={compact ? 'ghost' : 'outline'}
               size={compact ? 'icon' : 'sm'}
-              className={cn(compact && 'rounded-full', 'max-w-44')}
+              className={cn('max-w-44 rounded-full', !compact && 'h-9 px-3.5 text-[13px]')}
               aria-label={`Tài khoản ${name}`}
               title={`${name} · ${ROLE_LABELS[user.role]}`}
             />
