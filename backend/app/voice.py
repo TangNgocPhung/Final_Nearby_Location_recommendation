@@ -91,17 +91,29 @@ _PHRASES: dict[str, tuple[str, ...]] = {
 _FILLERS = (
     "tim kiem", "tim giup toi", "tim cho toi", "tim", "cho toi", "giup toi", "toi muon",
     "toi can", "o gan day", "gan day", "quanh day", "gan nhat", "o dau",
+    # Câu gõ không dấu "hien mau o dau duoc". KHÔNG thêm "duoc" đứng một mình:
+    # bỏ dấu thì "được" trùng "dược" ("nhà thuốc dược", "Công ty Dược") — chỉ
+    # bỏ khi nó đi sau "ở đâu", còn chữ có dấu thì đi đường `_ACCENTED_FILLERS`.
+    "o dau duoc",
 )
 # Đại từ thừa — so CÓ DẤU, vì bỏ dấu thì "tôi" trùng "tối"/"tới" ("quán ăn tối").
 # Nhận dạng giọng nói hay chèn chúng vào câu ("Nhà tôi, quán phở tôi"), và mỗi
 # từ thừa làm search đòi khớp thêm một từ (minimum_should_match) — kết quả
 # lệch hẳn sang "Quán Chay Nhà Tôi", "Kem Vĩnh Sanh"... (đo 2026-10-08).
 _PRONOUN_FILLERS = ("của tôi", "nhà tôi", "tôi")
+# Từ đệm hỏi han, cũng so CÓ DẤU vì bản bỏ dấu trùng chữ có nghĩa: "được" ↔
+# "dược", "nào" ↔ "nạo". Đo 2026-10-10: "Hiến máu ở đâu được" — 5 từ thì
+# minimum_should_match "2<70%" đòi khớp 3, mà "ở/đâu/được" không POI nào có,
+# nên BM25 về 0 hit.
+_ACCENTED_FILLERS = ("được", "nào")
 # Danh từ chung đứng trước tên món/loại: "quán phở" mà giữ "quán" thì search
 # đòi khớp cả hai từ — "Phở Nhà Mình" (không có chữ "quán") bị loại, còn
 # "quan" (bỏ dấu) lại khớp "Quản lý xuất nhập cảnh". Chỉ bỏ khi nó không mang
 # thông tin loại địa điểm: "quán ăn", "quán nhậu", "tiệm thuốc" giữ nguyên.
-_GENERIC_HEADS = ("cửa hàng", "cửa tiệm", "quán", "tiệm")
+# "chỗ"/"nơi" cùng kiểu: "chỗ hiến máu" → "hiến máu", nhưng nếu chữ đó là một
+# phần tên loại ("chỗ đậu xe" → bãi xe) thì phép kiểm loại bên dưới giữ lại.
+# So có dấu: bỏ dấu thì "chỗ" trùng "chợ", "nơi" trùng "Nội".
+_GENERIC_HEADS = ("cửa hàng", "cửa tiệm", "quán", "tiệm", "chỗ", "nơi")
 
 
 def fold(text: str | None) -> str:
@@ -159,7 +171,7 @@ def clean_query(text: str) -> str:
                 for i in range(size):
                     keep[start + i] = False
     accented = [_lower_words(word) for word in words]
-    for filler in _PRONOUN_FILLERS:
+    for filler in (*_PRONOUN_FILLERS, *_ACCENTED_FILLERS):
         parts = filler.split()
         size = len(parts)
         for start in range(0, len(words) - size + 1):

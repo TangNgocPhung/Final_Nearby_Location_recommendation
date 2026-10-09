@@ -36,8 +36,19 @@ def test_rule_based_intent_tim_kiem_mo_ta_khong_hoi_lai():
     # câu người dùng làm câu hỏi lại — luật thì luôn chạy search.
     intent = chat.rule_based_intent("chỗ nào yên tĩnh để ngồi làm việc")
     assert intent["needs_clarification"] is False
-    assert intent["search_query"] == "chỗ nào yên tĩnh để ngồi làm việc"
+    assert intent["search_query"] == "yên tĩnh để ngồi làm việc"
+    assert intent["semantic_query"] == "chỗ nào yên tĩnh để ngồi làm việc"
     assert intent["radius_m"] is None
+
+
+def test_rule_based_intent_bo_tu_dem_cho_bm25_giu_nguyen_van_cho_vector():
+    # Đo 2026-10-10: "ở/đâu/được" làm BM25 về 0 hit (minimum_should_match đòi
+    # khớp 3/5 từ); còn embedding câu nguyên văn mới xếp "Bệnh viện Truyền máu
+    # Huyết học" lên đầu — "Hiến máu" trơ trọi đẩy nó khỏi top 20.
+    intent = chat.rule_based_intent("Hiến máu ở đâu được")
+    assert intent["search_query"] == "Hiến máu"
+    assert intent["semantic_query"] == "Hiến máu ở đâu được"
+    assert chat.rule_based_intent("hien mau o dau")["search_query"] == "hien mau"
 
 
 def test_rule_based_intent_doc_ban_kinh():

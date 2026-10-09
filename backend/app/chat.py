@@ -34,6 +34,7 @@ from .config import settings
 from .languages import ENGLISH_NAMES, LANGUAGE_CODES
 from .poi_detail import fetch_knowledge_map
 from .poi_features import categories_for_query, normalize_text
+from .voice import clean_query
 
 logger = logging.getLogger("nearby-chat")
 
@@ -624,10 +625,18 @@ def rule_based_intent(user_message: str) -> dict[str, Any]:
     Trước đây bước này gọi llama3.2:3b để ra JSON — đo được thật (2026-10-08):
     tốn 20-40s trên CPU chỉ để lấy ra ba thứ mà luật làm được tức thì và ổn
     định hơn: bán kính ("trong 1km"), category (``categories_for_query``, chỉ
-    dùng để hiển thị — search luôn đọc nguyên văn câu gốc qua BM25/Vector),
-    và câu chào hỏi cần hỏi lại. Model 3B còn hay đánh dấu nhầm câu tìm kiếm
-    rõ ràng ("chỗ nào yên tĩnh để ngồi làm việc") là cần hỏi lại rồi chép
-    nguyên câu người dùng làm câu hỏi lại.
+    dùng để hiển thị), và câu chào hỏi cần hỏi lại. Model 3B còn hay đánh dấu
+    nhầm câu tìm kiếm rõ ràng ("chỗ nào yên tĩnh để ngồi làm việc") là cần hỏi
+    lại rồi chép nguyên câu người dùng làm câu hỏi lại.
+
+    Hai chuỗi tìm kiếm, đo 2026-10-10 với "Hiến máu ở đâu được":
+
+    - ``search_query`` (BM25) đã bỏ từ đệm (``voice.clean_query``): câu 5 từ
+      thì ``minimum_should_match`` đòi khớp 3, mà "ở/đâu/được" không POI nào
+      có — BM25 về 0 hit.
+    - ``semantic_query`` (vector) giữ NGUYÊN VĂN: embedding câu đầy đủ xếp
+      "Bệnh viện Truyền máu Huyết học" thứ 2, còn embedding "Hiến máu" trơ
+      trọi đẩy nó khỏi top 20 (sau tiệm quần áo, khách sạn).
     """
     normalized = normalize_text(user_message)
     small_talk = _small_talk_reply(normalized) if normalized else None
@@ -641,7 +650,8 @@ def rule_based_intent(user_message: str) -> dict[str, Any]:
         }
     categories = categories_for_query(user_message)
     return {
-        "search_query": user_message.strip(),
+        "search_query": clean_query(user_message),
+        "semantic_query": user_message.strip(),
         "category": categories[0] if len(categories) == 1 else None,
         "radius_m": _radius_from_message(user_message),
         "needs_clarification": False,

@@ -292,6 +292,22 @@ _APPLY_CATEGORY_OVERRIDES = """
       AND (p.category <> o.category OR p.category_label <> o.category_label OR p.tags && o.drop_tags)
 """
 
+# OSM cũng ghi sai TÊN ("Trung Tâm Hiến Múa Nhân Đạo" thay vì "Hiến Máu" — BM25
+# không bao giờ khớp được chữ "máu"). Bản ghi đè ở `poi_name_overrides`
+# (migration 0034). `_merge_poi` không đổi tên POI đã có, nhưng `_insert_poi`
+# trên DB mới chèn lại đúng tên sai nên vẫn phải áp sau mỗi lượt import.
+_APPLY_NAME_OVERRIDES = """
+    UPDATE pois AS p SET
+        name = o.name,
+        normalized_name = o.normalized_name,
+        updated_at = NOW()
+    FROM poi_source_records AS r
+    JOIN poi_name_overrides AS o ON o.source = r.source AND o.source_id = r.source_id
+    WHERE r.source_type = 'poi'
+      AND r.canonical_poi_id = p.id
+      AND (p.name <> o.name OR p.normalized_name IS DISTINCT FROM o.normalized_name)
+"""
+
 
 def import_osm_elements(
     database_url: str,
@@ -337,6 +353,8 @@ def import_osm_elements(
                     _upsert_lineage(cursor, poi_id, poi)
                 cursor.execute(_APPLY_CATEGORY_OVERRIDES)
                 stats["categoryOverrides"] = cursor.rowcount
+                cursor.execute(_APPLY_NAME_OVERRIDES)
+                stats["nameOverrides"] = cursor.rowcount
                 cursor.execute(
                     """
                     UPDATE poi_import_runs SET

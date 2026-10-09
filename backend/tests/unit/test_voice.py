@@ -94,6 +94,25 @@ def test_bo_dai_tu_thua_ma_nhan_dang_giong_noi_chen_vao() -> None:
     assert voice.clean_query("quán ăn tối") == "quán ăn tối"
 
 
+def test_bo_tu_dem_hoi_han() -> None:
+    # Đo 2026-10-10: giữ "ở đâu được" thì minimum_should_match đòi khớp 3/5 từ
+    # và BM25 về 0 hit.
+    assert voice.clean_query("Hiến máu ở đâu được") == "Hiến máu"
+    assert voice.clean_query("hien mau o dau") == "hien mau"
+    assert voice.clean_query("hien mau o dau duoc") == "hien mau"
+    assert voice.clean_query("chỗ hiến máu gần đây") == "hiến máu"
+    assert voice.clean_query("chỗ nào yên tĩnh để ngồi làm việc") == "yên tĩnh để ngồi làm việc"
+    assert voice.clean_query("nơi bán thuốc") == "bán thuốc"
+
+
+def test_khong_bo_chu_trung_tu_dem_khi_bo_dau() -> None:
+    # "dược" bỏ dấu là "duoc", "chợ" bỏ dấu là "cho" — không được coi là từ đệm.
+    assert voice.clean_query("nhà thuốc dược") == "nhà thuốc dược"
+    assert voice.clean_query("chợ Bến Thành") == "chợ Bến Thành"
+    # "chỗ đậu xe" là tên loại (bãi xe) — bỏ "chỗ" thì mất loại.
+    assert voice.clean_query("chỗ đậu xe") == "chỗ đậu xe"
+
+
 def test_bo_quan_tiem_chi_khi_khong_doi_loai_dia_diem() -> None:
     assert voice.clean_query("quán phở") == "phở"
     assert voice.clean_query("quán bún bò") == "bún bò"

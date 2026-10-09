@@ -365,8 +365,9 @@ def _plan_chat_turn(payload: ChatRequest) -> tuple[dict[str, Any], str | None]:
     radius = intent["radius_m"] or payload.radius
     geo_telemetry: dict[str, Any] = {}
     # Câu rõ loại địa điểm đi đường nhanh: lọc theo category + khoảng cách,
-    # không tạo embedding và không gọi LLM. Câu phức tạp vẫn giữ nguyên văn để
-    # BM25/Vector hiểu đầy đủ sắc thái ("yên tĩnh", "có wifi"...).
+    # không tạo embedding và không gọi LLM. Câu phức tạp: BM25 nhận câu đã bỏ
+    # từ đệm, vector nhận câu nguyên văn (``semantic_query``) để hiểu đầy đủ
+    # sắc thái ("yên tĩnh", "có wifi"...) — xem `chat.rule_based_intent`.
     fast_category = intent["category"] if quick_intent is not None else None
     results, retrieval_backend = rank_pois_detailed(
         payload.latitude,
@@ -376,6 +377,7 @@ def _plan_chat_turn(payload: ChatRequest) -> tuple[dict[str, Any], str | None]:
         fast_category,
         20,
         telemetry=geo_telemetry,
+        semantic_text=None if fast_category else intent.get("semantic_query"),
     )
     for index, poi in enumerate(results):
         poi["rank"] = index

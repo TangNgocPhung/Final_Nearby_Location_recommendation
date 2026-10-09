@@ -54,6 +54,22 @@ MIN_TEXT_MATCHES = 5
 # phê, chùa) là hàng chục POI tên chung chung giống hệt nhau ("Bãi đỗ xe" x13,
 # "Ministop" x5) cùng một điểm ~0.735, không mang nghĩa gì về truy vấn.
 MAX_SEMANTIC_BACKFILL = 10
+# ...và trong phần đầu đó chỉ lấy hit NỔI HẲN lên khỏi nền. "Nền" là điểm ở
+# hạng ``SEMANTIC_FLOOR_RANK`` — k-NN luôn trả đủ k hit, nên từ đây trở xuống
+# là mức điểm của POI chẳng liên quan gì. Hit được giữ phải vượt nền ít nhất
+# ``SEMANTIC_MIN_LIFT`` phần khoảng cách từ nền tới hit đầu. Đo 2026-10-10
+# (10.7604, 106.6516, 3 km), điểm cosinesimil của OpenSearch:
+#
+#   "Hiến máu ở đâu được": Hiến Máu 0.798, Truyền máu Huyết học 0.769,
+#     Hội quán Hà Chương 0.744, ... nền (hạng 20) 0.730 → ngưỡng 0.764.
+#   "Tôi muốn kiếm 1 quán cà phê yên tĩnh để học bài": Tea Time 0.826,
+#     hạng 10 0.802, nền 0.796 → ngưỡng 0.811, giữ 7 hit, đều là quán cà phê.
+#
+# Ngưỡng tương đối so với hit đầu KHÔNG tách được hai ca: hạng 10 quán cà phê
+# kém hit đầu 0.025, đúng bằng Hà Chương kém hit đầu "hiến máu" cũ (0.769 →
+# 0.744). Cái khác nhau là độ cao so với nền.
+SEMANTIC_FLOOR_RANK = 20
+SEMANTIC_MIN_LIFT = 0.5
 
 
 def _search_hits(client: Any, body: dict[str, Any]) -> list[tuple[str, float]]:
@@ -143,10 +159,32 @@ def _spatial_channels(
     return channels, info
 
 
+def _semantic_head(
+    channels: dict[str, list[str]],
+    vector_scores: dict[str, float] | None,
+) -> list[str]:
+    """Phần đầu kênh vector đủ tin để bổ sung — xem ``SEMANTIC_MIN_LIFT``.
+
+    Không có điểm, hoặc kênh trả ít hơn ``SEMANTIC_FLOOR_RANK`` hit (vùng thưa,
+    không có "nền" để so) thì giữ đủ ``MAX_SEMANTIC_BACKFILL`` hit đầu.
+    """
+    vector = channels.get("vector", [])
+    head = vector[:MAX_SEMANTIC_BACKFILL]
+    if not vector_scores or len(vector) < SEMANTIC_FLOOR_RANK:
+        return head
+    top = vector_scores.get(vector[0])
+    floor = vector_scores.get(vector[SEMANTIC_FLOOR_RANK - 1])
+    if top is None or floor is None or top <= floor:
+        return head
+    threshold = floor + SEMANTIC_MIN_LIFT * (top - floor)
+    return [poi_id for poi_id in head if vector_scores.get(poi_id, floor) >= threshold]
+
+
 def _gate_by_text_relevance(
     fused: list[tuple[str, float]],
     channels: dict[str, list[str]],
     clean_query: str,
+    vector_scores: dict[str, float] | None = None,
 ) -> list[tuple[str, float]]:
     """Có truy vấn chữ mà BM25 đã khớp được thì CHỈ trả candidate khớp chữ.
 
@@ -183,6 +221,19 @@ def _gate_by_text_relevance(
     là quán cà phê. Chỉ khi cả vector cũng không có (Ollama chết) mới giữ
     nguyên RRF: trả thứ gần nhất vẫn hơn trả rỗng.
 
+    Cả hai đường bổ sung chỉ lấy hit vector NỔI lên khỏi nền
+    (``_semantic_head``, cần ``vector_scores``), không nhận mù cả 10 hit đầu:
+    đo 2026-10-10, "Hiến máu ở đâu được" có BM25 rỗng và điểm vector phẳng —
+    Truyền máu 0.769, rồi Hội quán Hà Chương 0.744 và cả dãy chùa, nhà thờ
+    ~0.733 — nên kết quả ra chùa.
+
+    BM25 khớp được ít thì kênh vector phải XÁC NHẬN ít nhất một POI khớp chữ
+    trong phần đầu của nó mới được bổ sung. Đo cùng ngày: "hien mau o dau"
+    (không dấu) BM25 khớp đúng "Trung Tâm Hiến Máu Nhân Đạo", nhưng bge-m3
+    không hiểu câu không dấu — top vector là tiệm làm đẹp, tiệm giày, và POI
+    khớp chữ không có trong đó. Vector không thấy cái BM25 thấy nghĩa là nó
+    đang đoán, bổ sung lúc đó chỉ thêm rác.
+
     Không áp dụng khi không có query text (duyệt theo vị trí — geo là kênh
     chính đáng).
     """
@@ -190,16 +241,19 @@ def _gate_by_text_relevance(
         return fused
     relevant_ids = set(channels.get("bm25", []))
     if not relevant_ids:
-        semantic_ids = set(channels.get("vector", [])[:MAX_SEMANTIC_BACKFILL])
-        if not semantic_ids:
+        if not channels.get("vector"):
             return fused
+        semantic_ids = set(_semantic_head(channels, vector_scores))
         return [item for item in fused if item[0] in semantic_ids]
     text_matches = [item for item in fused if item[0] in relevant_ids]
     if len(text_matches) >= MIN_TEXT_MATCHES or categories_for_query(clean_query):
         return text_matches
-    # Kênh vector đã xếp theo điểm k-NN giảm dần — cắt đầu theo đúng thứ tự đó.
-    semantic_head = [poi_id for poi_id in channels.get("vector", []) if poi_id not in relevant_ids]
-    semantic_ids = set(semantic_head[:MAX_SEMANTIC_BACKFILL])
+    # Kênh vector đã xếp theo điểm k-NN giảm dần — `_semantic_head` cắt đầu
+    # theo đúng thứ tự đó.
+    semantic_head = _semantic_head(channels, vector_scores)
+    if relevant_ids.isdisjoint(semantic_head):
+        return text_matches
+    semantic_ids = {poi_id for poi_id in semantic_head if poi_id not in relevant_ids}
     return text_matches + [item for item in fused if item[0] in semantic_ids]
 
 
@@ -211,8 +265,15 @@ def multi_channel_candidates(
     category: str | None,
     limit_candidates: int,
     telemetry: dict[str, Any] | None = None,
+    semantic_text: str | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Trả candidate đã hydrate, hoặc None nếu không dùng được OpenSearch."""
+    """Trả candidate đã hydrate, hoặc None nếu không dùng được OpenSearch.
+
+    ``semantic_text``: chuỗi để tính embedding cho kênh vector, mặc định là
+    ``query_text``. Chat gửi BM25 câu đã bỏ từ đệm (để ``minimum_should_match``
+    không đòi khớp "ở đâu", "được") nhưng giữ câu nguyên văn cho vector — xem
+    `chat.rule_based_intent`.
+    """
     if not search_available():
         return None
     client = get_client()
@@ -239,14 +300,15 @@ def multi_channel_candidates(
             channels["bm25"] = [poi_id for poi_id, _score in bm25_hits]
             bm25_scores = dict(bm25_hits)
             if settings.opensearch_knn_enabled:
-                embedding = semantic_embedding(clean_query)
+                vector_text = (semantic_text or "").strip() or clean_query
+                embedding = semantic_embedding(vector_text)
                 if embedding is None:
                     # Ollama không tới được (chưa deploy production, hoặc chết
                     # tạm) — bỏ kênh vector thay vì để cả truy vấn rơi về
                     # PostGIS. Mức warning để thấy ngay, không im lặng.
                     logger.warning(
                         "Không lấy được semantic embedding cho truy vấn %r, bỏ kênh vector lần này",
-                        clean_query,
+                        vector_text,
                     )
                     degraded.append("vector")
                 else:
@@ -290,7 +352,7 @@ def multi_channel_candidates(
         telemetry["degradedChannels"] = sorted(set(degraded)) or None
 
     fused = reciprocal_rank_fusion(channels, weights=CHANNEL_WEIGHTS)
-    ranked = _gate_by_text_relevance(fused, channels, clean_query)[:limit_candidates]
+    ranked = _gate_by_text_relevance(fused, channels, clean_query, vector_scores)[:limit_candidates]
     membership = fused_channels(channels)
     try:
         return hydrate_candidates(
