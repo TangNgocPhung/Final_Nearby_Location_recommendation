@@ -17,6 +17,24 @@
 #    thay thế, nên viết lại `ports` ở lớp phủ sẽ giữ nguyên cả dòng phơi
 #    0.0.0.0 của file gốc — tức là mở Postgres và Neo4j ra internet mà tưởng đã
 #    đóng.
+# 4. OLLAMA. Chatbot, kênh vector của tìm kiếm và thuyết minh gọi Ollama chạy
+#    trên MÁY HOST qua tên host.docker.internal. Tên đó Docker Desktop tự có,
+#    còn Docker Engine trên Linux thì KHÔNG — phải khai báo host-gateway, nếu
+#    không mọi lời gọi Ollama đều lỗi DNS và chatbot im lặng không trả lời.
+#    Cài Ollama trên VPS bằng deploy/install-ollama.sh.
+
+# Gắn cho MỌI service chạy ảnh backend (cùng anchor môi trường ở file gốc).
+x-ollama: &ollama
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment:
+    # Bật CHỦ ĐỘNG: file gốc dùng `${OLLAMA_URL:-...}` nên để rỗng vẫn rơi về
+    # host.docker.internal. Ở đây `-` (không có `:`) giữ nguyên chuỗi rỗng, để
+    # máy không cài Ollama tắt hẳn được tính năng AI bằng OLLAMA_URL= trong
+    # production.env. Nếu không tắt, mỗi lượt tìm kiếm sẽ chờ tới
+    # REQUEST_TIMEOUT_SECONDS (10 giây) khi tường lửa DROP gói tin tới cổng
+    # Ollama không có ai nghe.
+    OLLAMA_URL: ${OLLAMA_URL-}
 
 services:
   database:
@@ -38,7 +56,28 @@ services:
     restart: unless-stopped
 
   backend:
+    <<: *ollama
     restart: unless-stopped
+
+  stream-worker:
+    <<: *ollama
+
+  migrate:
+    <<: *ollama
+
+  osm-import:
+    <<: *ollama
+
+  # Reindex tính embedding bge-m3 cho từng POI qua Ollama. Không có Ollama vẫn
+  # index được, chỉ là thiếu vector — kênh Vector tắt, còn BM25 + PostGIS.
+  search-index:
+    <<: *ollama
+
+  graph-sync:
+    <<: *ollama
+
+  feature-store:
+    <<: *ollama
 
   frontend:
     restart: unless-stopped
