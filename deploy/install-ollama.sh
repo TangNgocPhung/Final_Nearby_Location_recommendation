@@ -49,6 +49,10 @@ Wants=docker.service
 
 [Service]
 Environment="OLLAMA_HOST=${BRIDGE_IP}:11434"
+# Nearby dùng 3 model (bge-m3, llama3.2:3b, qwen3.5:4b). Giới hạn 2 (thường có
+# sẵn trong override.conf) làm chúng đẩy nhau ra khỏi RAM: mỗi lượt chat/thuyết
+# minh nạp lại 31-36s trên CPU và timeout (đo trên VPS OVH, 10/10/2026).
+Environment="OLLAMA_MAX_LOADED_MODELS=3"
 EOF
 systemctl daemon-reload
 systemctl enable ollama
