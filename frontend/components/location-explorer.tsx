@@ -849,6 +849,8 @@ function renderPoiIcon(icon: LucideIcon): ImageData | null {
 
 // Số chip danh mục hiện khi thu gọn — vừa đủ hai hàng trong cột 430px.
 const COLLAPSED_CATEGORY_COUNT = 7;
+// Độ trễ giữa các lần thử lại `/api/v1/categories` khi backend chưa sẵn sàng.
+const CATEGORY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
 
 function chipClass(active: boolean) {
   return `nearby-chip whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -1905,19 +1907,38 @@ export function LocationExplorer() {
   }, [telemetry]);
 
   useEffect(() => {
+    // Chỉ gọi một lần lúc mount: nếu backend đang khởi động lại (vừa deploy,
+    // gateway trả 502/503) thì chip danh mục kẹt ở bộ suy ra từ dữ liệu mẫu cho
+    // tới khi người dùng tải lại trang. Thử lại với độ trễ tăng dần (~31 giây
+    // tổng) cho lỗi mạng và 5xx; 4xx là lỗi thật, thử lại cũng vô ích.
     let cancelled = false;
-    void (async () => {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const load = async (attempt: number) => {
+      let retryable = false;
       try {
         const response = await fetch(`${API_BASE_URL}/api/v1/categories`);
-        if (!response.ok) return;
-        const data = (await response.json()) as CategoryOption[];
-        if (!cancelled) setCategories(data);
+        if (response.ok) {
+          const data = (await response.json()) as CategoryOption[];
+          if (!cancelled) setCategories(data);
+          return;
+        }
+        retryable = response.status >= 500;
       } catch {
-        // API chưa sẵn sàng — dùng category suy ra từ dữ liệu mẫu.
+        // API chưa sẵn sàng — tạm dùng category suy ra từ dữ liệu mẫu.
+        retryable = true;
       }
-    })();
+      if (cancelled || !retryable || attempt >= CATEGORY_RETRY_DELAYS_MS.length) {
+        return;
+      }
+      retryTimer = setTimeout(
+        () => void load(attempt + 1),
+        CATEGORY_RETRY_DELAYS_MS[attempt],
+      );
+    };
+    void load(0);
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer);
     };
   }, []);
 

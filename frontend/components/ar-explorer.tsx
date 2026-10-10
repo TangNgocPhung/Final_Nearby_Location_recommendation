@@ -343,6 +343,9 @@ export function ArExplorer({
   // Kéo để xoay (máy không có cảm biến).
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (sensorMode !== 'drag') return;
+    // Nhấn trúng nút (X, huy hiệu…) thì không kéo: đã capture pointer thì
+    // trình duyệt gửi `click` cho lớp phủ chứ không cho nút — nút bấm không ăn.
+    if ((event.target as Element).closest('button, a, input, select')) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = { x: event.clientX, y: event.clientY, heading: pose.heading, pitch: pose.pitch };
   };
