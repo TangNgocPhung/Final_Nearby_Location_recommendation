@@ -744,7 +744,10 @@ export function ArExplorer({
   return (
     <div
       ref={rootRef}
-      className="fixed inset-0 z-[60] touch-none select-none overflow-hidden bg-slate-950 text-white"
+      // overflow-clip chứ không phải hidden: hidden vẫn cho cuộn bằng lập trình (focus /
+      // scrollIntoView một thẻ thò ra mép) — khung bị lệch 5px, kéo cả thanh trên và
+      // khay dưới khỏi màn hình mà không có cách nào cuộn lại. Clip thì không cuộn được.
+      className="fixed inset-0 z-[60] touch-none select-none overflow-clip bg-slate-950 text-white"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -1182,7 +1185,9 @@ function BadgePanel({
   const earned = badges.filter((badge) => badge.earned).length;
   return (
     <div className="max-h-[60dvh] overflow-y-auto rounded-3xl bg-white p-4 text-slate-900 shadow-2xl dark:bg-slate-900 dark:text-white">
-      <div className="flex items-center gap-3">
+      {/* Dính ở đầu bảng: xoay ngang bảng chỉ cao ~216px và cuộn, không dính thì nút
+          đóng trôi mất khi cuộn xuống danh sách huy hiệu. */}
+      <div className="sticky top-0 z-10 -mx-4 -mt-4 flex items-center gap-3 bg-white px-4 pt-4 pb-2 dark:bg-slate-900">
         <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-amber-400/20 text-amber-600 dark:text-amber-300">
           <Trophy className="size-5" aria-hidden />
         </span>
