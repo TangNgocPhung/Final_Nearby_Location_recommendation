@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { LandmarksTab } from '@/components/admin-landmarks';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { apiRequest, type UserRole } from '@/lib/auth';
 import { cn } from '@/lib/utils';
@@ -156,7 +157,7 @@ export function AdminPanel({
             Trang quản trị
           </DialogTitle>
           <DialogDescription>
-            Quản lý tài khoản, phân quyền và kiểm duyệt đánh giá của người dùng.
+            Quản lý tài khoản, phân quyền, kiểm duyệt đánh giá và địa danh cho Săn địa danh.
           </DialogDescription>
         </DialogHeader>
         <Tabs
@@ -168,6 +169,7 @@ export function AdminPanel({
             <TabsTrigger value="overview">Tổng quan</TabsTrigger>
             <TabsTrigger value="users">Người dùng</TabsTrigger>
             <TabsTrigger value="reviews">Đánh giá</TabsTrigger>
+            <TabsTrigger value="landmarks">Địa danh</TabsTrigger>
           </TabsList>
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
             {open && (
@@ -180,6 +182,9 @@ export function AdminPanel({
                 </TabsContent>
                 <TabsContent value="reviews">
                   <ReviewsTab apiBaseUrl={apiBaseUrl} />
+                </TabsContent>
+                <TabsContent value="landmarks">
+                  <LandmarksTab apiBaseUrl={apiBaseUrl} />
                 </TabsContent>
               </>
             )}

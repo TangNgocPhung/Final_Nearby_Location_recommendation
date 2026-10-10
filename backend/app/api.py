@@ -30,6 +30,7 @@ from . import (
     explore,
     fuel,
     geofence,
+    landmarks_admin,
     languages,
     narration,
     parking,
@@ -65,6 +66,8 @@ from .models import (
     LoginRequest,
     MeetupRequest,
     ParkingReportRequest,
+    LandmarkStory,
+    NewLandmarkRequest,
     PoiVideoRequest,
     RegisterRequest,
     ReviewRequest,
@@ -1935,4 +1938,77 @@ def admin_delete_video(video_id: str, _admin: AuthUser = Depends(auth.require_ad
         return JSONResponse(status_code=400, content={"detail": "video_id phải là UUID"})
     if not poi_videos.delete_video(video_id):
         return JSONResponse(status_code=404, content={"detail": "Không có video này"})
+    return {"deleted": True}
+
+
+# --- Admin: địa danh cho Săn địa danh Sài Gòn -----------------------------------------
+# Thêm/sửa/gỡ bài giới thiệu (`poi_knowledge`) của địa danh săn được, kể cả tạo POI
+# mới chưa có trong dữ liệu. Xem `app/landmarks_admin.py`.
+
+
+@app.get("/api/v1/admin/landmarks")
+def admin_list_landmarks(
+    q: str = Query(default="", max_length=100),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _admin: AuthUser = Depends(auth.require_admin),
+) -> dict[str, Any]:
+    return landmarks_admin.list_landmarks(q, limit, offset)
+
+
+@app.get("/api/v1/admin/landmarks/candidates")
+def admin_landmark_candidates(
+    q: str = Query(min_length=2, max_length=100),
+    _admin: AuthUser = Depends(auth.require_admin),
+) -> dict[str, Any]:
+    """POI theo tên để chọn gắn bài giới thiệu."""
+    return {"pois": landmarks_admin.search_pois(q)}
+
+
+@app.get("/api/v1/admin/landmarks/{poi_id}")
+def admin_get_landmark(poi_id: str, _admin: AuthUser = Depends(auth.require_admin)) -> Any:
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    landmark = landmarks_admin.get_landmark(poi_id)
+    if landmark is None:
+        return JSONResponse(status_code=404, content={"detail": "Không phải địa danh săn được"})
+    return landmark
+
+
+@app.put("/api/v1/admin/landmarks/{poi_id}")
+def admin_save_landmark(
+    poi_id: str, payload: LandmarkStory, actor: AuthUser = Depends(auth.require_admin)
+) -> Any:
+    """Gắn hoặc sửa bài giới thiệu của một POI có sẵn → POI thành địa danh săn được."""
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    try:
+        landmark = landmarks_admin.upsert_story(actor, poi_id, payload.model_dump())
+    except landmarks_admin.LandmarkError as error:
+        return JSONResponse(status_code=409, content={"detail": str(error)})
+    if landmark is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có địa điểm này"})
+    return landmark
+
+
+@app.post("/api/v1/admin/landmarks", status_code=201)
+def admin_create_landmark(
+    payload: NewLandmarkRequest, actor: AuthUser = Depends(auth.require_admin)
+) -> Any:
+    """Tạo địa điểm mới (chưa có trong dữ liệu) kèm bài giới thiệu."""
+    try:
+        return landmarks_admin.create_landmark(actor, payload.model_dump())
+    except landmarks_admin.DuplicateLandmarkError as error:
+        return JSONResponse(status_code=409, content={"detail": str(error), "existing": error.existing})
+    except landmarks_admin.LandmarkError as error:
+        return JSONResponse(status_code=400, content={"detail": str(error)})
+
+
+@app.delete("/api/v1/admin/landmarks/{poi_id}")
+def admin_delete_landmark(poi_id: str, actor: AuthUser = Depends(auth.require_admin)) -> Any:
+    """Gỡ khỏi Săn địa danh (xoá bài giới thiệu; POI được giữ)."""
+    if not is_postgres_uuid(poi_id):
+        return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
+    if not landmarks_admin.delete_story(actor, poi_id):
+        return JSONResponse(status_code=404, content={"detail": "Không phải địa danh săn được"})
     return {"deleted": True}

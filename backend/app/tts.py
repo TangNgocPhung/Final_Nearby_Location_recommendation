@@ -55,6 +55,16 @@ def _cache_paths(poi_id: str, language: str) -> tuple[Path, Path]:
     return base.with_suffix(".wav"), base.with_suffix(".json")
 
 
+def invalidate(poi_id: str) -> None:
+    """Xoá mọi cache thuyết minh (chữ + audio, mọi ngôn ngữ) của một POI — gọi khi
+    bài giới thiệu của POI đó bị sửa/gỡ. ``poi_id`` phải là UUID đã kiểm."""
+    try:
+        for path in CACHE_DIR.glob(f"{poi_id}_*"):
+            path.unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning("Xoá cache thuyết minh thất bại (%s): %s", poi_id, error)
+
+
 def get_cached(poi_id: str, language: str) -> dict[str, Any] | None:
     """Đọc audio + metadata đã cache, hoặc ``None`` nếu chưa có (cache miss —
     hoàn toàn bình thường, KHÔNG phải lỗi)."""
