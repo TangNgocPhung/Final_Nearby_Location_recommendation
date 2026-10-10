@@ -117,7 +117,7 @@
   "Ảnh vừa chụp": "Your photo",
   "Đang xử lý ảnh…": "Processing photo…",
   "Kiểm tra vị trí · AI đang xem ảnh…": "Checking location · AI is looking at the photo…",
-  "s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.": "s — the vision model runs on the server and may take up to 1-2 minutes.",
+  "s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.": "s — the AI is looking at the photo, usually under a minute. If it takes too long, we unlock it for you anyway.",
   "Ảnh bạn chụp tại {0}": "Your photo at {0}",
   "✓ Ảnh đã được AI xác minh": "✓ Photo verified by AI",
   "Ảnh đang chờ xác minh": "Photo awaiting verification",

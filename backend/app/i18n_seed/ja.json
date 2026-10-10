@@ -287,7 +287,7 @@
   "Ảnh vừa chụp": "撮影した写真",
   "Đang xử lý ảnh…": "写真を処理中…",
   "Kiểm tra vị trí · AI đang xem ảnh…": "位置を確認中 · AIが写真を解析中…",
-  "s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.": "s — 画像認識モデルはサーバー上で動作するため、最大1〜2分かかることがあります。",
+  "s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.": "s — AIが写真を解析中です。通常1分以内で、長引く場合は先にロックを解除します。",
   "Ảnh bạn chụp tại {0}": "{0}で撮影した写真",
   "✓ Ảnh đã được AI xác minh": "✓ AIが確認済みの写真",
   "Ảnh đang chờ xác minh": "写真は確認待ちです",

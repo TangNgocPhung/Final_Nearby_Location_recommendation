@@ -118,7 +118,7 @@
   "Ảnh vừa chụp": "Foto sopas geneem",
   "Đang xử lý ảnh…": "Verwerk foto…",
   "Kiểm tra vị trí · AI đang xem ảnh…": "Kontroleer ligging · KI kyk na foto…",
-  "s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.": "s — die visiemodel loop op die bediener en kan tot 1-2 minute neem.",
+  "s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.": "s — die KI kyk na die foto, gewoonlik minder as 'n minuut. Neem dit te lank, ontsluit ons dit in elk geval vir jou.",
   "Ảnh bạn chụp tại {0}": "Jou foto by {0}",
   "✓ Ảnh đã được AI xác minh": "✓ Foto deur KI geverifieer",
   "Ảnh đang chờ xác minh": "Foto wag op verifikasie",

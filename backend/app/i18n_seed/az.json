@@ -117,7 +117,7 @@
   "Ảnh vừa chụp": "Yeni çəkilmiş şəkil",
   "Đang xử lý ảnh…": "Şəkil emal olunur…",
   "Kiểm tra vị trí · AI đang xem ảnh…": "Yer yoxlanılır · AI şəklə baxır…",
-  "s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.": "s — görmə modeli birbaşa serverdə işləyir, 1-2 dəqiqə çəkə bilər.",
+  "s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.": "s — AI şəklə baxır, adətən 1 dəqiqədən az çəkir. Çox uzansa, sizin üçün əvvəlcədən açırıq.",
   "Ảnh bạn chụp tại {0}": "{0} məkanında çəkdiyiniz şəkil",
   "✓ Ảnh đã được AI xác minh": "✓ Şəkil AI tərəfindən təsdiqlənib",
   "Ảnh đang chờ xác minh": "Şəkil təsdiq gözləyir",

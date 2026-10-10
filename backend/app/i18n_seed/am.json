@@ -117,7 +117,7 @@
   "Ảnh vừa chụp": "አሁን የተነሳው ፎቶ",
   "Đang xử lý ảnh…": "ፎቶውን በማስኬድ ላይ…",
   "Kiểm tra vị trí · AI đang xem ảnh…": "አካባቢውን በማረጋገጥ ላይ · AI ፎቶውን እያየ ነው…",
-  "s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.": "s — የእይታ ሞዴሉ በአገልጋዩ ላይ ይሠራል፣ እስከ 1-2 ደቂቃ ሊወስድ ይችላል።",
+  "s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.": "s — AI ፎቶውን እያየ ነው፣ ብዙ ጊዜ ከ1 ደቂቃ በታች ነው። ከረዘመ አስቀድመን እንከፍትልዎታለን።",
   "Ảnh bạn chụp tại {0}": "በ{0} ያነሱት ፎቶ",
   "✓ Ảnh đã được AI xác minh": "✓ ፎቶው በAI ተረጋግጧል",
   "Ảnh đang chờ xác minh": "ፎቶው ማረጋገጫ እየጠበቀ ነው",

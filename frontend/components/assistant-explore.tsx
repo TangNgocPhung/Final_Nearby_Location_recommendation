@@ -175,6 +175,20 @@ export function AssistantExplore({
     return () => controller.abort();
   }, [apiBaseUrl, headers, selected?.discovered, selected?.poiId, storyAttempt]);
 
+  // AI còn xem ảnh ở nền sau khi đã mở khoá: tải lại danh sách vài lần để thẻ
+  // ảnh đổi từ "chờ xác minh" sang "đã xác minh" mà người chơi không phải làm gì.
+  const verifyingPhoto = result && 'photo' in result && result.photo.verifying ? result.photo.id : null;
+  useEffect(() => {
+    if (!verifyingPhoto) return;
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      void load();
+      if (attempts >= 12) clearInterval(timer);
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [verifyingPhoto, load]);
+
   // Đồng hồ chờ AI xem ảnh — model thị giác trên CPU mất vài chục giây, người
   // chơi cần thấy hệ thống vẫn đang làm việc.
   useEffect(() => {
@@ -495,7 +509,7 @@ export function AssistantExplore({
                   </p>
                   {stage === 'checking' && (
                     <p className="mt-0.5 text-muted-foreground tabular-nums">
-                      {elapsed}s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.
+                      {elapsed}s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.
                     </p>
                   )}
                 </div>
@@ -646,7 +660,9 @@ function DiscoverOutcome({ result }: { result: DiscoverResult }) {
           ? result.photo.isPublic
             ? '✓ AI xác nhận ảnh đúng địa danh — ảnh đã góp vào kho ảnh của Nearby.'
             : '✓ AI xác nhận ảnh đúng địa danh (ảnh chỉ mình bạn xem).'
-          : 'Vị trí đã đúng. Ảnh chưa được AI xác nhận nên tạm chưa công khai.'}
+          : result.photo.verifying
+            ? 'Vị trí đã đúng nên mình mở khoá luôn. AI vẫn đang xem ảnh ở nền — xong sẽ tự cập nhật.'
+            : 'Vị trí đã đúng. Ảnh chưa được AI xác nhận nên tạm chưa công khai.'}
         {result.verification?.seen ? ` AI thấy: “${result.verification.seen}”.` : ''}
       </p>
       {firstTime && (

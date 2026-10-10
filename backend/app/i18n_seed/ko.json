@@ -287,7 +287,7 @@
   "Ảnh vừa chụp": "방금 찍은 사진",
   "Đang xử lý ảnh…": "사진 처리 중…",
   "Kiểm tra vị trí · AI đang xem ảnh…": "위치 확인 · AI가 사진 분석 중…",
-  "s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.": "s — 비전 모델이 서버에서 직접 실행되어 최대 1-2분 걸릴 수 있어요.",
+  "s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.": "s — AI가 사진을 분석 중이에요. 보통 1분 이내이고, 너무 오래 걸리면 먼저 잠금을 풀어 드려요.",
   "Ảnh bạn chụp tại {0}": "{0}에서 찍은 사진",
   "✓ Ảnh đã được AI xác minh": "✓ AI가 확인한 사진",
   "Ảnh đang chờ xác minh": "확인 대기 중인 사진",

@@ -94,7 +94,14 @@ export type DiscoverResult =
       name: string;
       distanceMeters: number;
       allowedMeters: number;
-      photo: { id: string; status: 'verified' | 'pending'; isPublic: boolean; url: string | null };
+      photo: {
+        id: string;
+        status: 'verified' | 'pending';
+        isPublic: boolean;
+        /** AI còn đang xem ảnh ở nền — trạng thái ảnh sẽ tự cập nhật. */
+        verifying?: boolean;
+        url: string | null;
+      };
       verification: ExploreVerification;
       story: ExploreStory;
       progress: { total: number; discovered: number };

@@ -256,6 +256,13 @@ class Settings(BaseSettings):
     # gateway (150s). Hết giờ thì ảnh thành "chờ xác minh", lượt khám phá vẫn
     # được tính vì vị trí đã đúng.
     explore_vision_timeout_seconds: float = 100.0
+    # Thời gian tối đa người chơi phải đứng chờ AI xem ảnh. Quá mức này thì mở
+    # khoá ngay (ảnh tạm "chờ xác minh"), model vẫn chạy nốt ở nền và tự cập
+    # nhật trạng thái ảnh khi xong — nên phải dưới 1 phút.
+    explore_vision_wait_seconds: float = 40.0
+    # Cạnh dài nhất của ảnh đưa cho model thị giác. Số token ảnh tăng theo diện
+    # tích: 640 px nhanh hơn 1280 px vài lần trên CPU mà vẫn đủ thấy công trình.
+    explore_vision_image_side: int = 640
     # Phân quyền admin/user (`app/auth.py`). Token là chuỗi ký HMAC-SHA256
     # bằng `auth_secret` — đổi secret là mọi phiên đăng nhập cũ hết hiệu lực.
     # Rỗng ở development/test thì dùng một secret cố định chỉ dành cho máy dev;

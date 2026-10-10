@@ -39,6 +39,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any
 
 import psycopg
@@ -86,6 +88,9 @@ VISION_MAX_TOKENS = 200
 # song song thì hai người chơi cùng gửi là cả hai cùng chậm gấp đôi, và Ollama
 # dễ hụt RAM — xếp hàng từng ảnh một.
 _vision_lock = threading.Semaphore(1)
+# Lượt xem ảnh chạy ở luồng riêng để request không phải chờ tới cùng: quá
+# `explore_vision_wait_seconds` thì trả lời trước, luồng này chạy nốt.
+_vision_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="explore-vision")
 
 # Bộ sưu tập — một địa danh có thể nằm trong nhiều bộ (như Pokémon có nhiều hệ).
 # Quy tắc theo category + content_type thay vì liệt kê tay từng POI: thêm một
@@ -211,12 +216,18 @@ def prepare_photo(data: bytes) -> dict[str, Any]:
     image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
     full = io.BytesIO()
     image.save(full, format="JPEG", quality=85, optimize=True)
+    # Bản nhỏ riêng cho model thị giác: chi phí suy luận tăng theo số điểm ảnh.
+    vision_image = image.copy()
+    vision_image.thumbnail((settings.explore_vision_image_side,) * 2)
+    vision = io.BytesIO()
+    vision_image.save(vision, format="JPEG", quality=80)
     thumb_image = image.copy()
     thumb_image.thumbnail((THUMB_SIDE, THUMB_SIDE))
     thumb = io.BytesIO()
     thumb_image.save(thumb, format="JPEG", quality=80, optimize=True)
     return {
         "image": full.getvalue(),
+        "vision": vision.getvalue(),
         "thumbnail": thumb.getvalue(),
         "width": image.width,
         "height": image.height,
@@ -571,6 +582,40 @@ def story(owner_id: str | None, poi_id: str) -> dict[str, Any] | None:
     return {"poiId": poi_id, "name": row["name"], "locked": False, "story": _story(row)}
 
 
+def _finalize_photo(photo_id: str, future: Future) -> None:
+    """Gọi khi model xem xong ảnh SAU khi người chơi đã được mở khoá.
+
+    Cập nhật ảnh đang ``pending`` theo kết luận muộn: ``verified`` thì đủ điều
+    kiện công khai; bị bác thì xoá ảnh (cùng nguyên tắc: ảnh bị AI bác không
+    được giữ). Lượt khám phá KHÔNG bị thu hồi — vị trí đã đúng là điều kiện mở
+    khoá, ảnh chỉ quyết định việc công khai.
+    """
+    try:
+        verdict = future.result()
+        if verdict is None:
+            return
+        status = decide_photo(verdict)
+        with psycopg.connect(settings.database_url) as connection:
+            if status == "verified":
+                connection.execute(
+                    "UPDATE poi_visitor_photos SET status = 'verified', verdict = %s::jsonb "
+                    "WHERE id = %s AND status = 'pending'",
+                    (json.dumps(verdict, ensure_ascii=False), photo_id),
+                )
+            elif status == "rejected":
+                connection.execute(
+                    "DELETE FROM poi_visitor_photos WHERE id = %s AND status = 'pending'",
+                    (photo_id,),
+                )
+            else:
+                connection.execute(
+                    "UPDATE poi_visitor_photos SET verdict = %s::jsonb WHERE id = %s AND status = 'pending'",
+                    (json.dumps(verdict, ensure_ascii=False), photo_id),
+                )
+    except Exception:
+        logger.exception("Không cập nhật được kết quả xem ảnh nền cho ảnh %s", photo_id)
+
+
 def discover(
     owner_id: str,
     poi_id: str,
@@ -587,7 +632,9 @@ def discover(
 
     Thứ tự kiểm tra từ rẻ tới đắt: vị trí (một câu SQL) trước, giải mã ảnh sau,
     model thị giác (hàng chục giây) sau cùng — đứng sai chỗ thì không tốn một
-    giây CPU nào cho ảnh.
+    giây CPU nào cho ảnh. Người chơi chỉ chờ model tối đa
+    ``explore_vision_wait_seconds``; quá hạn thì mở khoá với ảnh ``pending`` và
+    model chạy nốt ở nền (xem ``_finalize_photo``).
     """
     with psycopg.connect(settings.database_url, row_factory=dict_row) as connection:
         row = connection.execute(
@@ -613,7 +660,18 @@ def discover(
     except ValueError as error:
         return {**base, "status": "bad_image", "detail": str(error)}
 
-    verdict = check_photo(photo["image"], row["name"], row["intro"], row["category"])
+    # Chờ AI tối đa `explore_vision_wait_seconds`. Chưa xong thì mở khoá luôn
+    # (vị trí đã đúng), model chạy nốt ở nền rồi cập nhật ảnh qua `_finalize_photo`.
+    vision_future = _vision_executor.submit(
+        check_photo, photo["vision"], row["name"], row["intro"], row["category"]
+    )
+    verdict: dict[str, Any] | None
+    try:
+        verdict = vision_future.result(timeout=settings.explore_vision_wait_seconds)
+        vision_in_background = False
+    except FutureTimeoutError:
+        verdict = None
+        vision_in_background = True
     photo_status = decide_photo(verdict)
     public_verdict = (
         {"match": verdict["match"], "confidence": verdict["confidence"], "seen": verdict["seen"]}
@@ -675,6 +733,9 @@ def discover(
                 (owner_id, poi_id, photo_row["id"], distance),
             ).fetchone()
 
+    if vision_in_background and photo_status == "pending":
+        vision_future.add_done_callback(lambda done, pid=photo_row["id"]: _finalize_photo(pid, done))
+
     first_time = bool(discovery["inserted"])
     progress = overview(owner_id, latitude, longitude)
     mine = set(collections_for(row["category"], row["contentType"]))
@@ -688,6 +749,8 @@ def discover(
             "id": photo_row["id"],
             "status": photo_status,
             "isPublic": is_public,
+            # True: AI còn đang xem ảnh ở nền — trạng thái ảnh sẽ tự đổi sau ít phút.
+            "verifying": vision_in_background and photo_status == "pending",
             "url": f"/api/v1/visitor-photos/{photo_row['id']}" if photo_status == "verified" and is_public else None,
         },
         "verification": public_verdict,

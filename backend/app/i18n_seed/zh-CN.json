@@ -288,7 +288,7 @@
   "Ảnh vừa chụp": "刚拍的照片",
   "Đang xử lý ảnh…": "正在处理照片…",
   "Kiểm tra vị trí · AI đang xem ảnh…": "正在检查位置 · AI 正在查看照片…",
-  "s — model thị giác chạy ngay trên máy chủ, có thể mất tới 1-2 phút.": "秒 — 视觉模型直接在服务器上运行，可能需要 1-2 分钟。",
+  "s — AI đang xem ảnh, thường dưới 1 phút. Lâu quá mình vẫn mở khoá cho bạn.": "秒 — AI 正在查看照片，通常不到 1 分钟。如果太久，我们会先为你解锁。",
   "Ảnh bạn chụp tại {0}": "你在 {0} 拍摄的照片",
   "✓ Ảnh đã được AI xác minh": "✓ 照片已通过 AI 验证",
   "Ảnh đang chờ xác minh": "照片等待验证中",
