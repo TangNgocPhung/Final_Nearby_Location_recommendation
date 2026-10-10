@@ -1,6 +1,6 @@
 'use client';
 
-import type { ComponentType } from 'react';
+import { useState, useSyncExternalStore, type ComponentType } from 'react';
 import {
   Bell,
   BookOpenText,
@@ -35,6 +35,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+
+const STORAGE_KEY = 'nearby-guide-seen';
 
 type Icon = ComponentType<{ className?: string }>;
 
@@ -287,4 +289,40 @@ export function GuideDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function readSeen() {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== null;
+  } catch {
+    // Chế độ ẩn danh / bị chặn storage: coi như đã xem, không tự mở.
+    return true;
+  }
+}
+
+const noopSubscribe = () => () => {};
+
+// Tự mở ở lần truy cập đầu, nhưng chờ hộp "Giới thiệu" (cũng tự mở lần đầu) đóng
+// xong để hai hộp không chồng lên nhau. Snapshot phía server là "đã xem" để HTML
+// server render khớp với lần hydrate đầu.
+export function useGuideDialog(aboutOpen: boolean) {
+  const seen = useSyncExternalStore(noopSubscribe, readSeen, () => true);
+  const [dismissed, setDismissed] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+
+  const open = manualOpen || (!seen && !dismissed && !aboutOpen);
+
+  const onOpenChange = (next: boolean) => {
+    setManualOpen(next);
+    if (!next) {
+      setDismissed(true);
+      try {
+        localStorage.setItem(STORAGE_KEY, '1');
+      } catch {
+        // Không lưu được thì lần sau hộp lại tự mở, không sao.
+      }
+    }
+  };
+
+  return { open, setOpen: setManualOpen, onOpenChange };
 }
