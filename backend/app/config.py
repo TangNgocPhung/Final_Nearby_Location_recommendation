@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     # đẩy RAM của VM Docker ra pagefile và Postgres dev crash hai lần (đo
     # 2026-10-10, Event 2004 "low virtual memory"). Về lại mặc định 5m của Ollama.
     ollama_embedding_keep_alive: str = "5m"
+    # Timeout embed cho truy vấn người dùng (search, voice). Quá hạn thì bỏ kênh
+    # vector lượt đó và nạp bge-m3 ở nền — xem `embeddings.query_embedding`.
+    # Đo 2026-10-10: bge-m3 đã nạp mất 230–270 ms, tới 1,6 s khi reindex đang
+    # tranh Ollama; nên 2,5 s đủ rộng cho lúc ấm mà vẫn cắt được lần nạp 10 s.
+    # Không ảnh hưởng reindex (vẫn dùng REQUEST_TIMEOUT_SECONDS).
+    ollama_query_embedding_timeout_seconds: float = 2.5
     # Model chat cho chatbot AI (Phase 14) — cùng Ollama local, khác endpoint
     # (/api/chat thay vì /api/embed). Chỉ dùng để hiểu ý định người dùng và
     # diễn giải kết quả bằng lời; KHÔNG bao giờ tự quyết định POI — xem

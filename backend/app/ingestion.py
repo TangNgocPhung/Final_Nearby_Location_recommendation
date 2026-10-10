@@ -78,10 +78,15 @@ def publish_events(events: list[ClientEvent]) -> tuple[int, bool]:
         for event in events:
             pipeline.xadd(EVENT_STREAM, _event_payload(event), maxlen=100_000, approximate=True)
         pipeline.execute()
+        # Chỉ chuyển 'pending' → 'queued': sự kiện đã nằm trong stream từ dòng
+        # trên, worker có thể xử lý xong và ghi 'processed' TRƯỚC lệnh này. Không
+        # có điều kiện thì 'queued' ghi đè lên, sự kiện kẹt ở 'queued' mãi
+        # (requeue_pending chỉ quét 'pending') — test e2e lúc qua lúc trượt.
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "UPDATE ingestion_events SET processing_status = 'queued' WHERE id = ANY(%s)",
+                    "UPDATE ingestion_events SET processing_status = 'queued' "
+                    "WHERE id = ANY(%s) AND processing_status = 'pending'",
                     ([event.id for event in events],),
                 )
         return len(events), True

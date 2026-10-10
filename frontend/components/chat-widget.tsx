@@ -93,6 +93,8 @@ type ChatStreamEvent =
       directions?: ChatDirections | null;
       /** câu gợi ý bấm-là-gửi, backend chọn theo loại câu trả lời */
       quickReplies?: string[];
+      /** lộ trình tuyến / trạm xe buýt để vẽ lên bản đồ — xem `chat_tools.bus_answer` */
+      overlay?: AssistantOverlay | null;
     }
   | { type: 'delta'; text: string }
   | { type: 'done'; reply: string };
@@ -374,6 +376,9 @@ export function ChatWidget({
   useEffect(() => {
     positionRef.current = position;
   }, [position]);
+  // Lớp vẽ đang trên bản đồ là của một câu trả lời chat (lộ trình xe buýt) —
+  // câu sau không vẽ gì thì xoá nó, nhưng không đụng lớp của tour/hẹn nhóm.
+  const chatOverlayRef = useRef(false);
 
   const send = useCallback(async (text?: string) => {
     const message = (text ?? input).trim();
@@ -404,6 +409,8 @@ export function ChatWidget({
       const handle = (event: ChatStreamEvent) => {
         if (event.type === 'results') {
           started = true;
+          if (event.overlay || chatOverlayRef.current) onMapOverlay(event.overlay ?? null);
+          chatOverlayRef.current = Boolean(event.overlay);
           setTurns((prev) => [
             ...prev,
             {
@@ -448,7 +455,7 @@ export function ChatWidget({
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, input, loading, sessionId]);
+  }, [apiBaseUrl, input, loading, onMapOverlay, sessionId]);
 
   // Gợi ý theo vị trí + thời điểm: tải khi mở khung, tải lại khi đi xa hoặc
   // sau một lúc (lễ, giờ ăn, dự báo mưa đều đổi theo thời gian).

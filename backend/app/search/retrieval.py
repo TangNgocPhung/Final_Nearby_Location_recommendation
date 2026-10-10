@@ -7,12 +7,19 @@ không khả dụng / lỗi để ``ranking.rank_pois`` rơi về đường Post
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from .. import geo_cache
 from ..config import settings
-from ..embeddings import semantic_embedding
-from ..poi_features import categories_for_query, h3_ring_geometry, h3_ring_ids
+from ..embeddings import query_embedding
+from ..poi_features import (
+    categories_for_query,
+    h3_ring_geometry,
+    h3_ring_ids,
+    matches_query_marks,
+)
 from . import query as query_builder
 from .accents import drop_accent_mismatches
 from .client import get_client, search_available
@@ -78,6 +85,35 @@ def _search_hits(client: Any, body: dict[str, Any]) -> list[tuple[str, float]]:
     return query_builder.extract_ranked_hits(response)
 
 
+def _hit_texts(hit: dict[str, Any]) -> list[str]:
+    source = hit.get("_source") or {}
+    texts: list[str] = []
+    for field in query_builder.BM25_TEXT_FIELDS:
+        value = source.get(field)
+        if isinstance(value, list):
+            texts.extend(str(item) for item in value if item)
+        elif value:
+            texts.append(str(value))
+    return texts
+
+
+def _drop_mark_collisions(response: dict[str, Any], clean_query: str) -> dict[str, Any]:
+    """Bỏ hit BM25 chỉ khớp nhờ bỏ dấu gộp nhầm chữ khác ("phở" -> "Thành Phố").
+
+    Lọc ở đây chứ không chỉ hạ điểm: `_gate_by_text_relevance` coi MỌI hit BM25
+    là bằng chứng liên quan, và ``ranking.diversify`` kéo ngay ứng viên khác loại
+    đầu tiên lên sau hai quán phở — đúng cách "Nhà Hát Thành Phố" lên hạng 3.
+
+    Bỏ hết thì giữ nguyên: người dùng có thể gõ sai dấu ("phơ"), và khi đó khớp
+    nhờ bỏ dấu vẫn hơn không có kết quả nào.
+    """
+    hits = (response or {}).get("hits", {}).get("hits", [])
+    kept = [hit for hit in hits if matches_query_marks(clean_query, _hit_texts(hit))]
+    if not kept or len(kept) == len(hits):
+        return response
+    return {**response, "hits": {**response["hits"], "hits": kept}}
+
+
 def _search_ids(client: Any, body: dict[str, Any]) -> list[str]:
     return [poi_id for poi_id, _score in _search_hits(client, body)]
 
@@ -100,12 +136,24 @@ def _trending_ids(limit: int, latitude: float | None = None, longitude: float | 
     return [poi_id for poi_id, _score in ranked[:limit]]
 
 
+def _run_now(fn: Callable[..., Any], *args: Any) -> Future:
+    """Chạy ngay trên thread hiện tại, gói kết quả/lỗi vào Future — để
+    `_spatial_channels` dùng chung một đường code dù có executor hay không."""
+    future: Future = Future()
+    try:
+        future.set_result(fn(*args))
+    except Exception as error:  # noqa: BLE001 - lỗi nổ ra lại ở .result()
+        future.set_exception(error)
+    return future
+
+
 def _spatial_channels(
     client: Any,
     latitude: float,
     longitude: float,
     radius: int,
     category: str | None,
+    executor: ThreadPoolExecutor | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, Any]]:
     """Hai kênh không gian. Trả (kênh -> poi_id, mô tả đã chạy những gì).
 
@@ -117,13 +165,17 @@ def _spatial_channels(
     khác nhau, nên POI xuất hiện ở cả hai là bằng chứng vị trí mạnh hơn POI chỉ
     lọt vành thô. Cấu hình ``geo_channel`` cho phép tắt từng kênh để ablation
     tách được đóng góp của riêng H3.
+
+    Có ``executor`` thì hai truy vấn chạy song song (mỗi cái ~250 ms).
     """
+    submit = executor.submit if executor is not None else _run_now
     mode = settings.geo_channel
-    channels: dict[str, list[str]] = {}
+    pending: dict[str, Future] = {}
     info: dict[str, Any] = {"geoChannelMode": mode}
 
     if mode in ("both", "geo_distance"):
-        channels["geo"] = _search_ids(
+        pending["geo"] = submit(
+            _search_ids,
             client,
             query_builder.geo_body(latitude, longitude, radius, category, PER_CHANNEL_SIZE),
         )
@@ -136,7 +188,8 @@ def _spatial_channels(
             # H3 trong khi thực tế chỉ có geo_distance chạy.
             info["h3Skipped"] = "radius-too-large"
         else:
-            channels["h3"] = _search_ids(
+            pending["h3"] = submit(
+                _search_ids,
                 client,
                 query_builder.h3_body(
                     ring.cells, ring.field, latitude, longitude, category, PER_CHANNEL_SIZE
@@ -157,6 +210,7 @@ def _spatial_channels(
             if outline is not None:
                 info["h3Outline"] = outline
 
+    channels = {name: future.result() for name, future in pending.items()}
     return channels, info
 
 
@@ -258,6 +312,55 @@ def _gate_by_text_relevance(
     return text_matches + [item for item in fused if item[0] in semantic_ids]
 
 
+def _bm25_hits(
+    client: Any,
+    clean_query: str,
+    latitude: float,
+    longitude: float,
+    radius: int,
+    category: str | None,
+) -> list[tuple[str, float]]:
+    response = client.search(
+        index=INDEX_NAME,
+        body=query_builder.bm25_body(
+            clean_query, latitude, longitude, radius, category, PER_CHANNEL_SIZE
+        ),
+    )
+    return query_builder.extract_ranked_hits(_drop_mark_collisions(response, clean_query))
+
+
+def _vector_hits(
+    client: Any,
+    vector_text: str,
+    latitude: float,
+    longitude: float,
+    radius: int,
+    category: str | None,
+) -> list[tuple[str, float]] | None:
+    """Kênh vector (embed -> k-NN). ``None`` = kênh hỏng lượt này, ghi vào
+    degradedChannels; KHÔNG raise, để mất kênh vector không kéo cả truy vấn
+    rơi về PostGIS."""
+    embedding = query_embedding(vector_text)
+    if embedding is None:
+        # Ollama không tới được, bge-m3 chưa nạp xong (đã nạp ở nền cho lượt
+        # sau), hoặc chưa deploy. Mức warning để thấy ngay, không im lặng.
+        logger.warning(
+            "Không lấy được semantic embedding cho truy vấn %r, bỏ kênh vector lần này",
+            vector_text,
+        )
+        return None
+    try:
+        return _search_hits(
+            client,
+            query_builder.vector_body(
+                embedding, latitude, longitude, radius, category, PER_CHANNEL_SIZE
+            ),
+        )
+    except Exception as error:  # noqa: BLE001 - k-NN có thể tắt/khác version
+        logger.warning("Kênh vector lỗi, bỏ qua: %s", error)
+        return None
+
+
 def multi_channel_candidates(
     latitude: float,
     longitude: float,
@@ -281,7 +384,6 @@ def multi_channel_candidates(
     if client is None:
         return None
 
-    channels: dict[str, list[str]] = {}
     # Kênh đã CHẠY nhưng hỏng (timeout / k-NN lỗi). Khác hẳn kênh không chạy:
     # truy vấn vẫn trả `retrievalBackend="opensearch"` nên nếu không ghi lại ở
     # đây thì việc mất kênh là hoàn toàn vô hình — cả với người dùng lẫn với
@@ -289,51 +391,58 @@ def multi_channel_candidates(
     degraded: list[str] = []
     bm25_scores: dict[str, float] = {}
     vector_scores: dict[str, float] = {}
+    clean_query = query_text.strip() if query_text else ""
+
+    # Các kênh độc lập nhau nên chạy song song: tổng thời gian = kênh chậm nhất
+    # (embed -> k-NN) thay vì cộng dồn BM25 + embed + k-NN + geo + h3 (đo
+    # 2026-10-10: ~1,6 s tuần tự). Mỗi truy vấn một pool riêng: pool dùng chung
+    # cho cả tiến trình thì các request đồng thời phải xếp hàng chờ nhau.
+    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="retrieval")
     try:
-        clean_query = query_text.strip() if query_text else ""
-        if clean_query:
-            bm25_hits = _search_hits(
+        bm25_future = (
+            pool.submit(_bm25_hits, client, clean_query, latitude, longitude, radius, category)
+            if clean_query
+            else None
+        )
+        vector_future = (
+            pool.submit(
+                _vector_hits,
                 client,
-                query_builder.bm25_body(
-                    clean_query, latitude, longitude, radius, category, PER_CHANNEL_SIZE
-                ),
+                (semantic_text or "").strip() or clean_query,
+                latitude,
+                longitude,
+                radius,
+                category,
             )
+            if clean_query and settings.opensearch_knn_enabled
+            else None
+        )
+        spatial, spatial_info = _spatial_channels(
+            client, latitude, longitude, radius, category, executor=pool
+        )
+        # Ghi theo đúng thứ tự cũ (bm25, vector, geo, h3) dù kênh nào xong trước.
+        channels: dict[str, list[str]] = {}
+        if bm25_future is not None:
+            bm25_hits = bm25_future.result()
             channels["bm25"] = [poi_id for poi_id, _score in bm25_hits]
             bm25_scores = dict(bm25_hits)
-            if settings.opensearch_knn_enabled:
-                vector_text = (semantic_text or "").strip() or clean_query
-                embedding = semantic_embedding(vector_text)
-                if embedding is None:
-                    # Ollama không tới được (chưa deploy production, hoặc chết
-                    # tạm) — bỏ kênh vector thay vì để cả truy vấn rơi về
-                    # PostGIS. Mức warning để thấy ngay, không im lặng.
-                    logger.warning(
-                        "Không lấy được semantic embedding cho truy vấn %r, bỏ kênh vector lần này",
-                        vector_text,
-                    )
-                    degraded.append("vector")
-                else:
-                    try:
-                        vector_hits = _search_hits(
-                            client,
-                            query_builder.vector_body(
-                                embedding, latitude, longitude, radius, category, PER_CHANNEL_SIZE
-                            ),
-                        )
-                        channels["vector"] = [poi_id for poi_id, _score in vector_hits]
-                        vector_scores = dict(vector_hits)
-                    except Exception as error:  # noqa: BLE001 - k-NN có thể tắt/khác version
-                        logger.warning("Kênh vector lỗi, bỏ qua: %s", error)
-                        degraded.append("vector")
-        spatial, spatial_info = _spatial_channels(
-            client, latitude, longitude, radius, category
-        )
+        if vector_future is not None:
+            vector_hits = vector_future.result()
+            if vector_hits is None:
+                degraded.append("vector")
+            else:
+                channels["vector"] = [poi_id for poi_id, _score in vector_hits]
+                vector_scores = dict(vector_hits)
         channels.update(spatial)
         if telemetry is not None:
             telemetry.update(spatial_info)
     except Exception as error:  # noqa: BLE001 - bất kỳ lỗi OpenSearch nào -> fallback
         logger.warning("Truy xuất OpenSearch lỗi, rơi về PostGIS: %s", error)
         return None
+    finally:
+        # Không chờ: đường lỗi trả về ngay, kênh còn dở tự kết thúc theo
+        # timeout của chính nó (OpenSearch client / embed).
+        pool.shutdown(wait=False, cancel_futures=True)
 
     # Kênh không gian là recall phổ quát: chỉ mục có dữ liệu và có POI trong bán
     # kính thì ít nhất một trong hai kênh luôn trả kết quả. Cả hai cùng rỗng =>

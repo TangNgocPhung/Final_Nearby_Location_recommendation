@@ -15,8 +15,8 @@ JSON, xem `chat.rule_based_intent`):
    cao" thì nói thẳng là chưa lọc được: ``price_level`` đang bằng 0 với mọi
    POI và chỉ 28 POI có rating — lọc theo đó sẽ ra danh sách rỗng hoặc sai.
 3. **Chuyển sang công cụ chuyên biệt** — xăng, trạm sạc, WC, gửi xe, cửa hàng
-   tiện lợi, thời tiết: gọi đúng module đã có (xếp theo thời gian đi thật qua
-   OSRM, có giá gửi xe, giờ mở...) thay vì search chung chung.
+   tiện lợi, thời tiết, xe buýt: gọi đúng module đã có (xếp theo thời gian đi
+   thật qua OSRM, có giá gửi xe, giờ mở...) thay vì search chung chung.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import charging, convenience, fuel, geo_cache, parking, toilets, weather
+from . import bus, charging, convenience, fuel, geo_cache, parking, toilets, weather
 from .opening_hours import is_open_now
 from .poi_features import CATEGORY_KEYWORDS, _has_vietnamese_marks, categories_for_query, normalize_text
 from .voice import haversine_m
@@ -967,4 +967,350 @@ def quick_replies(kind: str, count: int, filters: tuple[str, ...] = ()) -> list[
     if "open_now" not in filters and kind in ("search", "fuel", "convenience", "toilets", "charging"):
         replies.append("Chỗ nào đang mở cửa?")
     return replies[:4]
+
+
+# --- (4) Xe buýt -----------------------------------------------------------------
+#
+# Chạy TRƯỚC câu hỏi tiếp (xem `api._plan_chat_turn`): "xe buýt số 2" là tuyến
+# 02, không phải thẻ thứ 2 của danh sách vừa xem. Không có vị trí xe theo thời
+# gian thực — chỉ nói giãn cách giữa hai chuyến, không bịa "xe tới sau 3 phút".
+
+# Số tuyến như ghi trên OSM: "14", "01", "60-1", "156D", "72-2B", "D2", "TGC01", "TIA".
+_BUS_REF = r"(\d{1,3}(?:-\d{1,2}[bc]?)?[dv]?|d\d|tgc ?\d{1,2}|tia)"
+_BUS_REF_RE = re.compile(rf"\b(?:buyt|bus|tuyen|xe|so|chuyen)\s+(?:(?:xe|buyt|bus|tuyen|so)\s+)*{_BUS_REF}\b")
+# Không nói "xe buýt" vẫn chắc là hỏi tuyến: "tuyến 52", "xe số 14", "xe 1 chạy
+# mấy giờ" — nhưng không phải "thuê xe 7 chỗ".
+_BUS_CONTEXT_RE = re.compile(
+    rf"\b(?:tuyen|xe so)\s+{_BUS_REF}\b|\bxe\s+{_BUS_REF}\s+(?:chay|di qua|dung|may gio|co chuyen)\b"
+)
+# "Bến xe buýt" là loại `bus_station` — vẫn là hỏi xe buýt.
+_BUS_CATEGORIES = {"bus_station"}
+_BUS_STOP_PHRASES = ("tram", "diem dung", "nha cho")
+_BUS_ARRIVAL_PHRASES = (
+    "bao lau nua", "may phut nua", "con bao lau", "khi nao toi", "khi nao den", "bao gio toi",
+    "bao gio den", "may gio toi", "may gio den", "sap toi", "sap den", "toi chua", "den chua", "xe toi", "xe den",
+)
+_BUS_ROUTE_PHRASES = (
+    "di qua", "chay qua", "qua nhung", "lo trinh", "nhung tram", "tram nao", "dung o", "duong nao",
+    "nhung duong", "nhung dau", "di dau", "chay dau",
+)
+# Từ bỏ đi khi lấy tên bến/đường trong câu ("xe buýt nào đi Suối Tiên" → "Suối Tiên").
+_BUS_NOISE_WORDS = frozenset(
+    """xe buyt bus tuyen so nao di qua chay toi den tu co khong may gio o dau gan day nhat tram diem dung
+    nha cho don len xuong cua minh la gi nhung ve va hay lo trinh bao lau nua tim can muon bat giup oi a
+    nhe vay nay quanh khu vuc tren duoc the ra sao hien luc bay cac voi""".split()
+)
+_BUS_LISTED_REFS = 8
+
+
+def _bus_fold(text: str) -> str:
+    """Như `normalize_text` nhưng giữ gạch nối — tuyến "60-1" khác "60 1"."""
+    text = (text or "").replace("Đ", "D").replace("đ", "d")
+    plain = "".join(char for char in unicodedata.normalize("NFKD", text) if not unicodedata.combining(char))
+    return " ".join(re.sub(r"[^a-z0-9-]+", " ", plain.lower()).split())
+
+
+def detect_bus(message: str) -> dict[str, Any] | None:
+    """Câu hỏi về xe buýt thì trả tham số cho ``bus_answer``:
+
+    - ``{"mode": "line", "ref", "ask"}`` — một tuyến; ``ask`` là ``info``
+      (giờ chạy, giá vé…), ``route`` (đi qua đâu) hoặc ``arrival`` (bao lâu
+      nữa xe tới — không có dữ liệu thời gian thực, chỉ nói giãn cách)
+    - ``{"mode": "lines", "query"}`` — tuyến theo bến/đường ("xe buýt đi Suối Tiên")
+    - ``{"mode": "stops", "query"}`` — trạm gần bạn, hoặc trạm theo tên
+    """
+    folded = _bus_fold(message)
+    padded = f" {folded} "
+    if not (" buyt " in padded or " bus " in padded or _BUS_CONTEXT_RE.search(folded)):
+        return None
+    words, plain = _words(message)
+    kept = [word for word, key in zip(words, plain) if key not in _BUS_NOISE_WORDS]
+    # "Quán cà phê gần trạm xe buýt" là tìm quán.
+    if set(categories_for_query(" ".join(kept))) - _BUS_CATEGORIES:
+        return None
+    match = _BUS_REF_RE.search(folded)
+    if match:
+        if any(f" {phrase} " in padded for phrase in _BUS_ARRIVAL_PHRASES):
+            ask = "arrival"
+        elif any(f" {phrase} " in padded for phrase in _BUS_ROUTE_PHRASES):
+            ask = "route"
+        else:
+            ask = "info"
+        return {"mode": "line", "ref": match.group(1).replace(" ", "").upper(), "ask": ask}
+    query = " ".join(kept)
+    if any(f" {phrase} " in padded for phrase in _BUS_STOP_PHRASES) or not query:
+        return {"mode": "stops", "query": query}
+    return {"mode": "lines", "query": query}
+
+
+def bus_answer(
+    params: dict[str, Any], latitude: float, longitude: float, now: datetime | None = None
+) -> tuple[str, dict[str, Any] | None, list[str]]:
+    """``(câu trả lời, lớp vẽ bản đồ, câu gợi ý)``. Lớp vẽ cùng dạng
+    ``AssistantOverlay`` của giao diện: lộ trình tuyến, hoặc các trạm gần."""
+    now = now or datetime.now(ZoneInfo(TIMEZONE))
+    try:
+        if params["mode"] == "line":
+            return _bus_line_answer(params["ref"], params.get("ask") or "info", now)
+        if params["mode"] == "lines":
+            return _bus_lines_answer(params["query"], now)
+        return _bus_stops_answer(params.get("query") or "", latitude, longitude)
+    except Exception:  # noqa: BLE001 - công cụ hỏng không được làm hỏng cả khung chat
+        logger.exception("Tra xe buýt lỗi trong lượt chat")
+        return "Xin lỗi, mình chưa tra được xe buýt lúc này. Bạn thử lại sau ít phút nhé.", None, []
+
+
+def _ref_key(ref: str) -> str:
+    """"1" khớp "01" — cùng cách so của `bus._matches`."""
+    return normalize_text(ref).replace(" ", "").lstrip("0")
+
+
+def _bus_line_answer(ref: str, ask: str, now: datetime) -> tuple[str, dict[str, Any] | None, list[str]]:
+    found = bus.search_lines(ref, limit=10)
+    wanted = _ref_key(ref)
+    line = next((line for line in found["lines"] if _ref_key(line["ref"]) == wanted), None)
+    if line is None:
+        # Chỉ gợi ý tuyến cùng đầu số ("60" → 60-1, 60-2); `search_lines` còn
+        # trả tuyến có tên đường chứa con số đó — không liên quan.
+        similar = [line["ref"] for line in found["lines"] if _ref_key(line["ref"]).startswith(wanted)][:3]
+        reply = f"Mình không thấy tuyến xe buýt số {ref} trong dữ liệu."
+        if similar:
+            reply += f" Bạn muốn hỏi tuyến {_join_vi(similar)}?"
+        return reply, None, [f"Xe buýt {other} chạy mấy giờ?" for other in similar[:2]]
+    return _bus_detail_answer(line, ask, now)
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:] + "."
+
+
+def _bus_detail_answer(line: dict[str, Any], ask: str, now: datetime) -> tuple[str, dict[str, Any] | None, list[str]]:
+    detail = bus.route_detail(int(line["directions"][0]["id"]), now)
+    if detail is None:
+        return f"Mình không thấy tuyến xe buýt số {line['ref']} trong dữ liệu.", None, []
+    ref = detail["ref"]
+    directions = _bus_directions(detail)
+    sentences = [_bus_head(detail, now)]
+    service = _bus_service(detail)
+    if ask == "route":
+        sentences += [_bus_streets(direction, label) for direction, label in directions]
+    else:
+        if service:
+            sentences.append(_sentence(service))
+        if directions:
+            sentences.append(_sentence("; ".join(_bus_trip(direction, label) for direction, label in directions)))
+    if ask == "arrival":
+        interval = _bus_interval(detail)
+        sentences.append(
+            "Mình không có vị trí xe theo thời gian thực nên không biết chính xác khi nào xe tới trạm"
+            + (f" — chỉ biết {interval}." if interval else ".")
+        )
+    replies = [
+        f"Xe buýt {ref} chạy mấy giờ?" if ask == "route" else f"Tuyến {ref} đi qua những đâu?",
+        "Trạm xe buýt gần tôi",
+    ]
+    return " ".join(sentences), _bus_overlay(detail), replies
+
+
+def _bus_head(detail: dict[str, Any], now: datetime) -> str:
+    head = f"Tuyến {detail['ref']} ({detail['name']})"
+    # Dữ liệu có cả tuyến Bình Dương, Đồng Nai… — "xe buýt số 2" không có ở
+    # TP.HCM thì ra tuyến 02 Bình Dương, phải nói rõ.
+    if detail.get("network") and detail["network"] != bus.HCMC_NETWORK:
+        head = f"Tuyến {detail['ref']} của {detail['network']} ({detail['name']})"
+    hours = detail.get("hours") or {}
+    first, last = hours.get("firstTrip"), hours.get("lastTrip")
+    if first and last:
+        head += f" chạy từ {first} đến {last}"
+        state = _bus_state(hours, now)
+        return head + (f", {state}." if state else ".")
+    if hours.get("raw"):
+        return f"{head}: giờ chạy ghi trên bản đồ là {hours['raw']}."
+    return f"{head}: dữ liệu chưa ghi giờ chạy."
+
+
+def _bus_state(hours: dict[str, Any], now: datetime) -> str | None:
+    if hours.get("runningNow") is True:
+        ends = hours.get("endsInMinutes")
+        if ends is not None and ends <= 60:
+            return f"giờ này đang chạy, còn khoảng {_say_duration(ends)} nữa là hết chuyến"
+        return "giờ này đang chạy"
+    if hours.get("runningNow") is False:
+        starts = hours.get("startsInMinutes")
+        if starts is None:
+            return "giờ này không có chuyến"
+        start_at = now + timedelta(minutes=starts)
+        if start_at.date() == now.date():
+            return f"giờ này chưa chạy, chuyến đầu lúc {start_at:%H:%M}"
+        day = "sáng mai" if start_at.date() == (now + timedelta(days=1)).date() else f"ngày {start_at:%d/%m}"
+        return f"hôm nay đã hết chuyến, chuyến đầu {day} lúc {start_at:%H:%M}"
+    return None
+
+
+def _bus_interval(detail: dict[str, Any]) -> str | None:
+    interval = detail.get("interval")
+    if not interval:
+        return None
+    low, high = interval["minMinutes"], interval["maxMinutes"]
+    return f"cứ {low}–{high} phút có một chuyến" if low != high else f"khoảng {low} phút có một chuyến"
+
+
+def _bus_service(detail: dict[str, Any]) -> str:
+    """"cứ 6–12 phút có một chuyến, vé 6.000đ" — chưa viết hoa, chưa chấm câu."""
+    parts = [_bus_interval(detail)]
+    if detail.get("charge"):
+        parts.append(f"vé {_vnd(int(detail['charge']))}")
+    return ", ".join(part for part in parts if part)
+
+
+def _bus_directions(detail: dict[str, Any]) -> list[tuple[dict[str, Any], str]]:
+    directions = detail.get("directions") or []
+    if len(directions) == 2:
+        return list(zip(directions, ("lượt đi", "lượt về")))
+    return [(direction, "lộ trình" if len(directions) == 1 else "lượt") for direction in directions]
+
+
+def _bus_endpoints(direction: dict[str, Any]) -> str:
+    if direction.get("origin") and direction.get("destination"):
+        return f"{direction['origin']} → {direction['destination']}"
+    return direction.get("name") or ""
+
+
+def _bus_length(direction: dict[str, Any], nested: bool = False) -> list[str]:
+    """``nested``: đã nằm trong ngoặc — viết "ước tính 56 phút" thay vì lồng ngoặc."""
+    bits = []
+    length = format_distance(direction.get("lengthMeters"))
+    if length:
+        bits.append(length)
+    minutes = direction.get("tripMinutes")
+    if minutes:
+        # Phần lớn tuyến không ghi `duration`: số phút chia từ quãng đường với
+        # vận tốc trung bình (`bus.trip_minutes`) — phải nói rõ là ước tính.
+        if direction.get("tripMinutesSource") != "estimate":
+            bits.append(f"khoảng {_say_duration(minutes)}")
+        elif nested:
+            bits.append(f"ước tính {_say_duration(minutes)}")
+        else:
+            bits.append(f"khoảng {_say_duration(minutes)} (ước tính)")
+    return bits
+
+
+def _bus_trip(direction: dict[str, Any], label: str) -> str:
+    """"lượt đi Bến xe Miền Đông → Bến xe Miền Tây: 16,7 km, khoảng 56 phút (ước tính)"."""
+    bits = _bus_length(direction)
+    text = f"{label} {_bus_endpoints(direction)}".strip()
+    return f"{text}: {', '.join(bits)}" if bits else text
+
+
+def _bus_streets(direction: dict[str, Any], label: str) -> str:
+    # Lộ trình rẽ ra rồi quay lại cùng một đường thì kể tên đường một lần.
+    streets = list(dict.fromkeys(direction.get("streets") or []))
+    stops = direction.get("stops") or []
+    bits = [*_bus_length(direction, nested=True), *([f"{len(stops)} trạm"] if stops else [])]
+    text = f"{label} {_bus_endpoints(direction)}".strip()
+    if bits:
+        text += f" ({', '.join(bits)})"
+    if not streets:
+        return _sentence(text + ": dữ liệu chưa ghi tên đường đi qua")
+    shown = streets[:12]
+    rest = len(streets) - len(shown)
+    names = ", ".join(shown) + f" và {rest} đường khác" if rest else _join_vi(shown)
+    return _sentence(f"{text} đi qua {names}")
+
+
+def _bus_overlay(detail: dict[str, Any]) -> dict[str, Any] | None:
+    """Lộ trình lượt đang chọn + bến đầu (A), bến cuối (B)."""
+    directions = detail.get("directions") or []
+    if not directions:
+        return None
+    direction = next((item for item in directions if item["id"] == detail.get("selectedId")), directions[0])
+    path = direction.get("path")
+    stops = direction.get("stops") or []
+    points = []
+    if len(stops) >= 2:
+        for label, role, stop in (("A", "Bến đầu", stops[0]), ("B", "Bến cuối", stops[-1])):
+            points.append(
+                {
+                    "id": f"bus-{direction['id']}-{label}",
+                    "latitude": stop["latitude"],
+                    "longitude": stop["longitude"],
+                    "label": label,
+                    "tone": "stop",
+                    "title": f"{role}: {stop['name']}",
+                }
+            )
+    line = path if isinstance(path, dict) and path.get("coordinates") else None
+    if line is None and not points:
+        return None
+    return {"line": line, "points": points}
+
+
+def _bus_lines_answer(query: str, now: datetime) -> tuple[str, dict[str, Any] | None, list[str]]:
+    found = bus.search_lines(query, limit=5)
+    lines = found["lines"]
+    if not lines:
+        reply = (
+            f"Mình chưa thấy tuyến xe buýt nào đi qua “{query}”. Bạn thử nói số tuyến, "
+            "ví dụ “xe buýt 14 chạy mấy giờ?”, hoặc hỏi “trạm xe buýt gần tôi”."
+        )
+        return reply, None, ["Trạm xe buýt gần tôi"]
+    if found["total"] == 1:
+        return _bus_detail_answer(lines[0], "info", now)
+    items = [f"{line['ref']} ({line['name']})" for line in lines]
+    more = found["total"] - len(items)
+    listed = ", ".join(items) + f" và {more} tuyến khác" if more else _join_vi(items)
+    reply = (
+        f"Có {found['total']} tuyến xe buýt đi qua “{query}”: {listed}. "
+        f"Bạn hỏi “xe buýt {lines[0]['ref']} chạy mấy giờ?” để xem giờ chạy, giá vé và lộ trình."
+    )
+    return reply, None, [f"Xe buýt {line['ref']} chạy mấy giờ?" for line in lines[:3]]
+
+
+def _bus_refs(stop: dict[str, Any]) -> list[str]:
+    # Một tuyến có hai lượt cùng dừng ở trạm thì chỉ kể một lần.
+    return list(dict.fromkeys(route["ref"] for route in stop.get("routes") or []))
+
+
+def _bus_refs_text(refs: list[str]) -> str:
+    if not refs:
+        return "chưa rõ tuyến nào dừng"
+    shown = refs[:_BUS_LISTED_REFS]
+    rest = len(refs) - len(shown)
+    return "tuyến " + (", ".join(shown) + f" và {rest} tuyến khác" if rest else _join_vi(shown))
+
+
+def _bus_stops_answer(query: str, latitude: float, longitude: float) -> tuple[str, dict[str, Any] | None, list[str]]:
+    found = bus.search_stops(latitude=latitude, longitude=longitude, query=query, limit=5)
+    stops = found["results"]
+    if not stops:
+        if query:
+            return f"Mình không thấy trạm xe buýt nào tên “{query}”.", None, ["Trạm xe buýt gần tôi"]
+        radius = format_distance(found.get("radius"))
+        where = f" trong bán kính {radius}" if radius else ""
+        return f"Không thấy trạm xe buýt nào{where} quanh bạn.", None, []
+    items = []
+    for stop in stops[:3]:
+        minutes = stop.get("driveMinutes")
+        where = f"{minutes} phút đi bộ" if minutes else format_distance(stop.get("distanceMeters"))
+        name = f"{stop['name']} ({where})" if where else stop["name"]
+        items.append(f"{name}: {_bus_refs_text(_bus_refs(stop))}")
+    lead = f"Trạm xe buýt khớp “{query}”:" if query else "Trạm xe buýt gần bạn nhất:"
+    reply = f"{lead} {'; '.join(items)}."
+    if found.get("approximate"):
+        reply += " Thời gian đi bộ là ước tính."
+    overlay = {
+        "line": None,
+        "points": [
+            {
+                "id": f"bus-stop-{stop['id']}",
+                "latitude": stop["latitude"],
+                "longitude": stop["longitude"],
+                "label": str(index),
+                "tone": "stop",
+                "title": f"{stop['name']} · {_bus_refs_text(_bus_refs(stop))}",
+            }
+            for index, stop in enumerate(stops, start=1)
+        ],
+    }
+    return reply, overlay, [f"Xe buýt {ref} chạy mấy giờ?" for ref in _bus_refs(stops[0])[:2]]
 

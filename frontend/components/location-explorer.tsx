@@ -2414,7 +2414,9 @@ export function LocationExplorer() {
       );
       bounds.extend([point.longitude, point.latitude]);
     }
-    for (const coordinate of assistantOverlay.line?.coordinates ?? []) bounds.extend(coordinate);
+    const line = assistantOverlay.line;
+    const coordinates = line?.type === 'MultiLineString' ? line.coordinates.flat() : (line?.coordinates ?? []);
+    for (const coordinate of coordinates) bounds.extend(coordinate);
     if (!bounds.isEmpty()) {
       map.fitBounds(bounds, { padding: 80, maxZoom: 16, duration: 600 });
     }

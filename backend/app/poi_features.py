@@ -558,6 +558,44 @@ def categories_for_query(query_text: str | None) -> tuple[str, ...]:
     return tuple(sorted(matched))
 
 
+def query_names_a_place(query_text: str | None) -> bool:
+    """Truy vấn còn lại chữ nào sau khi bỏ hết từ khoá loại trong `CATEGORY_KEYWORDS`.
+
+    "nhà thờ Đức Bà" còn "đức bà" — phần tên riêng, nên truy vấn đang gọi TÊN
+    một nơi cụ thể chứ không chỉ hỏi loại. "quán bình dân", "cà phê" bỏ từ khoá
+    xong thì rỗng: thuần hỏi loại. So khớp theo cùng dạng chữ (giữ dấu hay
+    không) với `categories_for_query`.
+    """
+    if not normalize_text(query_text):
+        return False
+    keyword_form = _lower_words if _has_vietnamese_marks(query_text or "") else normalize_text
+    remaining = f" {keyword_form(query_text or '')} "
+    keywords = {keyword_form(k) for keywords in CATEGORY_KEYWORDS.values() for k in keywords}
+    # Dài trước để "quán bình dân" bị bỏ trọn chứ không chỉ còn "quán" sau khi
+    # "bình dân" đi trước; lặp vì `replace` không chồng lấn nên hai từ khoá
+    # liền nhau dùng chung một dấu cách sẽ sót cái thứ hai.
+    for keyword in sorted(keywords, key=len, reverse=True):
+        while f" {keyword} " in remaining:
+            remaining = remaining.replace(f" {keyword} ", " ")
+    return bool(remaining.strip())
+
+
+def name_contains_phrase(name: str | None, phrase: str | None) -> bool:
+    """Tên chứa trọn cụm `phrase`, theo ranh giới từ.
+
+    Giữ dấu khi CẢ HAI cùng có dấu — "phở" không được khớp "Phố" (lỗi đã sửa ở
+    đường tìm kiếm). Một bên không dấu (tên OSM gõ "Nha tho Duc Ba", hay người
+    dùng gõ không dấu) thì so trên dạng bỏ dấu, nếu không sẽ không bao giờ khớp.
+    """
+    if not normalize_text(phrase) or not normalize_text(name):
+        return False
+    if _has_vietnamese_marks(phrase or "") and _has_vietnamese_marks(name or ""):
+        form = _lower_words
+    else:
+        form = normalize_text
+    return f" {form(phrase or '')} " in f" {form(name or '')} "
+
+
 def _lower_words(value: str) -> str:
     """Chữ thường, GIỮ dấu, mọi ký tự không phải chữ/số thành một dấu cách."""
     return re.sub(r"[\W_]+", " ", unicodedata.normalize("NFC", value).lower()).strip()
@@ -589,6 +627,70 @@ def is_real_mall(name: str | None, tags: dict[str, Any]) -> bool:
         return True
     folded = normalize_text(name).replace(" ", "")
     return any(marker in folded for marker in _DEPARTMENT_STORE_MARKERS)
+
+
+def _mark_signature(word: str) -> tuple[str, str]:
+    """(dạng bỏ dấu, tập dấu) của một âm tiết đã viết thường.
+
+    So TẬP dấu chứ không so chuỗi: "hoà" và "hòa" là cùng một chữ, chỉ khác kiểu
+    đặt dấu thanh cũ/mới, nên không được tính là khác dấu.
+    """
+    decomposed = unicodedata.normalize("NFD", word)
+    marks = sorted(char for char in decomposed if unicodedata.combining(char))
+    return normalize_text(word), "".join(marks) + ("đ" if "đ" in word else "")
+
+
+def matches_query_marks(query_text: str | None, texts: Iterable[str | None]) -> bool:
+    """Văn bản `texts` có khớp truy vấn MÀ KHÔNG nhờ gộp nhầm dấu hay không.
+
+    Analyzer ``vi_folded`` của OpenSearch bỏ dấu cả hai phía để người gõ không
+    dấu vẫn tìm được, nhưng nó gộp luôn những chữ khác nghĩa: đo 2026-10-10,
+    chế độ giọng nói nói "quán phở" ở Quận 1 trả "Nhà Hát Thành Phố" ở hạng 3
+    ("phở" và "phố" cùng thành "pho"), kéo theo Bảo tàng Thành phố, Trường THPT
+    ("phổ"), Phòng khám… (``name.prefix``: "pho" là tiền tố của "phòng").
+
+    Truy vấn GÕ CÓ DẤU thì dấu là thông tin thật (cùng lý do với
+    ``categories_for_query``). Một từ có dấu của truy vấn được tính là khớp khi:
+
+    - giá trị có dấu chứa đúng chữ đó (cùng dấu) hoặc một chữ bắt đầu bằng nó;
+    - giá trị KHÔNG có dấu nào (dữ liệu nhập không dấu: "Pho Hien", thẻ OSM)
+      chứa dạng bỏ dấu của nó — chỉ ở đây mới chịu được lệch dấu.
+
+    Xét dấu theo TỪNG giá trị chứ không theo từng chữ: "quan" trong "cơ quan"
+    là chữ không dấu thật, khác "quán", còn "Pho" trong "Pho Hien" là "Phở" bị
+    mất dấu. Chỉ phân biệt được hai trường hợp đó bằng việc cả giá trị có dấu
+    hay không.
+
+    Từ không dấu trong truy vấn thì khớp lỏng như analyzer (theo tiền tố bỏ
+    dấu). Truy vấn hoàn toàn không dấu ("pho") luôn trả True.
+    """
+    if not _has_vietnamese_marks(query_text or ""):
+        return True
+    query_words = _lower_words(query_text or "").split()
+    for value in texts:
+        if not value:
+            continue
+        if _has_vietnamese_marks(value):
+            words = _lower_words(value).split()
+            signatures = {_mark_signature(word) for word in words}
+            for query_word in query_words:
+                if not _has_vietnamese_marks(query_word):
+                    if any(normalize_text(word).startswith(query_word) for word in words):
+                        return True
+                elif _mark_signature(query_word) in signatures or any(
+                    len(word) > len(query_word) and word.startswith(query_word) for word in words
+                ):
+                    return True
+        else:
+            folded = normalize_text(value).split()
+            for query_word in query_words:
+                target = normalize_text(query_word)
+                if target in folded or (
+                    not _has_vietnamese_marks(query_word)
+                    and any(word.startswith(target) for word in folded)
+                ):
+                    return True
+    return False
 
 
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:

@@ -160,7 +160,9 @@ from app.poi_features import (  # noqa: E402
     CATEGORY_MAP,
     categories_for_query,
     category_keywords,
+    name_contains_phrase,
     osm_category,
+    query_names_a_place,
 )
 
 
@@ -268,6 +270,31 @@ def test_cho_co_dau_khong_bi_hieu_thanh_cho_mua_ban() -> None:
     assert categories_for_query("chợ Bến Thành") == ("market",)
     # Gõ không dấu thì vẫn so khớp không dấu như cũ.
     assert categories_for_query("cho ben thanh") == ("market",)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("nhà thờ Đức Bà", True),
+        ("nha tho duc ba", True),
+        ("chợ Bến Thành", True),
+        ("quán bình dân", False),
+        ("cà phê", False),
+        ("quán cà phê", False),
+        ("", False),
+    ],
+)
+def test_truy_van_con_ten_rieng_sau_khi_bo_tu_khoa_loai(query: str, expected: bool) -> None:
+    assert query_names_a_place(query) is expected
+
+
+def test_ten_chua_cum_giu_dau_khi_ca_hai_co_dau() -> None:
+    assert name_contains_phrase("Nhà thờ Đức Bà Sài Gòn", "nhà thờ Đức Bà")
+    assert name_contains_phrase("Nha tho Duc Ba", "nhà thờ Đức Bà")
+    assert not name_contains_phrase("Phố Phở Hà Nội", "phở phố cổ")
+    # "phố" có dấu khác "phở": cả hai cùng có dấu thì không được gộp.
+    assert not name_contains_phrase("Phố đi bộ", "phở")
+    assert not name_contains_phrase("Nhà Sách Đức Bà Hoà Binh", "nhà thờ Đức Bà")
 
 
 def test_tu_khoa_mot_am_tiet_khop_theo_ranh_gioi_tu() -> None:
@@ -425,3 +452,61 @@ def test_ghi_de_tiffany_trong_migration_0037_la_danh_muc_co_that() -> None:
     spec.loader.exec_module(module)
     assert module.CATEGORY in set(CATEGORY_MAP.values())
     assert osm_category({"shop": "jewelry"}) == module.CATEGORY
+
+
+# --- Khớp giữ dấu cho truy vấn gõ có dấu ----------------------------------------
+#
+# Đo 2026-10-10: chế độ giọng nói "quán phở" ở Quận 1 trả "Nhà Hát Thành Phố"
+# ở hạng 3 — analyzer vi_folded gộp "phở" và "phố" về cùng "pho".
+
+from app.poi_features import matches_query_marks  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["Nhà Hát Thành Phố"],
+        ["Bảo tàng Thành phố", "Văn hóa", "museum"],
+        ["Trường Trung học phổ thông Lương Thế Vinh"],
+        # Gặp lại trong chế độ giọng nói 2026-10-10: hạng 3 của "phở", cách 360 m.
+        ["Trường Trung học phổ thông Nam Kỳ Khởi Nghĩa", "Giáo dục", "school"],
+        ["Trung Tâm Y Tế Dự Phòng - Phòng Khám Tiêm Phòng"],
+    ],
+)
+def test_pho_co_dau_khong_khop_chu_khac_dau(texts: list[str]) -> None:
+    assert matches_query_marks("phở", texts) is False
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["Phở Nhà Mình"],
+        ["PHỞ SOL - Q1 (Phở & Các Món Ngon Từ Phở)"],
+        # Dữ liệu nhập không dấu: chỉ ở đây mới chịu lệch dấu.
+        ["Pho Hien", "Ăn uống", "restaurant"],
+        ["Bánh mì", "Ăn uống", "pho"],
+    ],
+)
+def test_pho_co_dau_van_khop_quan_pho(texts: list[str]) -> None:
+    assert matches_query_marks("phở", texts) is True
+
+
+def test_truy_van_khong_dau_van_khop_moi_dau() -> None:
+    """Người gõ không dấu "pho" không cho biết là phở hay phố — giữ nguyên
+    hành vi của analyzer, không lọc gì."""
+    assert matches_query_marks("pho", ["Nhà Hát Thành Phố"]) is True
+    assert matches_query_marks("pho", ["Phở Nhà Mình"]) is True
+
+
+def test_kieu_dat_dau_cu_moi_la_cung_mot_chu() -> None:
+    assert matches_query_marks("hòa bình", ["Chợ Hoà Bình"]) is True
+    assert matches_query_marks("hoà", ["Phở Hòa Pasteur"]) is True
+
+
+def test_chu_khong_dau_that_trong_gia_tri_co_dau_khong_khop_chu_co_dau() -> None:
+    """"quan" trong "cơ quan nhà nước" là chữ không dấu thật, khác "quán"."""
+    assert matches_query_marks("quán", ["UBND Phường 8", "cơ quan nhà nước"]) is False
+
+
+def test_tu_khong_dau_trong_truy_van_co_dau_khop_theo_tien_to() -> None:
+    assert matches_query_marks("phở bo", ["Phố Bò Viên"]) is True

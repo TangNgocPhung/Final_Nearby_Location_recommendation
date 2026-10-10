@@ -25,7 +25,7 @@ from .features.serving import attach_region_ctr
 from . import geo_cache
 from .ltr import model as ltr_model
 from .opening_hours import is_open_now
-from .poi_features import categories_for_query
+from .poi_features import categories_for_query, name_contains_phrase, query_names_a_place
 from .search.retrieval import multi_channel_candidates
 from .spatio_temporal import enrich_candidates
 
@@ -264,7 +264,11 @@ def _is_text_relevant(candidate: dict[str, Any]) -> bool:
     return candidate.get("textScore", 1.0) > 0.0 or candidate.get("vectorScore") is not None
 
 
-def _relevance_sort_key(has_query_text: bool, intent_categories: frozenset[str] = frozenset()):
+def _relevance_sort_key(
+    has_query_text: bool,
+    intent_categories: frozenset[str] = frozenset(),
+    query_text: str | None = None,
+):
     """Khoá sắp xếp: khi có query text, ứng viên KHÔNG có tín hiệu liên quan
     văn bản nào (chỉ lọt vào nhờ geo/trending) luôn đứng SAU mọi ứng viên có
     tín hiệu, bất kể điểm cuối cùng cao thấp ra sao.
@@ -282,12 +286,29 @@ def _relevance_sort_key(has_query_text: bool, intent_categories: frozenset[str] 
     "quán"→"quan" (cơ quan nhà nước) và "dân"→"dan" (ủy ban nhân dân) trên
     ``search_keywords`` của nhóm hành chính, rồi gần hơn nên điểm cao hơn quán
     cơm thật. Đẩy xuống chứ không bỏ: POI tên "Cà phê X" gắn nhầm loại vẫn còn.
-    """
 
-    def key(item: dict[str, Any]) -> tuple[int, int, float, float]:
+    ``query_text``: truy vấn nêu loại KÈM tên riêng ("nhà thờ Đức Bà") thì ứng
+    viên có TÊN chứa trọn cụm truy vấn đứng đầu, kể cả khi khác loại. Đo
+    2026-10-10 quanh Quận 1: POI "Nhà thờ Đức Bà" gắn loại `landmark`, BM25 cao
+    gấp đôi POI kế tiếp, nhưng luật lệch loại đẩy nó ra sau mọi nơi thờ tự và
+    "Đền Sri Thenday Yutthapani" lên hạng 1 chỉ vì gần hơn. Đòi TRỌN cụm chứ
+    không chỉ phần tên riêng: "Nhà Sách Đức Bà Hoà Binh" (367 m) cũng chứa "đức
+    bà". Truy vấn thuần loại ("cà phê", "quán bình dân") không có tầng này, nếu
+    không mọi quán tên "Cà phê X" sẽ nhảy lên trước quán gần hơn.
+    """
+    name_phrase = (
+        query_text if intent_categories and query_names_a_place(query_text) else None
+    )
+
+    def key(item: dict[str, Any]) -> tuple[int, int, int, float, float]:
         demoted = 1 if has_query_text and not _is_text_relevant(item) else 0
-        off_intent = 1 if intent_categories and item.get("category") not in intent_categories else 0
-        return (demoted, off_intent, -item["score"], item["distanceMeters"])
+        unnamed = 0 if name_phrase and name_contains_phrase(item.get("name"), name_phrase) else 1
+        off_intent = (
+            1
+            if unnamed and intent_categories and item.get("category") not in intent_categories
+            else 0
+        )
+        return (demoted, unnamed, off_intent, -item["score"], item["distanceMeters"])
 
     return key
 
@@ -300,6 +321,7 @@ def rerank(
     ranker: str = "linear",
     has_query_text: bool = False,
     intent_categories: frozenset[str] = frozenset(),
+    query_text: str | None = None,
 ) -> list[dict[str, Any]]:
     """Chấm điểm và sắp xếp ứng viên.
 
@@ -311,7 +333,7 @@ def rerank(
     weights = weights or DEFAULT_WEIGHTS
     category_boost = category_boost or {}
     graph_boost = graph_boost or set()
-    sort_key = _relevance_sort_key(has_query_text, intent_categories)
+    sort_key = _relevance_sort_key(has_query_text, intent_categories, query_text)
 
     if ranker == "ltr" and candidates:
         # Đặc trưng lấy từ chính dict candidate này, nên LTR phải chạy SAU
@@ -685,6 +707,7 @@ def rank_pois_detailed(
         ranker=ranker,
         has_query_text=bool(query_text and query_text.strip()),
         intent_categories=intent_categories,
+        query_text=query_text,
     )
     # Diversity & Business Rules, theo thứ tự: đa dạng loại + thương hiệu trước
     # (chúng sắp xếp lại cả danh sách), rồi hai luật chỉ vá chỗ thiếu trong top,
