@@ -30,6 +30,7 @@ import {
   type SavedConversation,
 } from '@/components/chat-history';
 
+import { LoginRequired } from '@/components/login-required';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
@@ -55,6 +56,7 @@ import {
   type Suggestion,
   type SuggestionsResponse,
 } from '@/lib/assistant';
+import { authHeaders, useAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 
 /* ------------------------------------------------------------------ *
@@ -356,6 +358,7 @@ export function ChatWidget({
   const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore' | 'history'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const [suggestionsFailed, setSuggestionsFailed] = useState(false);
+  const { user } = useAuth();
   const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
   // Tăng lên để buộc tải lại gợi ý (vd vừa lưu nhà → hiện chip "quán gần nhà").
   const [suggestionsVersion, setSuggestionsVersion] = useState(0);
@@ -489,18 +492,22 @@ export function ChatWidget({
     return () => controller.abort();
   }, [apiBaseUrl, open, position, sessionId, suggestionsVersion]);
 
-  // Nạp lịch sử ngay lúc render khi phiên đổi (không qua effect). An toàn với
-  // hydrate: sessionId rỗng ở server và lần render đầu, chỉ có sau khi mount.
-  const [conversationsSessionId, setConversationsSessionId] = useState('');
-  if (sessionId !== conversationsSessionId) {
-    setConversationsSessionId(sessionId);
-    setConversations(sessionId ? loadConversations<ChatTurn>(sessionId) : []);
+  // Lịch sử trò chuyện chỉ dành cho tài khoản đã đăng nhập, lưu theo tài khoản
+  // (không theo phiên): khách vãng lai không lưu và không xem được.
+  const historyOwner = user?.id ?? '';
+
+  // Nạp lịch sử ngay lúc render khi tài khoản đổi (không qua effect). An toàn
+  // với hydrate: user rỗng ở server và lần render đầu, chỉ có sau khi mount.
+  const [conversationsOwner, setConversationsOwner] = useState('');
+  if (historyOwner !== conversationsOwner) {
+    setConversationsOwner(historyOwner);
+    setConversations(historyOwner ? loadConversations<ChatTurn>(historyOwner) : []);
   }
 
   // Lưu cuộc đang mở vào lịch sử mỗi khi có lượt mới — đợi stream xong để
   // không ghi localStorage theo từng mẩu chữ.
   useEffect(() => {
-    if (!sessionId || loading || turns.length === 0 || turns.some((turn) => turn.pending)) return;
+    if (!historyOwner || loading || turns.length === 0 || turns.some((turn) => turn.pending)) return;
     if (turns === restoredTurnsRef.current) return;
     let id = conversationIdRef.current;
     if (!id) {
@@ -511,10 +518,10 @@ export function ChatWidget({
     const saved: SavedConversation<ChatTurn> = { id, title: conversationTitle(turns), updatedAt: Date.now(), turns };
     setConversations((prev) => {
       const next = [saved, ...prev.filter((conversation) => conversation.id !== saved.id)].slice(0, MAX_CONVERSATIONS);
-      saveConversations(sessionId, next);
+      saveConversations(historyOwner, next);
       return next;
     });
-  }, [loading, sessionId, turns]);
+  }, [historyOwner, loading, turns]);
 
   /** Xoá cả lịch sử phía backend: không xoá thì câu hỏi đầu của cuộc mới vẫn
    * bị hiểu như câu nối tiếp ("còn chỗ nào khác không?"). Chỉ bấm được khi
@@ -543,7 +550,7 @@ export function ChatWidget({
     setView('chat');
     void fetch(`${apiBaseUrl}/api/v1/chat/history`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId },
+      headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionId, ...authHeaders() },
       body: JSON.stringify({
         turns: conversation.turns
           .filter((turn) => turn.content.trim())
@@ -558,7 +565,7 @@ export function ChatWidget({
   const deleteConversation = (id: string) => {
     setConversations((prev) => {
       const next = prev.filter((conversation) => conversation.id !== id);
-      saveConversations(sessionId, next);
+      saveConversations(historyOwner, next);
       return next;
     });
     if (id === conversationIdRef.current) newConversation();
@@ -566,7 +573,7 @@ export function ChatWidget({
 
   const clearConversations = () => {
     setConversations([]);
-    saveConversations(sessionId, []);
+    saveConversations(historyOwner, []);
     if (conversationIdRef.current) newConversation();
   };
 
@@ -774,7 +781,19 @@ export function ChatWidget({
           </div>
         </div>
 
-        {view === 'history' ? (
+        {view === 'history' && !user ? (
+          <LoginRequired
+            title="Lịch sử trò chuyện"
+            description="Đăng nhập để lưu và xem lại các cuộc trò chuyện với trợ lý."
+            onBack={() => setView('chat')}
+          />
+        ) : view === 'meetup' && !user ? (
+          <LoginRequired
+            title="Hẹn nhóm"
+            description="Đăng nhập để tìm điểm hẹn công bằng cho cả nhóm."
+            onBack={() => setView('chat')}
+          />
+        ) : view === 'history' ? (
           <ChatHistory
             conversations={conversations}
             activeId={activeConversationId}

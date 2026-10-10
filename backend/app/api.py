@@ -679,9 +679,14 @@ def delete_chat_history(request: Request) -> Response:
 
 
 @app.put("/api/v1/chat/history", status_code=204)
-def restore_chat_history(payload: ChatHistoryRestore, request: Request) -> Response:
+def restore_chat_history(
+    payload: ChatHistoryRestore,
+    request: Request,
+    _user: auth.AuthUser = Depends(auth.require_user),
+) -> Response:
     """Mở lại một cuộc trò chuyện cũ (lịch sử lưu ở trình duyệt): nạp lại ngữ
-    cảnh của phiên để câu hỏi tiếp theo được hiểu là câu nối tiếp."""
+    cảnh của phiên để câu hỏi tiếp theo được hiểu là câu nối tiếp. Chỉ tài
+    khoản đã đăng nhập mới có lịch sử để mở lại."""
     owner_id = _owner_id(request)
     if not owner_id:
         return JSONResponse(status_code=400, content={"detail": "Thiếu X-Session-ID"})
@@ -857,8 +862,12 @@ def post_assistant_tour(payload: TourRequest) -> dict[str, Any]:
 
 
 @app.post("/api/v1/assistant/meetup")
-def post_assistant_meetup(payload: MeetupRequest) -> dict[str, Any]:
-    """Điểm hẹn công bằng: quán mà người đi xa nhất cũng không quá xa."""
+def post_assistant_meetup(
+    payload: MeetupRequest,
+    _user: auth.AuthUser = Depends(auth.require_user),
+) -> dict[str, Any]:
+    """Điểm hẹn công bằng: quán mà người đi xa nhất cũng không quá xa. Chỉ
+    dành cho tài khoản đã đăng nhập."""
     return assistant.plan_meetup(
         [item.model_dump() for item in payload.participants],
         payload.category,

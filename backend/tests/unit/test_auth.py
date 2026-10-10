@@ -8,7 +8,7 @@ QUYẾT ĐỊNH phân quyền của từng route, không phải câu SQL.
 import pytest
 from fastapi.testclient import TestClient
 
-from app import admin, auth
+from app import admin, api, auth
 from app.api import app
 from app.auth import AuthError, AuthUser
 
@@ -114,6 +114,31 @@ def test_admin_vao_duoc(client: TestClient) -> None:
 def test_tai_khoan_bi_khoa_mat_quyen_ngay_du_token_con_han(client: TestClient) -> None:
     """Token không mang vai trò — khoá tài khoản có hiệu lực ở request kế tiếp."""
     assert client.get("/api/v1/admin/overview", headers=_bearer(LOCKED)).status_code == 403
+
+
+MEETUP_BODY = {
+    "participants": [
+        {"label": "A", "latitude": 10.77, "longitude": 106.70},
+        {"label": "B", "latitude": 10.80, "longitude": 106.68},
+    ],
+    "category": "cafe",
+}
+SESSION_HEADER = {"X-Session-ID": "11111111-1111-4111-8111-111111111111"}
+
+
+def test_khach_vang_lai_khong_dung_duoc_hen_nhom(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api.assistant, "plan_meetup", lambda *args, **kwargs: {"results": []})
+    assert client.post("/api/v1/assistant/meetup", json=MEETUP_BODY).status_code == 401
+    response = client.post("/api/v1/assistant/meetup", json=MEETUP_BODY, headers=_bearer(MEMBER))
+    assert response.status_code == 200
+
+
+def test_khach_vang_lai_khong_nap_lai_duoc_lich_su_chat(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api.chat, "set_history", lambda owner_id, turns: None)
+    body = {"turns": [{"role": "user", "content": "xin chào"}]}
+    assert client.put("/api/v1/chat/history", json=body, headers=SESSION_HEADER).status_code == 401
+    response = client.put("/api/v1/chat/history", json=body, headers={**SESSION_HEADER, **_bearer(MEMBER)})
+    assert response.status_code == 204
 
 
 def test_me_tra_vai_tro(client: TestClient) -> None:
