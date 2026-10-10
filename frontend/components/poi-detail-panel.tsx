@@ -1031,7 +1031,10 @@ export function PoiDetailPanel(props: {
         onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 160)}
       >
         {header}
-        <div className="-mt-12">{children}</div>
+        {/* -mt = chiều cao thanh trên để ảnh bìa trượt lên dưới nó. Dưới lg nút X bị
+            ép 44px (globals.css) nên thanh cao 60px chứ không phải 48px — kéo
+            thiếu thì để lại khe trắng 12px trên đầu ảnh. */}
+        <div className="-mt-12 max-lg:-mt-15">{children}</div>
       </div>
     </aside>
   );
@@ -1051,7 +1054,7 @@ export function PoiDetailPanel(props: {
 
   if (!detail) {
     return shell(
-      <div className="pb-6 pt-12">
+      <div className="pb-6 pt-12 max-lg:pt-15">
         {loading ? (
           <>
             <Skeleton className="aspect-[16/10] w-full rounded-none" />
@@ -1226,13 +1229,6 @@ export function PoiDetailPanel(props: {
             </div>
           )}
 
-          {/* Có ảnh CỦA địa điểm làm ảnh bìa thì ảnh đường phố lùi xuống đây. */}
-          {!streetHero && streetReady && streetViews && !heroPending && (
-            <div className="pt-3">
-              <StreetView views={streetViews} poiName={detail.name} />
-            </div>
-          )}
-
           {/* Ảnh người chơi Săn địa danh đã chụp và AI xác minh. */}
           <VisitorPhotos apiBaseUrl={apiBaseUrl} poiId={detail.id} />
 
@@ -1361,6 +1357,16 @@ export function PoiDetailPanel(props: {
                   : ''}
             </span>
           </div>
+
+          {/* Có ảnh CỦA địa điểm làm ảnh bìa thì ảnh đường phố lùi xuống SAU hàng
+              nút (không phải ngay dưới ảnh bìa): trên điện thoại ảnh bìa + dải
+              ảnh nhỏ + khung 360° chiếm trọn màn hình đầu, đẩy tên địa điểm và
+              nút "Chỉ đường" ra khỏi tầm nhìn. */}
+          {!streetHero && streetReady && streetViews && !heroPending && (
+            <div className="pt-3">
+              <StreetView views={streetViews} poiName={detail.name} />
+            </div>
+          )}
 
           {/* c2. AI THUYẾT MINH — đặt ngay dưới hàng nút để mở POI là thấy
               luôn. Chữ tự tải khi mở panel (backend đã tạo sẵn + cache), audio
