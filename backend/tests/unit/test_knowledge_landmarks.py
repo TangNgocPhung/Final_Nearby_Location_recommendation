@@ -1,4 +1,4 @@
-"""Nội dung `poi_knowledge` của các migration 0028 và 0040 — khoá quy ước "có nguồn mới được vào".
+"""Nội dung `poi_knowledge` của các migration 0028, 0040 và 0041 — khoá quy ước "có nguồn mới được vào".
 
 Dữ liệu là literal trong file migration, nên kiểm được không cần database:
 mỗi claim phải có URL nguồn và `verified`, loại nội dung phải là loại Săn địa
@@ -28,6 +28,7 @@ def _load(filename: str, label: str):
 _MODULES = {
     "0028": (_load("0028_poi_knowledge_landmarks.py", "migration_0028"), 30),
     "0040": (_load("0040_poi_knowledge_more_sg.py", "migration_0040"), 15),
+    "0041": (_load("0041_poi_knowledge_more_sg_2.py", "migration_0041"), 8),
 }
 _ALL_ROWS = [(key, row) for key, (module, _) in _MODULES.items() for row in module.ROWS]
 
