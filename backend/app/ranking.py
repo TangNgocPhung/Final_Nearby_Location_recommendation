@@ -746,6 +746,43 @@ def rank_pois(
     return results
 
 
+def nearest_pois(latitude: float, longitude: float, radius: int, limit: int) -> list[dict[str, Any]]:
+    """POI GẦN NHẤT trước, không xếp hạng, không đa dạng hoá.
+
+    Dành cho AR: thẻ phải khớp với thứ người dùng đang nhìn thấy. `rank_pois`
+    cắt top-N theo điểm rồi trộn loại/giá/khoảng cách, nên một ngôi trường cách
+    2 m (điểm thấp so với quán ăn) rơi khỏi top 80 và đứng ngay cạnh nó mà
+    không thấy tên.
+    """
+    query = """
+        SELECT
+            id::text AS id,
+            name,
+            category_label AS "categoryLabel",
+            ST_Y(location::geometry) AS latitude,
+            ST_X(location::geometry) AS longitude,
+            rating::float8 AS rating,
+            review_count AS "reviewCount",
+            ST_Distance(
+                location,
+                ST_SetSRID(ST_Point(%(longitude)s, %(latitude)s), 4326)::geography
+            ) AS "distanceMeters"
+        FROM pois
+        WHERE ST_DWithin(
+            location,
+            ST_SetSRID(ST_Point(%(longitude)s, %(latitude)s), 4326)::geography,
+            %(radius)s
+        )
+        ORDER BY "distanceMeters" ASC
+        LIMIT %(limit)s
+    """
+    params = {"latitude": latitude, "longitude": longitude, "radius": radius, "limit": limit}
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            return list(cursor.fetchall())
+
+
 def suggest_pois(
     query_text: str,
     latitude: float | None,

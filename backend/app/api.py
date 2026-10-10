@@ -86,6 +86,7 @@ from .ranking import (
     fetch_categories,
     fetch_category_affinity,
     fetch_trending,
+    nearest_pois,
     rank_pois,
     rank_pois_detailed,
     suggest_pois,
@@ -243,6 +244,17 @@ def nearby_pois(
     return filter_for_meal(
         rank_pois(lat, lng, radius, q, category, 100, session_id=session_id), meal, limit
     )
+
+
+@app.get("/api/v1/pois/around")
+def pois_around(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    radius: int = Query(default=600, ge=50, le=5_000),
+    limit: int = Query(default=120, ge=1, le=300),
+) -> list[dict[str, Any]]:
+    """POI quanh một điểm, GẦN NHẤT trước — không xếp hạng. Cho chế độ AR."""
+    return nearest_pois(lat, lng, radius, limit)
 
 
 @app.get("/api/v1/pois/suggest")
@@ -1489,6 +1501,7 @@ def get_directions(
         )
 
     destination_id: str
+    destination_address: str | None = None
     if to_poi_id is not None:
         if not geofence.is_uuid(to_poi_id):
             return JSONResponse(status_code=400, content={"detail": "to_poi_id phải là UUID"})
@@ -1496,7 +1509,7 @@ def get_directions(
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT name, ST_Y(location::geometry), ST_X(location::geometry)
+                    SELECT name, ST_Y(location::geometry), ST_X(location::geometry), address
                     FROM pois WHERE id = %s
                     """,
                     (to_poi_id,),
@@ -1504,7 +1517,8 @@ def get_directions(
                 row = cursor.fetchone()
         if row is None:
             return JSONResponse(status_code=404, content={"detail": "Không có POI này"})
-        name, destination_lat, destination_lng = row
+        name, destination_lat, destination_lng, destination_address = row
+        destination_address = (destination_address or "").strip() or None
         destination_id = to_poi_id
     elif to_lat is not None and to_lng is not None:
         name = to_name.strip()
@@ -1515,6 +1529,21 @@ def get_directions(
             status_code=400,
             content={"detail": "Cần to_poi_id hoặc đầy đủ to_lat và to_lng"},
         )
+
+    # POI không có địa chỉ (trạm sạc, cây xăng… từ OSM) thì thẻ chỉ đường chỉ có
+    # tên: mượn tên đường sát điểm đến từ OSRM (ước lượng, có cache) để người
+    # dùng biết điểm đến nằm ở đâu. Chỉ POI thật trong DB mới có "địa chỉ".
+    destination_street = (
+        directions.nearest_streets(float(destination_lat), float(destination_lng))
+        if to_poi_id is not None and destination_address is None
+        else None
+    )
+    destination_info = {
+        "latitude": float(destination_lat),
+        "longitude": float(destination_lng),
+        "address": destination_address,
+        "streetAddress": destination_street,
+    }
 
     result = directions.route(
         from_lat,
@@ -1531,10 +1560,7 @@ def get_directions(
         return {
             "poiId": destination_id,
             "poiName": name,
-            "destination": {
-                "latitude": float(destination_lat),
-                "longitude": float(destination_lng),
-            },
+            "destination": destination_info,
             "route": None,
             "reason": "osrm-unavailable" if not osrm_url else "no-route",
         }
@@ -1543,10 +1569,7 @@ def get_directions(
         "poiId": destination_id,
         "poiName": name,
         "origin": {"latitude": from_lat, "longitude": from_lng},
-        "destination": {
-            "latitude": float(destination_lat),
-            "longitude": float(destination_lng),
-        },
+        "destination": destination_info,
         "route": result,
     }
 

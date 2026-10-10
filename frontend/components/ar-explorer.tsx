@@ -418,9 +418,11 @@ export function ArExplorer({
       lat: lat.toFixed(6),
       lng: lng.toFixed(6),
       radius: String(radius),
-      limit: '80',
+      limit: '150',
     });
-    fetch(`${apiBaseUrl}/api/pois/nearby?${params}`, { signal: controller.signal })
+    // Sắp theo khoảng cách, không xếp hạng: /api/pois/nearby cắt top-N theo điểm
+    // nên có thể bỏ sót đúng nơi đang đứng cạnh.
+    fetch(`${apiBaseUrl}/api/v1/pois/around?${params}`, { signal: controller.signal })
       .then((res) => (res.ok ? (res.json() as Promise<ArPoi[]>) : Promise.reject()))
       .then((data) => {
         fetchedAtRef.current = { latitude: lat, longitude: lng };
