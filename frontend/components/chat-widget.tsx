@@ -358,10 +358,10 @@ export function ChatWidget({
       if (restoreChat) changeOpen(true);
     });
   };
+  const { user } = useAuth();
   const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore' | 'history'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const [suggestionsFailed, setSuggestionsFailed] = useState(false);
-  const { user } = useAuth();
   const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
   // Tăng lên để buộc tải lại gợi ý (vd vừa lưu nhà → hiện chip "quán gần nhà").
   const [suggestionsVersion, setSuggestionsVersion] = useState(0);
