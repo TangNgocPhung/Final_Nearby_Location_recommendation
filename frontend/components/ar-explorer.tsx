@@ -126,9 +126,17 @@ const REFETCH_AFTER_METERS = 40;
 const MAX_CARDS = 14;
 /** Số trạm xe buýt gần nhất được xếp thẻ trước mọi POI khác. */
 const BUS_RESERVED_CARDS = 3;
-const LANE_HEIGHT = 70;
-const LANE_GAP_PX = 150;
-const MAX_LANES = 4;
+/** Thẻ rộng tối đa (khớp max-w của thẻ), ước lượng ~7px mỗi ký tự tên 13px. */
+const CARD_MAX_W = 170;
+const CARD_CHAR_PX = 7;
+const CARD_PAD_X = 24;
+/** Chiều cao thẻ ngoài phần tên: dòng phụ + padding + cọc + chấm. */
+const CARD_EXTRA_H = 50;
+const CARD_LINE_H = 17;
+const CARD_MAX_NAME_LINES = 3;
+/** Khoảng hở tối thiểu giữa hai thẻ và bước dịch dọc khi tìm chỗ trống. */
+const CARD_GAP_PX = 6;
+const CARD_STEP_PX = 20;
 const TOP_SAFE_PX = 72;
 const BOTTOM_SAFE_PX = 170;
 /** FOV ngang của cạnh DÀI cảm biến camera sau điện thoại phổ thông (độ). */
@@ -527,12 +535,12 @@ export function ArExplorer({
   // trạm gần nhất ở hướng nào dù chưa nhìn thấy.
   const nearestStop = placed.find((poi) => poi.kind === 'bus') ?? null;
 
-  // Xếp thẻ: gần trước, mỗi thẻ vào làn thấp nhất chưa có thẻ nào chồng ngang.
+  // Xếp thẻ: gần trước, mỗi thẻ tìm chỗ gần vị trí lý tưởng nhất mà không đè thẻ đã xếp.
   const cards = useMemo(() => {
     const { width, height, fov } = viewport;
     const pxPerDeg = width / fov;
     const horizonY = height / 2 + pose.pitch * pxPerDeg;
-    const lanes: number[][] = [];
+    const boxes: { left: number; right: number; top: number; bottom: number }[] = [];
     const out: { poi: Placed; x: number; y: number; scale: number }[] = [];
     // Trạm xe buýt nằm lẫn hàng trăm POI xếp theo khoảng cách nên ở khu đông sẽ
     // bị MAX_CARDS/làn nuốt mất — cho vài trạm gần nhất đi trước.
@@ -546,21 +554,43 @@ export function ArExplorer({
       if (Math.abs(offset) > fov / 2 + 4) continue;
       const rawX = width / 2 + offset * pxPerDeg;
       const x = Math.max(CARD_EDGE_MARGIN_PX, Math.min(width - CARD_EDGE_MARGIN_PX, rawX));
-      let lane = 0;
-      while (lane < MAX_LANES && (lanes[lane] ?? []).some((other) => Math.abs(other - rawX) < LANE_GAP_PX)) {
-        lane += 1;
-      }
-      if (lane >= MAX_LANES) continue;
-      (lanes[lane] ??= []).push(rawX);
       // Xa thì nổi cao hơn đường chân trời một chút và nhỏ hơn — gợi phối cảnh.
       const t = Math.min(1, poi.distance / radius);
-      // Kẹp giữa thanh trên và khay dưới: màn thấp (laptop, điện thoại ngang)
-      // thì làn trên cùng chui xuống dưới header.
-      const y = Math.max(
-        TOP_SAFE_PX + 60,
-        Math.min(height - BOTTOM_SAFE_PX, horizonY - 20 - t * 70 - lane * LANE_HEIGHT),
+      const scale = 1 - t * 0.25;
+      const w = Math.min(CARD_MAX_W, Math.max(100, poi.name.length * CARD_CHAR_PX + CARD_PAD_X)) * scale;
+      const nameLines = Math.min(
+        CARD_MAX_NAME_LINES,
+        Math.ceil((poi.name.length * CARD_CHAR_PX) / (Math.min(CARD_MAX_W, w / scale) - CARD_PAD_X)),
       );
-      out.push({ poi, x, y, scale: 1 - t * 0.25 });
+      const h = (nameLines * CARD_LINE_H + CARD_EXTRA_H) * scale;
+      const left = x - w / 2;
+      // y là đáy thẻ (thẻ mọc lên trên). Kẹp giữa thanh trên và khay dưới, rồi dò
+      // từ vị trí lý tưởng lên trên, sau đó xuống dưới, tới chỗ chưa đè thẻ nào.
+      const minY = TOP_SAFE_PX + h;
+      const maxY = height - BOTTOM_SAFE_PX;
+      if (minY > maxY) continue;
+      const baseY = Math.max(minY, Math.min(maxY, horizonY - 20 - t * 70));
+      const hits = (cy: number) =>
+        boxes.some(
+          (b) =>
+            left < b.right + CARD_GAP_PX &&
+            left + w > b.left - CARD_GAP_PX &&
+            cy - h < b.bottom + CARD_GAP_PX &&
+            cy > b.top - CARD_GAP_PX,
+        );
+      let y: number | null = null;
+      for (let dy = 0; baseY - dy >= minY; dy += CARD_STEP_PX) {
+        if (!hits(baseY - dy)) {
+          y = baseY - dy;
+          break;
+        }
+      }
+      for (let dy = CARD_STEP_PX; y === null && baseY + dy <= maxY; dy += CARD_STEP_PX) {
+        if (!hits(baseY + dy)) y = baseY + dy;
+      }
+      if (y === null) continue;
+      boxes.push({ left, right: left + w, top: y - h, bottom: y });
+      out.push({ poi, x, y, scale });
     }
     return out;
   }, [placed, pose, viewport, radius]);
@@ -803,7 +833,7 @@ export function ArExplorer({
                     setSelectedId(poi.id);
                   }}
                   aria-label={`${poi.name}, ${formatMeters(poi.distance)}`}
-                  className="pointer-events-auto absolute flex max-w-[150px] origin-bottom flex-col items-center"
+                  className="pointer-events-auto absolute flex w-max max-w-[170px] origin-bottom flex-col items-center"
                   style={{
                     left: x,
                     top: y,
@@ -825,7 +855,7 @@ export function ArExplorer({
                             : 'bg-black/55 ring-white/20',
                     )}
                   >
-                    <span className="block truncate text-[13px] font-semibold leading-tight">{poi.name}</span>
+                    <span className="line-clamp-3 break-words text-[13px] font-semibold leading-tight">{poi.name}</span>
                     <span className="flex items-center gap-1.5 text-[11px] text-white/80">
                       <span className="truncate">
                         {poi.kind === 'bus' && poi.routes?.length ? `Tuyến ${poi.routes.join(', ')}` : poi.categoryLabel}
@@ -859,13 +889,17 @@ export function ArExplorer({
               ) : (
                 <ChevronRight className="size-4 shrink-0" aria-hidden />
               )}
-              <span className="truncate">{selected.name}</span>
+              <span className="line-clamp-2 break-words text-left">{selected.name}</span>
               <span className="shrink-0 text-white/80">{formatMeters(selected.distance)}</span>
             </button>
           )}
 
-          {/* Gợi ý */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-44 z-20 flex flex-col items-center gap-2 px-4 text-center">
+          {/* Gợi ý + khay dưới xếp chung MỘT cột đáy: gợi ý luôn nằm ngay trên khay
+              dù khay cao bao nhiêu. Trước đây gợi ý đặt cố định bottom-44 (176px)
+              còn khay cao ~250px nên "Máy không có la bàn…", thông báo check-in
+              và "Đang tìm…" đè lên nội dung khay. */}
+          <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col">
+          <div className="pointer-events-none flex flex-col items-center gap-2 px-4 text-center">
             {notice && (
               <output
                 className={cn(
@@ -905,7 +939,7 @@ export function ArExplorer({
 
           {/* Khay dưới: radar + bán kính + "ngay quanh bạn" */}
           <div
-            className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/80 via-black/50 to-transparent px-4 pt-10 pb-[max(1rem,env(safe-area-inset-bottom))]"
+            className="bg-gradient-to-t from-black/80 via-black/50 to-transparent px-4 pt-10 pb-[max(1rem,env(safe-area-inset-bottom))]""
             onPointerDown={(event) => event.stopPropagation()}
           >
             {showBadges ? (
@@ -921,7 +955,7 @@ export function ArExplorer({
                     <MapPin className="size-5" aria-hidden />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold">{selected.name}</p>
+                    <p className="break-words font-semibold leading-snug">{selected.name}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
                       {selected.categoryLabel} · {formatMeters(selected.distance)} ·{' '}
                       {compassWord(selected.bearing)}
@@ -1044,6 +1078,7 @@ export function ArExplorer({
                 </div>
               </div>
             )}
+          </div>
           </div>
         </>
       )}
