@@ -736,10 +736,13 @@ export function ChatWidget({
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
           <div className="min-w-0">
+            {/* Tên bọc span shrink-0 + nowrap: chữ trần trong flex là một mục co được, nên
+                cạnh ba nút 44px trên điện thoại nó bị bẻ "Trợ lý / Nearby" thành hai dòng,
+                còn nhãn âm lịch bị cắt cụt, thanh trên cao ~100px. */}
             <p className="flex items-baseline gap-2 text-sm font-semibold">
-              Trợ lý Nearby
+              <span className="shrink-0 whitespace-nowrap">Trợ lý Nearby</span>
               {suggestions?.lunarDate && (
-                <span className="truncate text-[11px] font-normal text-muted-foreground">
+                <span className="min-w-0 truncate text-[11px] font-normal text-muted-foreground">
                   Âm lịch {suggestions.lunarDate}
                 </span>
               )}
