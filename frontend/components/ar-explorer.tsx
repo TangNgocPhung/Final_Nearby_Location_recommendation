@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import {
+  BusFront,
   Camera,
   CameraOff,
   ChevronLeft,
@@ -522,6 +523,9 @@ export function ArExplorer({
   );
 
   const nearby = placed.filter((poi) => poi.distance < MIN_AR_DISTANCE);
+  // Trạm thưa hơn quán xá nhiều nên hay nằm ngoài khung hình — chip này cho biết
+  // trạm gần nhất ở hướng nào dù chưa nhìn thấy.
+  const nearestStop = placed.find((poi) => poi.kind === 'bus') ?? null;
 
   // Xếp thẻ: gần trước, mỗi thẻ vào làn thấp nhất chưa có thẻ nào chồng ngang.
   const cards = useMemo(() => {
@@ -984,6 +988,22 @@ export function ArExplorer({
               <div className="flex items-end gap-3">
                 <Radar placed={placed} heading={pose.heading} fov={viewport.fov} radius={radius} checked={checkedIds} />
                 <div className="min-w-0 flex-1 space-y-2">
+                  {nearestStop && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(nearestStop.id);
+                        if (sensorMode === 'drag') turnTo(nearestStop.bearing);
+                      }}
+                      className="flex max-w-full items-center gap-1.5 rounded-full bg-blue-600/80 px-3 py-1 text-xs font-medium backdrop-blur hover:bg-blue-500/80"
+                    >
+                      <BusFront className="size-3.5 shrink-0" aria-hidden />
+                      <span className="truncate">
+                        Trạm gần nhất: {nearestStop.name} · {formatMeters(nearestStop.distance)} ·{' '}
+                        {compassWord(nearestStop.bearing)}
+                      </span>
+                    </button>
+                  )}
                   {nearby.length > 0 && (
                     <div className="space-y-1">
                       <p className="text-[11px] font-semibold uppercase tracking-wider text-white/60">Ngay quanh bạn</p>
