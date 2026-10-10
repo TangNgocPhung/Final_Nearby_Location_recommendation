@@ -51,6 +51,7 @@ import {
   GraduationCap,
   Home,
   Hotel,
+  CircleQuestionMark,
   Info,
   Landmark,
   Languages,
@@ -105,6 +106,7 @@ import {
 } from 'lucide-react';
 
 import { AboutDialog, useAboutDialog } from '@/components/about-dialog';
+import { GuideDialog } from '@/components/guide-dialog';
 import { ChatWidget } from '@/components/chat-widget';
 import { VoiceMode } from '@/components/voice-mode';
 import { VoiceSearch } from '@/components/voice-search';
@@ -919,6 +921,7 @@ export function LocationExplorer() {
   );
   const { theme, toggleTheme } = useTheme();
   const about = useAboutDialog();
+  const [guideOpen, setGuideOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   // Trên điện thoại bấm một địa điểm trong danh sách thì chuyển sang màn bản
@@ -3172,6 +3175,14 @@ export function LocationExplorer() {
                 <Button
                   variant="ghost"
                   className="h-11 justify-start gap-3 px-2 text-sm"
+                  onClick={() => setGuideOpen(true)}
+                >
+                  <CircleQuestionMark className="size-5" />
+                  Hướng dẫn sử dụng
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-11 justify-start gap-3 px-2 text-sm"
                   onClick={() => about.setOpen(true)}
                 >
                   <Info className="size-5" />
@@ -3244,6 +3255,16 @@ export function LocationExplorer() {
                 variant="ghost"
                 size="icon"
                 className="size-8 rounded-full"
+                onClick={() => setGuideOpen(true)}
+                aria-label="Hướng dẫn sử dụng"
+                title="Hướng dẫn sử dụng"
+              >
+                <CircleQuestionMark className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-full"
                 onClick={() => about.setOpen(true)}
                 aria-label="Giới thiệu đồ án"
                 title="Giới thiệu đồ án"
@@ -3276,6 +3297,7 @@ export function LocationExplorer() {
         </div>
       </header>
       <AboutDialog open={about.open} onOpenChange={about.onOpenChange} />
+      <GuideDialog open={guideOpen} onOpenChange={setGuideOpen} />
 
 
       <section
