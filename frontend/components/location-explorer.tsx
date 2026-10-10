@@ -3220,6 +3220,15 @@ export function LocationExplorer() {
     }
   }
 
+  // Bấm "Chỉ đường" TRONG panel chi tiết. Dưới sm panel phủ kín màn hình
+  // (fixed inset-y-0 w-full) nên tuyến vừa bật nằm khuất sau nó — người dùng bấm
+  // mà không thấy gì xảy ra. Đóng panel để lộ bản đồ và thẻ chỉ đường; từ sm
+  // panel chỉ chiếm 420px bên phải nên giữ nguyên.
+  function startNavigationFromDetail(poi: Poi) {
+    startNavigation(poi);
+    if (window.innerWidth < 640) closeDetail();
+  }
+
   // "Chỉ đường tới số 1" trong trợ lý chỉ mang poiId, còn startNavigation cần
   // đủ Poi (toạ độ, tên) — mở panel chi tiết trước, chi tiết về thì bật chỉ đường.
   const pendingChatDirectionsRef = useRef<string | null>(null);
@@ -3230,7 +3239,7 @@ export function LocationExplorer() {
     },
     [openDetail],
   );
-  const navigateFromChat = useEffectEvent((poi: Poi) => startNavigation(poi));
+  const navigateFromChat = useEffectEvent((poi: Poi) => startNavigationFromDetail(poi));
   useEffect(() => {
     if (!detailAsPoi || pendingChatDirectionsRef.current !== detailAsPoi.id) return;
     pendingChatDirectionsRef.current = null;
@@ -4714,7 +4723,7 @@ export function LocationExplorer() {
           {selectedPoi && (
             <div
               className={cn(
-                'absolute bottom-3 left-3 right-3 z-10 max-h-[42%] overflow-y-auto rounded-3xl border border-white/70 bg-white/92 p-3 shadow-[0_24px_60px_-12px_rgb(14_68_48/30%)] backdrop-blur-xl sm:bottom-5 sm:left-5 sm:right-auto sm:max-h-none sm:w-[360px] sm:overflow-visible sm:p-4 dark:border-white/10 dark:bg-card/95',
+                'absolute bottom-3 left-3 right-3 z-10 max-h-[42%] overflow-y-auto rounded-3xl border border-white/70 bg-white/92 p-3 shadow-[0_24px_60px_-12px_rgb(14_68_48/30%)] backdrop-blur-xl sm:bottom-5 sm:left-5 sm:right-auto sm:max-h-[calc(100%-2.5rem)] sm:w-[360px] sm:p-4 dark:border-white/10 dark:bg-card/95',
                 directionsActive && directionsCollapsed && 'p-2 sm:w-[320px] sm:p-2.5',
               )}
             >
@@ -4774,12 +4783,17 @@ export function LocationExplorer() {
                     </button>
                     <div className="min-w-0">
                       <Badge variant="secondary">Chỉ đường</Badge>
-                      <p className="mt-2 text-xs text-muted-foreground">
+                      {/* Điện thoại: thẻ chỉ cao 42% màn hình nên tiêu đề 3 dòng + địa chỉ
+                          đẩy tổng thời gian / các bước ra ngoài vùng nhìn. Giới hạn
+                          2 dòng + 1 dòng, bỏ khoảng cách thừa. */}
+                      <p className="mt-2 text-xs text-muted-foreground max-sm:mt-1">
                         Từ vị trí của bạn tới
                       </p>
-                      <h2 className="text-lg font-bold">{selectedPoi.name}</h2>
+                      <h2 className="text-lg font-bold max-sm:line-clamp-2 max-sm:text-base max-sm:leading-snug">
+                        {selectedPoi.name}
+                      </h2>
                       {directionsAddress && (
-                        <p className="mt-0.5 text-sm text-muted-foreground">
+                        <p className="mt-0.5 text-sm text-muted-foreground max-sm:line-clamp-1">
                           {directionsAddress}
                         </p>
                       )}
@@ -4935,7 +4949,7 @@ export function LocationExplorer() {
                         )}
                       </div>
                       {showSteps && (
-                        <ol className="max-h-44 overflow-y-auto pr-1 text-xs">
+                        <ol className="max-h-44 overflow-y-auto pr-1 text-xs max-sm:max-h-none max-sm:overflow-visible">
                           {route.steps.map((step, index) => {
                             const visual = stepVisual(step);
                             const StepIcon = visual.icon;
@@ -5089,7 +5103,7 @@ export function LocationExplorer() {
                 sessionId={telemetryState.sessionId}
                 onClose={closeDetail}
                 onDirections={() => {
-                  if (detailAsPoi) startNavigation(detailAsPoi);
+                  if (detailAsPoi) startNavigationFromDetail(detailAsPoi);
                 }}
                 onToggleGeofence={() => {
                   if (detailAsPoi) void toggleGeofence(detailAsPoi);
