@@ -173,6 +173,8 @@ export function ArExplorer({
   const [sensorMode, setSensorMode] = useState<'waiting' | 'device' | 'drag'>('waiting');
   const [gps, setGps] = useState<{ position: Position; accuracy: number } | null>(null);
   const [gpsDenied, setGpsError] = useState(false);
+  // 1 = bị chặn quyền, 2 = máy không có tín hiệu/định vị tắt, 3 = quá thời gian.
+  const [gpsErrorCode, setGpsErrorCode] = useState(0);
   const [pose, setPose] = useState({ heading: 0, pitch: 0 });
   const [radius, setRadius] = useState<(typeof RADIUS_OPTIONS)[number]>(600);
   const [pois, setPois] = useState<ArPoi[]>([]);
@@ -254,6 +256,7 @@ export function ArExplorer({
     const id = navigator.geolocation.watchPosition(
       (pos) => {
         setGpsError(false);
+        setGpsErrorCode(0);
         setGps({
           position: { latitude: pos.coords.latitude, longitude: pos.coords.longitude },
           accuracy: pos.coords.accuracy,
@@ -264,7 +267,10 @@ export function ArExplorer({
           accuracy: pos.coords.accuracy,
         });
       },
-      () => setGpsError(true),
+      (error) => {
+        setGpsError(true);
+        setGpsErrorCode(error.code);
+      },
       { enableHighAccuracy: true, maximumAge: 2_000, timeout: 15_000 },
     );
     return () => navigator.geolocation.clearWatch(id);
@@ -596,7 +602,13 @@ export function ArExplorer({
               {Math.round(pose.heading)}° ·{' '}
               {usingFallback
                 ? gpsError
-                  ? 'Không có GPS — dùng vị trí bản đồ'
+                  ? gpsErrorCode === 1
+                    ? 'Quyền vị trí bị chặn'
+                    : gpsErrorCode === 2
+                      ? 'Bật Vị trí (GPS) của máy'
+                      : gpsErrorCode === 3
+                        ? 'GPS phản hồi quá chậm'
+                        : 'Không có GPS'
                   : 'Đang lấy GPS…'
                 : `GPS ±${Math.round(gps.accuracy)} m`}
             </p>
