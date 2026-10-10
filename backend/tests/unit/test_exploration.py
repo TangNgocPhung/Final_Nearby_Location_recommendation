@@ -74,6 +74,46 @@ def test_tap_rong_tra_none() -> None:
     assert h3_cells_geometry([]) is None
 
 
+def _poi(name: str, lat: float, lng: float) -> dict:
+    return {"id": name, "latitude": lat, "longitude": lng}
+
+
+# Hai chỗ ở ô Bến Thành (đã đi) và bốn chỗ cách ~3 km (chưa đi), xếp theo hạng.
+_DA_DI = exploration.cells_for_points([BEN_THANH])
+_CANDIDATES = [
+    _poi("a-cu", BEN_THANH["latitude"], BEN_THANH["longitude"]),
+    _poi("b-cu", BEN_THANH["latitude"], BEN_THANH["longitude"]),
+    _poi("c-moi", 10.80, 106.72),
+    _poi("d-moi", 10.81, 106.73),
+    _poi("e-moi", 10.82, 106.74),
+    _poi("f-moi", 10.83, 106.75),
+]
+
+
+def test_chua_co_o_nao_thi_khong_doi_thu_tu_va_khong_gan_moi() -> None:
+    out = exploration.mix_unexplored(_CANDIDATES, set(), 4)
+    assert [p["id"] for p in out] == ["a-cu", "b-cu", "c-moi", "d-moi"]
+    assert not any(p["unexplored"] for p in out)
+
+
+def test_danh_it_nhat_nua_cho_vung_chua_toi() -> None:
+    out = exploration.mix_unexplored(_CANDIDATES, _DA_DI, 4)
+    assert sum(p["unexplored"] for p in out) >= 2
+    # a-cu vẫn nằm trong 4 chỗ được chọn: ưu tiên là chia chỗ, không loại hẳn chỗ quen.
+    assert [p["id"] for p in out] == ["a-cu", "b-cu", "c-moi", "d-moi"]
+
+
+def test_vung_moi_chen_len_khi_chung_o_sau_hang() -> None:
+    cu = [_poi(f"cu{i}", BEN_THANH["latitude"], BEN_THANH["longitude"]) for i in range(5)]
+    out = exploration.mix_unexplored([*cu, _poi("moi", 10.80, 106.72)], _DA_DI, 4)
+    assert [p["id"] for p in out] == ["cu0", "cu1", "cu2", "moi"]
+
+
+def test_khong_du_vung_moi_thi_lap_bang_cho_cu() -> None:
+    out = exploration.mix_unexplored(_CANDIDATES[:3], _DA_DI, 3)
+    assert [p["id"] for p in out] == ["a-cu", "b-cu", "c-moi"]
+
+
 def test_request_gioi_han_so_diem() -> None:
     with pytest.raises(ValidationError):
         ExplorationRequest(points=[])
