@@ -51,6 +51,17 @@ type ArPoi = {
   longitude: number;
   rating: number | null;
   reviewCount: number;
+  /** Trạm xe buýt: nằm ở bảng riêng, không phải POI — không check-in, không có trang chi tiết. */
+  kind?: 'bus';
+  routes?: string[];
+};
+
+type BusStopAround = {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  routes: string[];
 };
 
 type Position = { latitude: number; longitude: number };
@@ -424,13 +435,38 @@ export function ArExplorer({
       radius: String(radius),
       limit: '150',
     });
+    const busParams = new URLSearchParams({
+      lat: lat.toFixed(6),
+      lng: lng.toFixed(6),
+      radius: String(radius),
+    });
+    // Trạm xe buýt nằm ở bảng riêng nên gọi riêng; lỗi thì chỉ mất lớp trạm.
+    const busStops = fetch(`${apiBaseUrl}/api/v1/bus/stops/around?${busParams}`, { signal: controller.signal })
+      .then((res) => (res.ok ? (res.json() as Promise<BusStopAround[]>) : []))
+      .catch(() => [] as BusStopAround[]);
     // Sắp theo khoảng cách, không xếp hạng: /api/pois/nearby cắt top-N theo điểm
     // nên có thể bỏ sót đúng nơi đang đứng cạnh.
     fetch(`${apiBaseUrl}/api/v1/pois/around?${params}`, { signal: controller.signal })
       .then((res) => (res.ok ? (res.json() as Promise<ArPoi[]>) : Promise.reject()))
-      .then((data) => {
+      .then(async (data) => {
+        const stops = await busStops;
         fetchedAtRef.current = { latitude: lat, longitude: lng };
-        setPois(data);
+        setPois([
+          ...data,
+          ...stops.map(
+            (stop): ArPoi => ({
+              id: `bus:${stop.id}`,
+              name: stop.name,
+              categoryLabel: 'Trạm xe buýt',
+              latitude: stop.latitude,
+              longitude: stop.longitude,
+              rating: null,
+              reviewCount: 0,
+              kind: 'bus',
+              routes: stop.routes,
+            }),
+          ),
+        ]);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -590,6 +626,7 @@ export function ArExplorer({
     const now = Date.now();
     const target = placed.find(
       (poi) =>
+        poi.kind !== 'bus' &&
         poi.distance <= CHECKIN_RADIUS &&
         !checkedIds.has(poi.id) &&
         now >= (autoTriedRef.current.get(poi.id) ?? 0),
@@ -729,12 +766,16 @@ export function ArExplorer({
                         ? 'bg-emerald-500/90 ring-white/60'
                         : done
                           ? 'bg-amber-500/80 ring-amber-200/50'
-                          : 'bg-black/55 ring-white/20',
+                          : poi.kind === 'bus'
+                            ? 'bg-blue-600/75 ring-blue-200/40'
+                            : 'bg-black/55 ring-white/20',
                     )}
                   >
                     <span className="block truncate text-[13px] font-semibold leading-tight">{poi.name}</span>
                     <span className="flex items-center gap-1.5 text-[11px] text-white/80">
-                      <span className="truncate">{poi.categoryLabel}</span>
+                      <span className="truncate">
+                        {poi.kind === 'bus' && poi.routes?.length ? `Tuyến ${poi.routes.join(', ')}` : poi.categoryLabel}
+                      </span>
                       <span className="shrink-0 font-semibold text-white">{formatMeters(poi.distance)}</span>
                     </span>
                   </span>
@@ -824,38 +865,46 @@ export function ArExplorer({
                     <X className="size-4" />
                   </button>
                 </div>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  {checkedIds.has(selected.id) ? (
-                    <span className="flex items-center justify-center gap-1.5 rounded-full bg-amber-100 py-2.5 text-sm font-semibold text-amber-800 dark:bg-amber-500/20 dark:text-amber-200">
-                      <Trophy className="size-4" aria-hidden /> Đã khám phá
-                    </span>
-                  ) : (
+                {selected.kind === 'bus' ? (
+                  <p className="mt-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:bg-blue-500/15 dark:text-blue-100">
+                    {selected.routes?.length
+                      ? `Các tuyến dừng ở đây: ${selected.routes.join(', ')}`
+                      : 'Chưa có dữ liệu tuyến cho trạm này'}
+                  </p>
+                ) : (
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {checkedIds.has(selected.id) ? (
+                      <span className="flex items-center justify-center gap-1.5 rounded-full bg-amber-100 py-2.5 text-sm font-semibold text-amber-800 dark:bg-amber-500/20 dark:text-amber-200">
+                        <Trophy className="size-4" aria-hidden /> Đã khám phá
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={!canCheckIn(selected)}
+                        onClick={() => void checkIn(selected)}
+                        className="flex items-center justify-center gap-1.5 rounded-full bg-amber-500 py-2.5 text-sm font-semibold text-white disabled:bg-slate-200 disabled:text-slate-500 dark:disabled:bg-white/10 dark:disabled:text-white/50"
+                        title={usingFallback ? 'Cần GPS thật để check-in' : 'Đứng tại địa điểm rồi bấm để check-in'}
+                      >
+                        {checkingIn === selected.id ? (
+                          <LoaderCircle className="size-4 animate-spin" aria-hidden />
+                        ) : usingFallback ? (
+                          'Cần GPS để check-in'
+                        ) : selected.distance > CHECKIN_HOPELESS_METERS ? (
+                          `Còn ${formatMeters(selected.distance)}`
+                        ) : (
+                          'Check-in'
+                        )}
+                      </button>
+                    )}
                     <button
                       type="button"
-                      disabled={!canCheckIn(selected)}
-                      onClick={() => void checkIn(selected)}
-                      className="flex items-center justify-center gap-1.5 rounded-full bg-amber-500 py-2.5 text-sm font-semibold text-white disabled:bg-slate-200 disabled:text-slate-500 dark:disabled:bg-white/10 dark:disabled:text-white/50"
-                      title={usingFallback ? 'Cần GPS thật để check-in' : 'Đứng tại địa điểm rồi bấm để check-in'}
+                      onClick={() => onOpenDetail(selected.id)}
+                      className="rounded-full bg-emerald-600 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
                     >
-                      {checkingIn === selected.id ? (
-                        <LoaderCircle className="size-4 animate-spin" aria-hidden />
-                      ) : usingFallback ? (
-                        'Cần GPS để check-in'
-                      ) : selected.distance > CHECKIN_HOPELESS_METERS ? (
-                        `Còn ${formatMeters(selected.distance)}`
-                      ) : (
-                        'Check-in'
-                      )}
+                      Xem chi tiết
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => onOpenDetail(selected.id)}
-                    className="rounded-full bg-emerald-600 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
-                  >
-                    Xem chi tiết
-                  </button>
-                </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex items-end gap-3">
@@ -945,7 +994,7 @@ function Radar({
             cx={size / 2 + d * Math.sin(angle)}
             cy={size / 2 - d * Math.cos(angle)}
             r={2.5}
-            fill={checked.has(poi.id) ? '#fbbf24' : '#ffffff'}
+            fill={checked.has(poi.id) ? '#fbbf24' : poi.kind === 'bus' ? '#60a5fa' : '#ffffff'}
           />
         );
       })}

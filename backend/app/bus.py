@@ -919,3 +919,28 @@ def search_stops(
         return {"query": query, "radius": None, "approximate": False, "results": stops}
     results, approximate = charging.rank_by_travel_time(latitude, longitude, stops, "foot", limit, MAX_ROUTED)
     return {"query": "", "radius": radius, "approximate": approximate, "results": results}
+
+
+def stops_around(latitude: float, longitude: float, radius: int) -> list[dict[str, Any]]:
+    """Trạm quanh một điểm, GẦN NHẤT trước, kèm số tuyến dừng ở trạm. Nhẹ hơn
+    ``search_stops``: không tra đường đi bộ — chế độ AR chỉ cần hướng và khoảng
+    cách chim bay."""
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as connection:
+        rows = connection.execute(
+            _NEARBY_STOPS_QUERY, {"lat": latitude, "lng": longitude, "radius": radius}
+        ).fetchall()
+        route_rows = connection.execute(_STOP_ROUTES_QUERY, {"ids": [int(row["id"]) for row in rows]}).fetchall()
+    refs_by_stop: dict[str, set[str]] = defaultdict(set)
+    for route in route_rows:
+        refs_by_stop[route["stop_id"]].add(route["ref"])
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "distanceMeters": round(row["distanceMeters"]),
+            "routes": sorted(refs_by_stop[row["id"]], key=natural_ref_key),
+        }
+        for row in rows
+    ]
