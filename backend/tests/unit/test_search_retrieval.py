@@ -217,9 +217,9 @@ def test_multi_channel_embedding_cau_nguyen_van_khi_co_semantic_text(monkeypatch
     bm25_texts: list[str] = []
     embedded: list[str] = []
 
-    def fake_bm25_body(text, *args):
+    def fake_bm25_hits(client, text, *args):
         bm25_texts.append(text)
-        return {"channel": "bm25"}
+        return [("p1", 1.0)]
 
     def fake_embedding(text):
         embedded.append(text)
@@ -227,11 +227,11 @@ def test_multi_channel_embedding_cau_nguyen_van_khi_co_semantic_text(monkeypatch
 
     monkeypatch.setattr(retrieval, "search_available", lambda: True)
     monkeypatch.setattr(retrieval, "get_client", lambda: object())
-    monkeypatch.setattr(retrieval.query_builder, "bm25_body", fake_bm25_body)
+    monkeypatch.setattr(retrieval, "_bm25_hits", fake_bm25_hits)
     monkeypatch.setattr(retrieval.query_builder, "vector_body", lambda *args: {"channel": "vector"})
-    monkeypatch.setattr(retrieval, "semantic_embedding", fake_embedding)
+    monkeypatch.setattr(retrieval, "query_embedding", fake_embedding)
     monkeypatch.setattr(retrieval, "_search_hits", lambda client, body: [("p1", 1.0)])
-    monkeypatch.setattr(retrieval, "_spatial_channels", lambda *args: ({"geo": ["p1"]}, {}))
+    monkeypatch.setattr(retrieval, "_spatial_channels", lambda *args, **kwargs: ({"geo": ["p1"]}, {}))
     monkeypatch.setattr(retrieval, "_trending_ids", lambda *args: [])
     monkeypatch.setattr(retrieval, "hydrate_candidates", lambda ranked, *args, **kwargs: [{"id": ranked[0][0]}])
     monkeypatch.setattr(settings, "opensearch_knn_enabled", True, raising=False)
