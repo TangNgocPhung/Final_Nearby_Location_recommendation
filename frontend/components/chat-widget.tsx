@@ -597,6 +597,7 @@ export function ChatWidget({
           limit: String(MAX_RESULT_CARDS),
         });
         if (action.category) params.set('category', action.category);
+        if (action.meal) params.set('meal', action.meal);
         // Category đã đủ để lọc trực tiếp. Chỉ gửi q khi không biết category;
         // q kích hoạt semantic search/embedding và chậm hơn đáng kể.
         if (action.query && !action.category) params.set('q', action.query);

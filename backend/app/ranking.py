@@ -224,6 +224,7 @@ def apply_crowd_signal(
     latitude: float,
     longitude: float,
     radius: int,
+    exclude_session: str | None = None,
 ) -> list[dict[str, Any]]:
     """Đếm phiên đang hoạt động quanh mỗi POI, qua GEOSEARCH (lộ trình B6c).
 
@@ -236,10 +237,14 @@ def apply_crowd_signal(
     demo thì con số này luôn là 0 hoặc 1, nên một trọng số gắn vào nó sẽ là
     trọng số của nhiễu. Trường được phơi ra để quan sát và để báo cáo nói được
     rằng dữ liệu GEOADD đã có người đọc.
+
+    ``exclude_session``: phiên đang hỏi — không đếm chính người dùng.
     """
     if not candidates:
         return candidates
-    points = geo_cache.active_session_points(latitude, longitude, radius)
+    points = geo_cache.active_session_points(
+        latitude, longitude, radius, exclude_session=exclude_session
+    )
     for candidate in candidates:
         lat, lon = candidate.get("latitude"), candidate.get("longitude")
         if lat is None or lon is None:
@@ -662,6 +667,7 @@ def rank_pois_detailed(
     ranker: str = "linear",
     telemetry: dict[str, Any] | None = None,
     semantic_text: str | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Như `rank_pois` nhưng trả kèm backend truy xuất đã dùng.
 
@@ -671,6 +677,9 @@ def rank_pois_detailed(
 
     ``semantic_text``: chuỗi riêng cho kênh vector (mặc định = ``query_text``)
     — chat gửi BM25 câu đã bỏ từ đệm nhưng embedding câu nguyên văn.
+
+    ``session_id``: phiên đang hỏi, chỉ để không đếm chính họ vào
+    ``liveNearbyUsers``.
     """
     candidates, backend = retrieve_candidates(
         latitude,
@@ -683,7 +692,9 @@ def rank_pois_detailed(
         semantic_text=semantic_text,
     )
     candidates = apply_trending_boost(candidates, latitude, longitude)
-    candidates = apply_crowd_signal(candidates, latitude, longitude, radius)
+    candidates = apply_crowd_signal(
+        candidates, latitude, longitude, radius, exclude_session=session_id
+    )
     candidates = enrich_candidates(candidates, latitude=latitude, longitude=longitude)
     candidates = attach_region_ctr(candidates)
     # Bộ lọc category tường minh (chip trên UI) đã giới hạn sẵn tập ứng viên —
@@ -718,6 +729,7 @@ def rank_pois(
     category_boost: dict[str, float] | None = None,
     graph_boost: set[str] | None = None,
     ranker: str = "linear",
+    session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     results, _backend = rank_pois_detailed(
         latitude,
@@ -729,6 +741,7 @@ def rank_pois(
         category_boost=category_boost,
         graph_boost=graph_boost,
         ranker=ranker,
+        session_id=session_id,
     )
     return results
 

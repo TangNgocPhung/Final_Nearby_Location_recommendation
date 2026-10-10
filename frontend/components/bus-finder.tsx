@@ -58,6 +58,8 @@ type RouteStop = {
   alightingOnly: boolean;
   distanceMeters: number | null;
   minutesFromStart: number | null;
+  /** Giờ xe qua trạm theo giờ chạy của lượt — không phải vị trí xe thật. */
+  service: ServiceHours | null;
 };
 
 type Direction = {
@@ -88,7 +90,14 @@ type BusStop = {
   longitude: number;
   distanceMeters: number;
   shelter: boolean | null;
-  routes: { routeId: string; ref: string; destination: string | null; colour: string | null }[];
+  routes: {
+    routeId: string;
+    ref: string;
+    destination: string | null;
+    colour: string | null;
+    interval: BusLine['interval'];
+    service: ServiceHours | null;
+  }[];
   driveMinutes: number | null;
   driveMeters: number | null;
 };
@@ -146,6 +155,41 @@ function serviceLabel(hours: ServiceHours): { text: string; running: boolean | n
       hours.startsInMinutes != null
         ? `Hết chuyến · chạy lại sau ${formatMinutes(hours.startsInMinutes)}`
         : 'Hết chuyến',
+  };
+}
+
+/** Trạng thái xe qua MỘT trạm (giờ chuyến đầu/cuối đã cộng thời gian từ bến
+ *  đầu tới trạm). Chỉ suy từ giờ chạy + giãn cách — không biết xe đang ở đâu. */
+function stopServiceLabel(
+  service: ServiceHours | null,
+  interval: BusLine['interval'],
+): { text: string; short: string | null; running: boolean } | null {
+  if (!service || service.runningNow == null) return null;
+  if (service.runningNow) {
+    const every = formatInterval(interval);
+    if (service.endsInMinutes != null && service.endsInMinutes <= 90 && service.lastTrip) {
+      return {
+        running: true,
+        short: `cuối ~${service.lastTrip}`,
+        text: `Chuyến cuối qua trạm khoảng ${service.lastTrip} (còn ~${formatMinutes(service.endsInMinutes)})`,
+      };
+    }
+    return {
+      running: true,
+      short: null,
+      text: [every ? `Xe qua trạm khoảng ${every}` : 'Đang có xe qua trạm', service.lastTrip && `chuyến cuối ~${service.lastTrip}`]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  return {
+    running: false,
+    short: 'hết chuyến',
+    text: service.firstTrip
+      ? `Hết chuyến qua trạm · chuyến đầu khoảng ${service.firstTrip}${
+          service.startsInMinutes != null ? ` (sau ${formatMinutes(service.startsInMinutes)})` : ''
+        }`
+      : 'Hết chuyến qua trạm',
   };
 }
 
@@ -496,6 +540,9 @@ export function BusFinder({
   };
 
   const service = detail ? serviceLabel(detail.hours) : null;
+  // Trạm đang chọn (bấm từ "Trạm gần" hoặc trong danh sách), không thì trạm gần bạn nhất.
+  const boardingStop = direction?.stops.find((stop) => stop.id === focusStopId) ?? nearestStop?.stop ?? null;
+  const boardingService = boardingStop && detail ? stopServiceLabel(boardingStop.service, detail.interval) : null;
 
   return (
     <Card className="shrink-0 rounded-2xl border-blue-900/10 shadow-[0_12px_40px_rgb(30_58_138/8%)] dark:border-white/10">
@@ -645,20 +692,41 @@ export function BusFinder({
                     </button>
                     {stop.routes.length > 0 && (
                       <div className="mt-1.5 flex flex-wrap gap-1 pl-8">
-                        {stop.routes.map((route) => (
-                          <button
-                            key={route.routeId}
-                            type="button"
-                            onClick={() => setOpened({ routeId: route.routeId, focusStopId: stop.id })}
-                            title={route.destination ? `Tuyến ${route.ref} → ${route.destination}` : `Tuyến ${route.ref}`}
-                            className="flex items-center gap-1 rounded-md border border-border py-0.5 pr-1.5 pl-0.5 transition hover:bg-muted"
-                          >
-                            <RouteBadge refLabel={route.ref} colour={route.colour} size="sm" />
-                            <span className="max-w-32 truncate text-[11px] text-muted-foreground">
-                              → {route.destination ?? '…'}
-                            </span>
-                          </button>
-                        ))}
+                        {stop.routes.map((route) => {
+                          const atStop = stopServiceLabel(route.service, route.interval);
+                          return (
+                            <button
+                              key={route.routeId}
+                              type="button"
+                              onClick={() => setOpened({ routeId: route.routeId, focusStopId: stop.id })}
+                              title={[
+                                route.destination ? `Tuyến ${route.ref} → ${route.destination}` : `Tuyến ${route.ref}`,
+                                atStop?.text,
+                              ]
+                                .filter(Boolean)
+                                .join('\n')}
+                              className={cn(
+                                'flex items-center gap-1 rounded-md border border-border py-0.5 pr-1.5 pl-0.5 transition hover:bg-muted',
+                                atStop?.running === false && 'opacity-60',
+                              )}
+                            >
+                              <RouteBadge refLabel={route.ref} colour={route.colour} size="sm" />
+                              <span className="max-w-32 truncate text-[11px] text-muted-foreground">
+                                → {route.destination ?? '…'}
+                              </span>
+                              {atStop?.short && (
+                                <span
+                                  className={cn(
+                                    'shrink-0 text-[10px] font-medium',
+                                    atStop.running ? 'text-amber-700 dark:text-amber-300' : 'text-muted-foreground',
+                                  )}
+                                >
+                                  · {atStop.short}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </li>
@@ -789,6 +857,22 @@ export function BusFinder({
               </button>
             )}
 
+            {boardingStop && boardingService && (
+              <p
+                className={cn(
+                  'flex items-start gap-1.5 rounded-lg px-2.5 py-1.5 text-xs',
+                  boardingService.running
+                    ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200'
+                    : 'bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200',
+                )}
+              >
+                <Clock className="mt-0.5 size-3.5 shrink-0" />
+                <span className="min-w-0">
+                  Tại <b>{boardingStop.name}</b>: {boardingService.text}
+                </span>
+              </p>
+            )}
+
             <div className="flex gap-3 border-b border-border text-xs" role="tablist" aria-label="Chi tiết lượt">
               {(
                 [
@@ -878,7 +962,8 @@ export function BusFinder({
 
             <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
               <MapPin className="mt-0.5 size-3 shrink-0" />
-              Dữ liệu tuyến từ OpenStreetMap. Chưa có vị trí xe theo thời gian thực — xe tới trạm theo giãn cách chuyến.
+              Dữ liệu tuyến từ OpenStreetMap. Chưa có vị trí xe theo thời gian thực — giờ xe qua trạm tính từ giờ chạy và
+              giãn cách chuyến.
               {direction.tripMinutesSource === 'estimate' &&
                 ` Thời gian ước tính theo vận tốc trung bình ${detail.averageSpeedKmh} km/h; giờ cao điểm có thể lâu hơn.`}
             </p>

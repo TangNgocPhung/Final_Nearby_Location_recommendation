@@ -2231,7 +2231,10 @@ export function LocationExplorer() {
         radius: String(radiusMeters),
         limit: '100',
       });
-      fetch(`${API_BASE_URL}/api/pois/nearby?${params}`)
+      // X-Session-ID để badge "người quanh đây" không đếm chính người đang xem.
+      fetch(`${API_BASE_URL}/api/pois/nearby?${params}`, {
+        headers: { 'X-Session-ID': telemetry.sessionId },
+      })
         .then((response) =>
           response.ok ? (response.json() as Promise<Poi[]>) : Promise.reject(),
         )
@@ -2271,7 +2274,8 @@ export function LocationExplorer() {
       mapRef.current = null;
       mapLoadedRef.current = false;
     };
-  }, []);
+    // `telemetry` là singleton (useMemo []) — có trong deps cũng không dựng lại bản đồ.
+  }, [telemetry]);
 
   // Panel chi tiết là z-30 và phủ trọn mép phải, trong khi cặp nút +/- của
   // MapLibre chỉ có z-index:2 — mà không lớp nào ở giữa tạo stacking context,

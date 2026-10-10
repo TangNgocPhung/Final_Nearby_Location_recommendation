@@ -91,6 +91,18 @@ def test_busyness_estimate_levels_by_relative_recency():
     assert result["score"] == 0.9
 
 
+def test_busyness_needs_activity_in_last_hour():
+    # Chỉ có tương tác của 24 giờ trước: lúc 2 giờ sáng không được nói "Đông".
+    stale = {"w15": 0, "w1h": 0, "w24h": 12}
+    assert st._busyness_estimate(stale, recency_score=1.0)["estimated"] is False
+
+
+def test_busyness_never_busy_when_closed():
+    recent = {"w15": 2, "w1h": 4, "w24h": 8}
+    assert st._busyness_estimate(recent, recency_score=1.0, open_now=False)["estimated"] is False
+    assert st._busyness_estimate(recent, recency_score=1.0, open_now=None)["level"] == "Đông"
+
+
 def test_enrich_candidates_attaches_busyness(monkeypatch):
     monkeypatch.setattr(
         st, "windowed_popularity",

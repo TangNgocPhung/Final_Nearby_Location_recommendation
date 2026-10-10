@@ -9,6 +9,7 @@ Ba lỗi mà bộ test này canh, cả ba đều thuộc loại "chạy được
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import h3
@@ -39,6 +40,12 @@ class FakePipeline:
 
     def geoadd(self, key: str, values) -> None:
         self.queued.append(("geoadd", key, values))
+
+    def zadd(self, key: str, mapping: dict) -> None:
+        self.queued.append(("zadd", key, mapping))
+
+    def zremrangebyscore(self, key: str, low, high) -> None:
+        self.queued.append(("zremrangebyscore", key, low, high))
 
     def hset(self, *args, **kwargs) -> None:
         self.queued.append(("hset",))
@@ -77,6 +84,19 @@ class FakeRedis:
 
     def ping(self) -> bool:
         return True
+
+    def zmscore(self, key: str, members) -> list:
+        bucket = self.store.get(key, {})
+        return [bucket.get(member) for member in members]
+
+    def zrem(self, key: str, *members) -> int:
+        target = self.geo if key == geo_cache.ACTIVE_LOCATIONS_KEY else self.store.get(key, {})
+        return sum(1 for member in members if target.pop(member, None) is not None)
+
+    def seen(self, members, at: float) -> None:
+        bucket = self.store.setdefault(geo_cache.ACTIVE_SEEN_KEY, {})
+        for member in members:
+            bucket[member] = at
 
     def geosearch(self, key, longitude, latitude, radius, unit, withcoord=False):
         out = []
@@ -211,6 +231,7 @@ def test_geosearch_dem_phien_dang_hoat_dong_quanh_tung_poi(monkeypatch) -> None:
         "s3": (HCM_LON, HCM_LAT + 0.0005),
         "s-xa": (HCM_LON + 0.01, HCM_LAT),
     }
+    client.seen(client.geo, time.time())
     candidates = [
         {"id": "poi-tam", "latitude": HCM_LAT, "longitude": HCM_LON},
         {"id": "poi-xa", "latitude": HCM_LAT, "longitude": HCM_LON + 0.01},
@@ -239,7 +260,64 @@ def test_geosearch_doc_dung_thu_tu_lon_lat() -> None:
     """
     client = FakeRedis()
     client.geo = {"s1": (HCM_LON, HCM_LAT)}
+    client.seen(["s1"], NOW)
 
-    points = geo_cache.active_session_points(HCM_LAT, HCM_LON, 500, client=client)
+    points = geo_cache.active_session_points(HCM_LAT, HCM_LON, 500, client=client, now=NOW)
 
     assert points == [(HCM_LAT, HCM_LON)]
+
+
+NOW = AT.timestamp()
+
+
+def test_phien_im_lang_qua_cua_so_khong_tinh_va_bi_don() -> None:
+    """Geo set không có TTL theo thành viên: không kiểm thời điểm thì badge đếm
+    mọi phiên TỪNG ghé qua kể từ lúc khởi động Redis, chứ không phải đang ở đó."""
+    client = FakeRedis()
+    client.geo = {"moi": (HCM_LON, HCM_LAT), "cu": (HCM_LON, HCM_LAT)}
+    client.seen(["moi"], NOW - 60)
+    client.seen(["cu"], NOW - geo_cache.ACTIVE_WINDOW_SECONDS - 1)
+
+    points = geo_cache.active_session_points(HCM_LAT, HCM_LON, 500, client=client, now=NOW)
+
+    assert len(points) == 1
+    assert set(client.geo) == {"moi"}
+
+
+def test_phien_ghi_truoc_khi_co_moc_thoi_gian_coi_la_nguoi() -> None:
+    """Dữ liệu GEOADD cũ không có ``ACTIVE_SEEN_KEY`` — không biết còn sống hay
+    không thì không được đếm là "đang quanh đây"."""
+    client = FakeRedis()
+    client.geo = {"legacy": (HCM_LON, HCM_LAT)}
+
+    points = geo_cache.active_session_points(HCM_LAT, HCM_LON, 500, client=client, now=NOW)
+
+    assert points == []
+    assert client.geo == {}
+
+
+def test_khong_dem_chinh_phien_dang_hoi(monkeypatch) -> None:
+    client = FakeRedis()
+    monkeypatch.setattr(geo_cache, "get_client", lambda: client)
+    client.geo = {"toi": (HCM_LON, HCM_LAT), "nguoi-khac": (HCM_LON, HCM_LAT)}
+    client.seen(client.geo, time.time())
+    candidates = [{"id": "poi-1", "latitude": HCM_LAT, "longitude": HCM_LON}]
+
+    ranking.apply_crowd_signal(candidates, HCM_LAT, HCM_LON, 3_000, exclude_session="toi")
+
+    assert candidates[0]["liveNearbyUsers"] == 1
+    # Phiên của mình vẫn còn trong geo set — người khác vẫn thấy mình.
+    assert "toi" in client.geo
+
+
+def test_mark_active_ghi_toa_do_kem_thoi_diem() -> None:
+    client = FakeRedis()
+    pipeline = client.pipeline(transaction=False)
+
+    geo_cache.mark_active(pipeline, "s1", HCM_LAT, HCM_LON, now=NOW)
+
+    ops = [item[0] for item in pipeline.queued]
+    assert ops == ["geoadd", "zadd", "zremrangebyscore"]
+    assert pipeline.queued[0][2] == (HCM_LON, HCM_LAT, "s1")
+    assert pipeline.queued[1][2] == {"s1": NOW}
+    assert pipeline.queued[2][3] == NOW - geo_cache.ACTIVE_WINDOW_SECONDS

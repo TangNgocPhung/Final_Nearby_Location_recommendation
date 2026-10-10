@@ -29,6 +29,29 @@ def test_gio_hoat_dong_dang_chay_va_het_chuyen() -> None:
     assert bus.service_status(None)["runningNow"] is None
 
 
+def test_gio_xe_qua_tram_lui_theo_thoi_gian_tu_ben_dau() -> None:
+    hours = "Mo-Su 05:00-22:00"
+    # Trạm cách bến đầu 14 phút: chuyến cuối xuất bến 22:00 qua trạm ~22:14.
+    late = bus.stop_service(hours, 14, datetime(2026, 10, 10, 22, 5, tzinfo=HCM))
+    assert late["firstTrip"] == "05:14" and late["lastTrip"] == "22:14"
+    assert late["runningNow"] is True and late["endsInMinutes"] == 9
+    # Sau chuyến cuối qua trạm: chờ chuyến đầu sáng mai ~05:14.
+    done = bus.stop_service(hours, 14, datetime(2026, 10, 10, 22, 20, tzinfo=HCM))
+    assert done["runningNow"] is False and done["startsInMinutes"] == 6 * 60 + 54
+    # Sáng sớm: bến đầu đã xuất bến 05:00 nhưng xe chưa tới trạm.
+    early = bus.stop_service(hours, 14, datetime(2026, 10, 10, 5, 5, tzinfo=HCM))
+    assert early["runningNow"] is False and early["startsInMinutes"] == 9
+
+
+def test_gio_xe_qua_tram_qua_nua_dem_va_thieu_du_lieu() -> None:
+    assert bus.stop_service("Mo-Su 05:00-23:30", 45, datetime(2026, 10, 10, 12, 0, tzinfo=HCM))["lastTrip"] == "00:15"
+    assert bus.stop_service("Mo-Su 05:00-22:00", None) is None
+    assert bus.stop_service("Mo-Fr 07:00,17:15", 10)["runningNow"] is None
+    assert bus.minutes_to_stop(40, 10_000, 2_500) == 10
+    assert bus.minutes_to_stop(None, 10_000, 2_500) is None
+    assert bus.minutes_to_stop(40, 10_000, None) is None
+
+
 def test_thoi_gian_chuyen_uu_tien_the_duration() -> None:
     assert bus.trip_minutes("00:45", 30_000) == (45, "osm")
     assert bus.trip_minutes(None, 18_000) == (60, "estimate")

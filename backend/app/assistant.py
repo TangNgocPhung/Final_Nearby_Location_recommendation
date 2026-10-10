@@ -333,6 +333,7 @@ def home_meal_chip(
             "latitude": home_lat,
             "longitude": home_lng,
             "radius": HOME_RADIUS_METERS,
+            **({"meal": slot[8]} if slot and slot[8] else {}),
         },
     }
 
@@ -401,13 +402,14 @@ TOUR_SEARCH_RADIUS_METERS = 6_000
 
 
 # (giờ bắt đầu, giờ kết thúc, biểu tượng, tiêu đề, câu hỏi cho chatbot,
-#  category khi tìm trực tiếp, nhãn bữa, danh từ bữa cho "Gợi ý cho …")
+#  category khi tìm trực tiếp, nhãn bữa, danh từ bữa cho "Gợi ý cho …",
+#  bữa cho bộ lọc `meal_fit` — không có thì chip bữa sáng trả cả quán chè, kem)
 _MEAL_SLOTS = (
-    (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi", "restaurant", "Ăn sáng", "bữa sáng"),
-    (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi", "restaurant", "Ăn trưa", "bữa trưa"),
-    (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi", "cafe", "Cà phê chiều", "trà chiều"),
-    (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi", "restaurant", "Ăn tối", "bữa tối"),
-    (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi", "restaurant", "Ăn khuya", "bữa khuya"),
+    (6, 9.5, "🥖", "Ăn sáng gần đây", "Quán ăn sáng gần tôi", "restaurant", "Ăn sáng", "bữa sáng", "breakfast"),
+    (11, 13.5, "🍚", "Ăn trưa gần đây", "Quán cơm trưa ngon gần tôi", "restaurant", "Ăn trưa", "bữa trưa", "lunch"),
+    (14.5, 17, "🧋", "Giờ trà chiều", "Quán cà phê hoặc trà sữa gần tôi", "cafe", "Cà phê chiều", "trà chiều", None),
+    (17.5, 21, "🍜", "Ăn tối gần đây", "Quán ăn tối ngon gần tôi", "restaurant", "Ăn tối", "bữa tối", "dinner"),
+    (21, 24, "🌙", "Quán mở khuya", "Quán ăn đêm gần tôi", "restaurant", "Ăn khuya", "bữa khuya", "late_night"),
 )
 
 
@@ -420,9 +422,9 @@ def _meal_slot(now: datetime) -> tuple[Any, ...] | None:
 
 
 def _meal_search_action(
-    title: str, prompt: str, category: str, lat: float, lng: float
+    title: str, prompt: str, category: str, lat: float, lng: float, meal: str | None = None
 ) -> dict[str, Any]:
-    return {
+    action: dict[str, Any] = {
         "type": "search",
         "title": title,
         "query": prompt,
@@ -431,13 +433,16 @@ def _meal_search_action(
         "longitude": lng,
         "radius": 3_000,
     }
+    if meal:
+        action["meal"] = meal
+    return action
 
 
 def _meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str, Any] | None:
     slot = _meal_slot(now)
     if slot is None:
         return None
-    _start, _end, icon, title, prompt, category, label, _meal = slot
+    _start, _end, icon, title, prompt, category, label, _meal, meal_key = slot
     return {
         "id": "meal",
         "kind": "time",
@@ -446,7 +451,7 @@ def _meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str, Any] | 
         # f-string chứ không phải strftime("Bây giờ %H:%M"): strftime trên Windows
         # từ chối chữ không phải ASCII trong chuỗi định dạng (UnicodeEncodeError).
         "subtitle": f"Bây giờ {now:%H:%M}",
-        "action": _meal_search_action(label, prompt, category, lat, lng),
+        "action": _meal_search_action(label, prompt, category, lat, lng, meal_key),
     }
 
 
@@ -457,7 +462,7 @@ def _upcoming_meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str
     tomorrow = upcoming is None
     if upcoming is None:
         upcoming = _MEAL_SLOTS[0]
-    start, _end, icon, _title, prompt, category, label, meal = upcoming
+    start, _end, icon, _title, prompt, category, label, meal, meal_key = upcoming
     when = "sáng mai" if tomorrow else f"{int(start):02d}:{int((start % 1) * 60):02d} hôm nay"
     return {
         "id": "meal:next",
@@ -465,7 +470,7 @@ def _upcoming_meal_suggestion(now: datetime, lat: float, lng: float) -> dict[str
         "icon": icon,
         "title": f"Gợi ý cho {meal}",
         "subtitle": f"Sắp tới · {when}",
-        "action": _meal_search_action(label, prompt, category, lat, lng),
+        "action": _meal_search_action(label, prompt, category, lat, lng, meal_key),
     }
 
 
