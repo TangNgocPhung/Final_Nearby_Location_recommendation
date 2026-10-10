@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import {
   BusFront,
   Camera,
@@ -535,6 +535,9 @@ export function ArExplorer({
   // trạm gần nhất ở hướng nào dù chưa nhìn thấy.
   const nearestStop = placed.find((poi) => poi.kind === 'bus') ?? null;
 
+  const cardEls = useRef(new Map<string, HTMLButtonElement>());
+  const [cardSizes, setCardSizes] = useState<Record<string, { w: number; h: number }>>({});
+
   // Xếp thẻ: gần trước, mỗi thẻ tìm chỗ gần vị trí lý tưởng nhất mà không đè thẻ đã xếp.
   const cards = useMemo(() => {
     const { width, height, fov } = viewport;
@@ -557,12 +560,15 @@ export function ArExplorer({
       // Xa thì nổi cao hơn đường chân trời một chút và nhỏ hơn — gợi phối cảnh.
       const t = Math.min(1, poi.distance / radius);
       const scale = 1 - t * 0.25;
-      const w = Math.min(CARD_MAX_W, Math.max(100, poi.name.length * CARD_CHAR_PX + CARD_PAD_X)) * scale;
-      const nameLines = Math.min(
-        CARD_MAX_NAME_LINES,
-        Math.ceil((poi.name.length * CARD_CHAR_PX) / (Math.min(CARD_MAX_W, w / scale) - CARD_PAD_X)),
-      );
-      const h = (nameLines * CARD_LINE_H + CARD_EXTRA_H) * scale;
+      // Kích thước thật đo từ DOM (đo được sau lần vẽ đầu); chưa đo thì ước lượng theo tên.
+      const measured = cardSizes[poi.id];
+      const textW = poi.name.length * CARD_CHAR_PX;
+      const rawW = measured?.w ?? Math.min(CARD_MAX_W, Math.max(100, textW + CARD_PAD_X));
+      const rawH =
+        measured?.h ??
+        Math.min(CARD_MAX_NAME_LINES, Math.ceil(textW / (rawW - CARD_PAD_X))) * CARD_LINE_H + CARD_EXTRA_H;
+      const w = rawW * scale;
+      const h = rawH * scale;
       const left = x - w / 2;
       // y là đáy thẻ (thẻ mọc lên trên). Kẹp giữa thanh trên và khay dưới, rồi dò
       // từ vị trí lý tưởng lên trên, sau đó xuống dưới, tới chỗ chưa đè thẻ nào.
@@ -593,7 +599,23 @@ export function ArExplorer({
       out.push({ poi, x, y, scale });
     }
     return out;
-  }, [placed, pose, viewport, radius]);
+  }, [placed, pose, viewport, radius, cardSizes]);
+
+  // Đo thẻ đang hiển thị (offsetWidth/Height không bị scale làm lệch) để lần xếp sau
+  // dùng kích thước thật. Chỉ set state khi lệch > 1px nên không lặp vô hạn.
+  useLayoutEffect(() => {
+    let next: Record<string, { w: number; h: number }> | null = null;
+    for (const [id, el] of cardEls.current) {
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const prev = cardSizes[id];
+      if (w > 0 && h > 0 && (!prev || Math.abs(prev.w - w) > 1 || Math.abs(prev.h - h) > 1)) {
+        next ??= { ...cardSizes };
+        next[id] = { w, h };
+      }
+    }
+    if (next) setCardSizes(next);
+  });
 
   const selected = placed.find((poi) => poi.id === selectedId) ?? null;
   const selectedOffset = selected ? wrap180(selected.bearing - pose.heading) : 0;
@@ -748,7 +770,7 @@ export function ArExplorer({
       )}
 
       {/* Thanh trên */}
-      <div className="absolute inset-x-0 top-0 z-20 flex items-center gap-2 bg-gradient-to-b from-black/70 to-transparent px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-6">
+      <div className="ar-topbar absolute inset-x-0 top-0 z-20 flex items-center gap-2 bg-gradient-to-b from-black/70 to-transparent px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-6">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="grid size-9 shrink-0 place-items-center rounded-full bg-white/15 backdrop-blur">
             <Compass className="size-5" style={{ transform: `rotate(${-pose.heading}deg)` }} aria-hidden />
@@ -827,6 +849,10 @@ export function ArExplorer({
                 <button
                   key={poi.id}
                   type="button"
+                  ref={(el) => {
+                    if (el) cardEls.current.set(poi.id, el);
+                    else cardEls.current.delete(poi.id);
+                  }}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={() => {
                     setShowBadges(false);
@@ -939,7 +965,7 @@ export function ArExplorer({
 
           {/* Khay dưới: radar + bán kính + "ngay quanh bạn" */}
           <div
-            className="bg-gradient-to-t from-black/80 via-black/50 to-transparent px-4 pt-10 pb-[max(1rem,env(safe-area-inset-bottom))]""
+            className="ar-tray bg-gradient-to-t from-black/80 via-black/50 to-transparent px-4 pt-10 pb-[max(1rem,env(safe-area-inset-bottom))]"
             onPointerDown={(event) => event.stopPropagation()}
           >
             {showBadges ? (
@@ -1039,7 +1065,7 @@ export function ArExplorer({
                     </button>
                   )}
                   {nearby.length > 0 && (
-                    <div className="space-y-1">
+                    <div className="ar-tray-extra space-y-1">
                       <p className="text-[11px] font-semibold uppercase tracking-wider text-white/60">Ngay quanh bạn</p>
                       <div className="flex gap-1.5 overflow-x-auto">
                         {nearby.slice(0, 6).map((poi) => (
@@ -1072,7 +1098,7 @@ export function ArExplorer({
                       </button>
                     ))}
                   </div>
-                  <p className="text-[11px] text-white/55">
+                  <p className="ar-tray-extra text-[11px] text-white/55">
                     {placed.length} địa điểm · {cards.length} trong khung hình
                   </p>
                 </div>
@@ -1110,7 +1136,7 @@ function Radar({
   const half = toRad(fov / 2);
   const wedge = `M ${size / 2} ${size / 2} L ${size / 2 + r * Math.sin(-half)} ${size / 2 - r * Math.cos(half)} A ${r} ${r} 0 0 1 ${size / 2 + r * Math.sin(half)} ${size / 2 - r * Math.cos(half)} Z`;
   return (
-    <svg width={size} height={size} className="shrink-0" aria-hidden>
+    <svg width={size} height={size} className="ar-radar shrink-0" aria-hidden>
       <circle cx={size / 2} cy={size / 2} r={r} fill="rgb(0 0 0 / 45%)" stroke="rgb(255 255 255 / 35%)" />
       <circle cx={size / 2} cy={size / 2} r={r / 2} fill="none" stroke="rgb(255 255 255 / 15%)" />
       <path d={wedge} fill="rgb(16 185 129 / 30%)" />
