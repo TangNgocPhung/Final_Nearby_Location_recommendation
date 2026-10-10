@@ -50,6 +50,9 @@ type ArPoi = {
   id: string;
   name: string;
   categoryLabel: string;
+  /** Hãng (Petrolimex, PVOIL…) — OSM hay đặt tên trạm là "Cửa hàng xăng dầu số 39"
+   *  còn biển trên mặt tiền ghi hãng, nên thẻ phải kèm hãng mới nhận ra được. */
+  brand?: string | null;
   latitude: number;
   longitude: number;
   rating: number | null;
@@ -123,6 +126,16 @@ const AIM_HALF_ANGLE = 14;
 /** …và giữ ổn định chừng này, để quét camera lướt qua / đi ngang không tính. */
 const AIM_DWELL_MS = 1_200;
 const REFETCH_AFTER_METERS = 40;
+/** Nơi trong bán kính này luôn có chip "Ngay quanh bạn" dù không quay camera tới:
+ *  điểm OSM của trạm xăng/công viên nằm giữa khu đất, đứng dưới mái là đã cách vài
+ *  chục mét và la bàn dưới mái tôn hay lệch, nên thẻ trong khung có thể không ra. */
+const NEAR_CHIP_METERS = 40;
+/** Không có toạ độ mới chừng này (đứng yên, trình duyệt không báo) thì đăng ký lại GPS. */
+const GPS_STALE_MS = 25_000;
+/** Chống `visibilitychange` + `focus` + `pageshow` cùng bắn một lúc khi quay lại app. */
+const RESUME_DEBOUNCE_MS = 600;
+/** Lỗi nạp POI thì chờ chừng này mới thử lại, không dồn dập theo từng nhịp GPS. */
+const FETCH_RETRY_MS = 5_000;
 const MAX_CARDS = 14;
 /** Số trạm xe buýt gần nhất được xếp thẻ trước mọi POI khác. */
 const BUS_RESERVED_CARDS = 3;
@@ -228,6 +241,12 @@ export function ArExplorer({
   const smoothRef = useRef<{ x: number; y: number; pitch: number } | null>(null);
   const dragRef = useRef<{ x: number; y: number; heading: number; pitch: number } | null>(null);
   const fetchedAtRef = useRef<Position | null>(null);
+  // Lần nạp POI đang chạy / vừa lỗi — để nhịp GPS mỗi giây không huỷ rồi nạp lại liên tục.
+  const fetchCtlRef = useRef<AbortController | null>(null);
+  const inflightRef = useRef<{ position: Position; radius: number } | null>(null);
+  const fetchFailedAtRef = useRef(0);
+  // Đã từng nhận sự kiện la bàn: đăng ký lại sau khi quay lại app không được đẩy về "kéo để xoay".
+  const sensorSeenRef = useRef(false);
   // poiId -> thời điểm (ms) được phép thử tự check-in lại; Infinity = không thử nữa.
   const autoTriedRef = useRef(new Map<string, number>());
 
@@ -266,6 +285,47 @@ export function ArExplorer({
     [],
   );
 
+  // --- Quay lại app ---------------------------------------------------------
+  // Chuyển app / khoá máy / bật tab khác thì trình duyệt tắt camera (track `ended`
+  // hoặc `muted`), ngừng cảm biến hướng và có thể bỏ rơi watchPosition — màn hình
+  // đứng hình, thẻ không cập nhật nữa và người dùng phải reload cả trang. Mỗi lần
+  // trang hiện lại tăng `resumeTick` để GPS + cảm biến đăng ký lại, camera mở lại.
+  const [resumeTick, setResumeTick] = useState(0);
+  useEffect(() => {
+    if (!started) return;
+    let last = 0;
+    const resume = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - last < RESUME_DEBOUNCE_MS) return;
+      last = now;
+      setResumeTick((n) => n + 1);
+    };
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('pageshow', resume);
+    window.addEventListener('focus', resume);
+    return () => {
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('pageshow', resume);
+      window.removeEventListener('focus', resume);
+    };
+  }, [started]);
+
+  useEffect(() => {
+    if (!started || resumeTick === 0) return;
+    const stream = streamRef.current;
+    const video = videoRef.current;
+    const alive =
+      !!stream && stream.getVideoTracks().some((track) => track.readyState === 'live' && !track.muted);
+    if (alive) {
+      // Camera còn sống nhưng <video> có thể bị tạm dừng khi app bị ẩn.
+      if (video?.paused) void video.play().catch(() => undefined);
+      return;
+    }
+    stream?.getTracks().forEach((track) => track.stop());
+    void startCamera();
+  }, [started, resumeTick, startCamera]);
+
   // --- Bắt đầu: phải nằm trong thao tác người dùng (iOS xin quyền la bàn) ---
   const start = useCallback(() => {
     const ask = (
@@ -287,39 +347,65 @@ export function ArExplorer({
     onPositionRef.current = onPosition;
   }, [onPosition]);
 
+  const hadFixRef = useRef(false);
   useEffect(() => {
     if (!started || !navigator.geolocation) return;
-    const id = navigator.geolocation.watchPosition(
-      (pos) => {
-        setGpsError(false);
-        setGpsErrorCode(0);
-        setGps({
-          position: { latitude: pos.coords.latitude, longitude: pos.coords.longitude },
-          accuracy: pos.coords.accuracy,
-        });
-        onPositionRef.current?.({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
-      },
-      (error) => {
-        setGpsError(true);
-        setGpsErrorCode(error.code);
-      },
-      { enableHighAccuracy: true, maximumAge: 2_000, timeout: 15_000 },
-    );
-    return () => navigator.geolocation.clearWatch(id);
-  }, [started]);
+    let id: number | null = null;
+    let lastFix = Date.now();
+    const onFix = (pos: GeolocationPosition) => {
+      hadFixRef.current = true;
+      lastFix = Date.now();
+      setGpsError(false);
+      setGpsErrorCode(0);
+      setGps({
+        position: { latitude: pos.coords.latitude, longitude: pos.coords.longitude },
+        accuracy: pos.coords.accuracy,
+      });
+      onPositionRef.current?.({
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+      });
+    };
+    const onError = (error: GeolocationPositionError) => {
+      // Đứng yên thì nhiều trình duyệt không báo toạ độ mới và `timeout` nổ — đó không
+      // phải mất GPS: giữ vị trí cũ, đăng ký lại. Chỉ báo lỗi khi chưa từng có toạ độ
+      // nào (hoặc bị chặn quyền / tắt định vị).
+      if (error.code === 3 && hadFixRef.current) {
+        watch();
+        return;
+      }
+      setGpsError(true);
+      setGpsErrorCode(error.code);
+      if (error.code === 3) watch();
+    };
+    const watch = () => {
+      if (id !== null) navigator.geolocation.clearWatch(id);
+      lastFix = Date.now();
+      id = navigator.geolocation.watchPosition(onFix, onError, {
+        enableHighAccuracy: true,
+        maximumAge: 1_000,
+        timeout: 20_000,
+      });
+    };
+    watch();
+    // Lưới an toàn: có trình duyệt im hẳn mà không nổ lỗi — quá lâu không có toạ độ thì làm mới.
+    const timer = setInterval(() => {
+      if (Date.now() - lastFix > GPS_STALE_MS) watch();
+    }, 10_000);
+    return () => {
+      clearInterval(timer);
+      if (id !== null) navigator.geolocation.clearWatch(id);
+    };
+  }, [started, resumeTick]);
 
   // --- Cảm biến hướng -------------------------------------------------------
   useEffect(() => {
     if (!started) return;
-    let gotEvent = false;
     let hasAbsolute = false;
 
     const feed = (heading: number, pitch: number) => {
-      gotEvent = true;
+      sensorSeenRef.current = true;
       const h = toRad(wrap360(heading + (screen.orientation?.angle ?? 0)));
       const prev = smoothRef.current;
       smoothRef.current = prev
@@ -357,7 +443,7 @@ export function ArExplorer({
     window.addEventListener('deviceorientationabsolute', onAbsolute);
     window.addEventListener('deviceorientation', onOrientation);
     // Không có sự kiện nào sau 1,5 s: máy không có cảm biến -> kéo để xoay.
-    const timer = setTimeout(() => setSensorMode(gotEvent ? 'device' : 'drag'), 1_500);
+    const timer = setTimeout(() => setSensorMode(sensorSeenRef.current ? 'device' : 'drag'), 1_500);
 
     let frame = 0;
     const tick = () => {
@@ -380,7 +466,8 @@ export function ArExplorer({
       window.removeEventListener('deviceorientationabsolute', onAbsolute);
       window.removeEventListener('deviceorientation', onOrientation);
     };
-  }, [started]);
+    // resumeTick: iOS/Android ngừng bắn sự kiện hướng khi app bị ẩn — đăng ký lại.
+  }, [started, resumeTick]);
 
   // Kéo để xoay (máy không có cảm biến).
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -444,11 +531,30 @@ export function ArExplorer({
   // --- Nạp POI quanh vị trí -------------------------------------------------
   const lat = position.latitude;
   const lng = position.longitude;
+  useEffect(
+    () => () => {
+      fetchCtlRef.current?.abort();
+      // Xoá cả mốc "đang nạp": StrictMode huỷ rồi chạy lại effect, còn mốc cũ thì lần chạy lại
+      // tưởng đang có request và không nạp nữa.
+      fetchCtlRef.current = null;
+      inflightRef.current = null;
+    },
+    [],
+  );
   useEffect(() => {
     if (!started) return;
+    const here = { latitude: lat, longitude: lng };
     const last = fetchedAtRef.current;
-    if (last && distanceMeters(last, { latitude: lat, longitude: lng }) < REFETCH_AFTER_METERS) return;
+    if (last && distanceMeters(last, here) < REFETCH_AFTER_METERS) return;
+    // GPS báo mỗi giây và toạ độ nhảy vài mét: huỷ lần nạp đang chạy theo từng nhịp thì
+    // nạp chậm hơn 1 s sẽ không bao giờ xong, thẻ đứng yên dù người dùng đang đi.
+    const pending = inflightRef.current;
+    if (pending && pending.radius === radius && distanceMeters(pending.position, here) < REFETCH_AFTER_METERS) return;
+    if (Date.now() - fetchFailedAtRef.current < FETCH_RETRY_MS) return;
+    fetchCtlRef.current?.abort();
     const controller = new AbortController();
+    fetchCtlRef.current = controller;
+    inflightRef.current = { position: here, radius };
     setLoading(true);
     const params = new URLSearchParams({
       lat: lat.toFixed(6),
@@ -471,7 +577,8 @@ export function ArExplorer({
       .then((res) => (res.ok ? (res.json() as Promise<ArPoi[]>) : Promise.reject()))
       .then(async (data) => {
         const stops = await busStops;
-        fetchedAtRef.current = { latitude: lat, longitude: lng };
+        if (controller.signal.aborted) return;
+        fetchedAtRef.current = here;
         setPois([
           ...data,
           ...stops.map(
@@ -489,11 +596,15 @@ export function ArExplorer({
           ),
         ]);
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (!controller.signal.aborted) fetchFailedAtRef.current = Date.now();
+      })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        // Bị lần nạp mới thay thế thì lần mới lo `loading`/`inflight`.
+        if (fetchCtlRef.current !== controller) return;
+        inflightRef.current = null;
+        setLoading(false);
       });
-    return () => controller.abort();
   }, [apiBaseUrl, started, lat, lng, radius]);
 
   // Check-in & huy hiệu của người dùng — nạp một lần khi mở.
@@ -530,7 +641,7 @@ export function ArExplorer({
     [pois, position, radius],
   );
 
-  const nearby = placed.filter((poi) => poi.distance < MIN_AR_DISTANCE);
+  const nearby = placed.filter((poi) => poi.distance < NEAR_CHIP_METERS);
   // Trạm thưa hơn quán xá nhiều nên hay nằm ngoài khung hình — chip này cho biết
   // trạm gần nhất ở hướng nào dù chưa nhìn thấy.
   const nearestStop = placed.find((poi) => poi.kind === 'bus') ?? null;
@@ -886,9 +997,7 @@ export function ArExplorer({
                   >
                     <span className="line-clamp-3 break-words text-[13px] font-semibold leading-tight">{poi.name}</span>
                     <span className="flex items-center gap-1.5 text-[11px] text-white/80">
-                      <span className="truncate">
-                        {poi.kind === 'bus' && poi.routes?.length ? `Tuyến ${poi.routes.join(', ')}` : poi.categoryLabel}
-                      </span>
+                      <span className="truncate">{poiSubtitle(poi)}</span>
                       <span className="shrink-0 font-semibold text-white">{formatMeters(poi.distance)}</span>
                     </span>
                   </span>
@@ -986,7 +1095,7 @@ export function ArExplorer({
                   <div className="min-w-0 flex-1">
                     <p className="break-words font-semibold leading-snug">{selected.name}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {selected.categoryLabel} · {formatMeters(selected.distance)} ·{' '}
+                      {poiSubtitle(selected)} · {formatMeters(selected.distance)} ·{' '}
                       {compassWord(selected.bearing)}
                       {selected.rating != null && (
                         <>
@@ -1078,7 +1187,10 @@ export function ArExplorer({
                             onClick={() => setSelectedId(poi.id)}
                             className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs backdrop-blur hover:bg-white/25"
                           >
-                            {poi.name}
+                            {poi.brand && !poi.name.toLowerCase().includes(poi.brand.toLowerCase())
+                              ? `${poi.brand} · ${poi.name}`
+                              : poi.name}
+                            <span className="ml-1.5 text-white/60">{formatMeters(poi.distance)}</span>
                           </button>
                         ))}
                       </div>
@@ -1115,7 +1227,15 @@ export function ArExplorer({
   );
 }
 
-const COMPASS_WORDS = ['bắc', 'đông bắc', 'đông', 'đông nam', 'nam', 'tây nam', 'tây', 'tây bắc'];
+/** Dòng phụ của thẻ: "Cây xăng · Petrolimex" khi tên OSM không nhắc tới hãng. */
+function poiSubtitle(poi: ArPoi) {
+  if (poi.kind === 'bus') return poi.routes?.length ? `Tuyến ${poi.routes.join(', ')}` : poi.categoryLabel;
+  const brand = poi.brand?.trim();
+  if (brand && !poi.name.toLowerCase().includes(brand.toLowerCase())) return `${poi.categoryLabel} · ${brand}`;
+  return poi.categoryLabel;
+}
+
+const COMPASS_WORDS =['bắc', 'đông bắc', 'đông', 'đông nam', 'nam', 'tây nam', 'tây', 'tây bắc'];
 function compassWord(bearing: number) {
   return `hướng ${COMPASS_WORDS[Math.round(wrap360(bearing) / 45) % 8]}`;
 }
