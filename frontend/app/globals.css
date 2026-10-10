@@ -408,6 +408,29 @@ body {
   }
 }
 
+/* Khám phá AR khi xoay ngang (cao ≤ 500px): khay dưới (radar + chip + bán kính +
+   "ngay quanh bạn") cao ~277px trên màn 360px, che gần hết khung camera. Bỏ phần
+   phụ, thu radar và bớt đệm — chỉ còn radar, trạm gần nhất và bán kính. */
+@media (max-height: 500px) and (max-width: 1023px) {
+  .ar-topbar {
+    padding-bottom: 0.5rem;
+  }
+
+  .ar-tray {
+    padding-top: 0.5rem;
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+
+  .ar-tray-extra {
+    display: none;
+  }
+
+  .ar-radar {
+    width: 72px;
+    height: 72px;
+  }
+}
+
 @media (max-height: 500px) and (max-width: 900px) {
   .chat-panel {
     inset: 0;
