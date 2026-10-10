@@ -34,8 +34,8 @@ import { cn } from '@/lib/utils';
  * có: video camera làm nền, GPS cho vị trí, cảm biến hướng cho góc camera. Mỗi
  * POI đặt theo GÓC LỆCH giữa hướng camera và hướng tới POI, nên đây là AR "theo
  * vị trí" chứ không bám hình — GPS lệch 10-20 m và la bàn trôi vài độ, thẻ chỉ
- * chỉ đúng phía, không dính vào mặt tiền. Vì vậy chỉ đặt thẻ cho POI cách
- * >= MIN_AR_DISTANCE; gần hơn thì ghi "ngay quanh bạn" ở khay dưới.
+ * chỉ đúng phía, không dính vào mặt tiền. Gần hơn MIN_AR_DISTANCE thì góc lệch
+ * chỉ là nhiễu GPS nên không đặt thẻ, chỉ ghi "ngay quanh bạn" ở khay dưới.
  *
  * Máy không có cảm biến hướng (laptop) thì kéo màn hình để xoay — đủ để demo.
  *
@@ -104,7 +104,11 @@ const BADGE_ICONS: Record<string, LucideIcon> = {
 };
 
 const RADIUS_OPTIONS = [300, 600, 1_200] as const;
-const MIN_AR_DISTANCE = 25;
+/** Dưới mức này thẻ nhảy lung tung theo nhiễu GPS (±4 m) — không đặt thẻ. Đừng nâng
+ *  cao: đứng trước cổng trường 20 m mà không thấy tên trường là lỗi người dùng gặp. */
+const MIN_AR_DISTANCE = 8;
+/** Thẻ còn trong khung nhưng tâm lệch sát mép thì kẹp vào đây để không bị cắt/khó bấm. */
+const CARD_EDGE_MARGIN_PX = 76;
 /** Bán kính check-in nhỏ nhất của server (`CHECKIN_RADIUS_METERS`) — chỉ để
  *  ghi trong lời giới thiệu; server mới là bên quyết định. */
 const CHECKIN_RADIUS = 50;
@@ -113,14 +117,18 @@ const CHECKIN_RADIUS = 50;
 const CHECKIN_HOPELESS_METERS = 400;
 /** Tự check-in bị từ chối tạm thời (too_far/lỗi mạng) thì chờ chừng này mới thử lại. */
 const AUTO_RETRY_MS = 15_000;
+/** Tự check-in cần hướng camera vào nơi đó: lệch tâm khung không quá góc này… */
+const AIM_HALF_ANGLE = 14;
+/** …và giữ ổn định chừng này, để quét camera lướt qua / đi ngang không tính. */
+const AIM_DWELL_MS = 1_200;
 const REFETCH_AFTER_METERS = 40;
 const MAX_CARDS = 14;
+/** Số trạm xe buýt gần nhất được xếp thẻ trước mọi POI khác. */
+const BUS_RESERVED_CARDS = 3;
 const LANE_HEIGHT = 70;
 const LANE_GAP_PX = 150;
 const MAX_LANES = 4;
 const TOP_SAFE_PX = 72;
-/** Số trạm xe buýt gần nhất được xếp thẻ trước mọi POI khác. */
-const BUS_RESERVED_CARDS = 3;
 const BOTTOM_SAFE_PX = 170;
 /** FOV ngang của cạnh DÀI cảm biến camera sau điện thoại phổ thông (độ). */
 const CAMERA_LONG_FOV = 63;
@@ -532,13 +540,14 @@ export function ArExplorer({
       if (poi.distance < MIN_AR_DISTANCE) continue;
       const offset = wrap180(poi.bearing - pose.heading);
       if (Math.abs(offset) > fov / 2 + 4) continue;
-      const x = width / 2 + offset * pxPerDeg;
+      const rawX = width / 2 + offset * pxPerDeg;
+      const x = Math.max(CARD_EDGE_MARGIN_PX, Math.min(width - CARD_EDGE_MARGIN_PX, rawX));
       let lane = 0;
-      while (lane < MAX_LANES && (lanes[lane] ?? []).some((other) => Math.abs(other - x) < LANE_GAP_PX)) {
+      while (lane < MAX_LANES && (lanes[lane] ?? []).some((other) => Math.abs(other - rawX) < LANE_GAP_PX)) {
         lane += 1;
       }
       if (lane >= MAX_LANES) continue;
-      (lanes[lane] ??= []).push(x);
+      (lanes[lane] ??= []).push(rawX);
       // Xa thì nổi cao hơn đường chân trời một chút và nhỏ hơn — gợi phối cảnh.
       const t = Math.min(1, poi.distance / radius);
       // Kẹp giữa thanh trên và khay dưới: màn thấp (laptop, điện thoại ngang)
@@ -627,31 +636,51 @@ export function ArExplorer({
     }
   };
 
-  // Tự check-in khi đứng trong CHECKIN_RADIUS của một nơi chưa khám phá — không
-  // bắt người dùng bấm nút. Server vẫn là bên quyết định (đo lại bằng PostGIS),
-  // khoảng cách ở đây chỉ để biết lúc nào đáng gửi. Mỗi nơi chỉ gửi một lần cho
-  // tới khi có kết quả; lỗi/too_far thì thử lại sau AUTO_RETRY_MS.
+  // Tự check-in khi đứng trong CHECKIN_RADIUS của một nơi chưa khám phá VÀ đang
+  // hướng camera vào nơi đó (lệch ≤ AIM_HALF_ANGLE, giữ AIM_DWELL_MS) — chỉ đi
+  // ngang qua mà không nhìn tới thì không tính. Server vẫn là bên quyết định
+  // (đo lại bằng PostGIS), điều kiện ở đây chỉ để biết lúc nào đáng gửi. Mỗi nơi
+  // chỉ gửi một lần cho tới khi có kết quả; lỗi/too_far thì thử lại sau
+  // AUTO_RETRY_MS. Nút "Check-in" thủ công không đòi hướng camera.
   const checkInRef = useRef(checkIn);
   useEffect(() => {
     checkInRef.current = checkIn;
   });
+  const aimRef = useRef<{ id: string; since: number } | null>(null);
+  const [aimTick, setAimTick] = useState(0);
   useEffect(() => {
     if (!started || !gps || !sessionId || checkingIn !== null) return;
     const now = Date.now();
-    const target = placed.find(
-      (poi) =>
-        poi.kind !== 'bus' &&
-        poi.distance <= CHECKIN_RADIUS &&
-        !checkedIds.has(poi.id) &&
-        now >= (autoTriedRef.current.get(poi.id) ?? 0),
-    );
-    if (!target) return;
+    let target: Placed | null = null;
+    let best = Infinity;
+    for (const poi of placed) {
+      if (poi.distance > CHECKIN_RADIUS) break; // `placed` đã xếp theo khoảng cách
+      if (poi.kind === 'bus' || checkedIds.has(poi.id)) continue;
+      if (now < (autoTriedRef.current.get(poi.id) ?? 0)) continue;
+      const off = Math.abs(wrap180(poi.bearing - pose.heading));
+      if (off <= AIM_HALF_ANGLE && off < best) {
+        best = off;
+        target = poi;
+      }
+    }
+    if (!target) {
+      aimRef.current = null;
+      return;
+    }
+    if (aimRef.current?.id !== target.id) aimRef.current = { id: target.id, since: now };
+    const waited = now - aimRef.current.since;
+    if (waited < AIM_DWELL_MS) {
+      // Giữ yên tay thì cảm biến có thể không báo nữa — tự gọi lại effect khi đủ hạn.
+      const timer = setTimeout(() => setAimTick((n) => n + 1), AIM_DWELL_MS - waited + 20);
+      return () => clearTimeout(timer);
+    }
+    aimRef.current = null;
     // Đặt mốc NGAY (trước khi gọi): GPS báo mỗi giây, effect chạy lại liên tục.
     // Lỗi/too_far thì checkIn ghi đè bằng mốc thử lại; thành công/already thì
     // `checkedIds` đã chứa nơi này nên Infinity vô hại.
     autoTriedRef.current.set(target.id, Infinity);
     void checkInRef.current(target, true);
-  }, [started, gps, sessionId, checkingIn, placed, checkedIds]);
+  }, [started, gps, sessionId, checkingIn, placed, checkedIds, pose.heading, aimTick]);
 
   const discovered = checkInSummary?.total ?? 0;
   const flatPhone = sensorMode === 'device' && pose.pitch < -50;
@@ -739,8 +768,8 @@ export function ArExplorer({
             </span>
             <h2 className="mt-4 text-lg font-semibold">Giơ điện thoại lên để khám phá</h2>
             <p className="mt-2 text-sm text-white/75">
-              Địa điểm quanh bạn sẽ hiện đúng hướng trên camera. Đi tới gần (≤ {CHECKIN_RADIUS} m) là tự check-in,
-              mở khoá huy hiệu và xua sương mù trên bản đồ.
+              Địa điểm quanh bạn sẽ hiện đúng hướng trên camera. Đứng gần (≤ {CHECKIN_RADIUS} m) và hướng camera vào
+              tên/biển hiệu một lát là tự check-in, mở khoá huy hiệu và xua sương mù trên bản đồ.
             </p>
             <p className="mt-3 text-xs text-white/55">
               Cần quyền camera, vị trí và cảm biến hướng. Ảnh camera chỉ hiện trên máy bạn, không gửi đi đâu.
