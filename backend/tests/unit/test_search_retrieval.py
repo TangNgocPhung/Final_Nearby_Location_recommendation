@@ -278,7 +278,7 @@ def test_multi_channel_falls_back_when_cluster_unreachable(monkeypatch) -> None:
 #
 # Đo 2026-10-10 (chế độ giọng nói, "quán phở" quanh 10.7757, 106.7009): BM25
 # trả 11 quán phở rồi tới "Nhà Hát Thành Phố", "Bảo tàng Thành phố"… vì
-# vi_folded biến cả "phở" lẫn "phố" thành "pho". Diversify kéo ngay POI khác
+# vi_folded biến "phở", "phố", "phổ" (THPT Nam Kỳ Khởi Nghĩa) đều thành "pho". Diversify kéo ngay POI khác
 # loại đầu tiên lên sau hai quán phở → "Nhà Hát Thành Phố" đứng hạng 3.
 
 
@@ -297,6 +297,7 @@ def _bm25_response() -> dict:
                 _hit("pho-hien", "Pho Hien", tags=["restaurant"]),
                 _hit("nha-hat", "Nhà Hát Thành Phố", "Ga tàu"),
                 _hit("bao-tang", "Bảo tàng Thành phố", "Văn hóa", ["museum"]),
+                _hit("thpt", "Trường Trung học phổ thông Nam Kỳ Khởi Nghĩa", "Giáo dục", ["school"]),
                 _hit("phong-kham", "Trung Tâm Y Tế Dự Phòng - Phòng Khám", "Y tế", ["hospital"]),
             ]
         }
@@ -336,7 +337,7 @@ class _Bm25OnlyClient:
         if "multi_match" in str(body["query"]):
             return _bm25_response()
         # Kênh không gian: mọi POI, cái khớp nhầm dấu ở gần nhất.
-        ids = ["nha-hat", "bao-tang", "phong-kham", "pho-nha-minh", "pho-hien"]
+        ids = ["nha-hat", "bao-tang", "thpt", "phong-kham", "pho-nha-minh", "pho-hien"]
         return {"hits": {"hits": [{"_source": {"poi_id": poi_id}, "_score": None} for poi_id in ids]}}
 
 
