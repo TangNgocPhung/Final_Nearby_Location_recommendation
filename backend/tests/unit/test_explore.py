@@ -123,6 +123,19 @@ def test_cau_tra_loi_hong_thi_none(content: str | None) -> None:
     assert explore.parse_verdict(content) is None
 
 
+@pytest.mark.parametrize("confidence", ["NaN", "Infinity", "-Infinity", "true"])
+def test_do_tin_cay_khong_hop_le_thanh_0(confidence: str) -> None:
+    """NaN từng bị min/max biến thành 1.0 → "no" kèm NaN bác chắc chắn."""
+    verdict = explore.parse_verdict('{"match": "no", "confidence": %s}' % confidence)
+    assert verdict is not None and verdict["confidence"] == 0.0
+    assert explore.decide_photo(verdict) == "pending"
+
+
+def test_nhieu_khoi_json_lay_khoi_dau_tien() -> None:
+    content = 'Trả lời: {"match": "yes", "confidence": 0.9, "seen": "a"} và thêm {"ghi_chu": 1}'
+    assert explore.parse_verdict(content) == {"match": "yes", "confidence": 0.9, "seen": "a"}
+
+
 def test_do_tin_cay_bi_kep_ve_0_1() -> None:
     assert explore.parse_verdict('{"match": "yes", "confidence": 7}')["confidence"] == 1.0
     assert explore.parse_verdict('{"match": "no", "confidence": "abc"}')["confidence"] == 0.0
@@ -198,3 +211,54 @@ def test_exif_gps_bi_xoa_truoc_khi_luu() -> None:
     assert Image.open(io.BytesIO(original)).getexif().get(0x8825) is not None
     stored = Image.open(io.BytesIO(explore.prepare_photo(original)["image"]))
     assert not stored.getexif()
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), (1, 2, 3)).save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def test_anh_nhieu_diem_anh_bi_tu_choi_truoc_khi_giai_ma() -> None:
+    """PNG đơn sắc vài trăm KB nhưng giải ra hàng trăm MB RAM."""
+    with pytest.raises(ValueError, match="quá lớn"):
+        explore.prepare_photo(_png_bytes(8000, 8000))  # 64 MP > MAX_IMAGE_PIXELS
+
+
+def test_decompression_bomb_cua_pillow_thanh_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DecompressionBombError kế thừa Exception chứ không phải OSError — trước đây thoát ra thành HTTP 500."""
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1_000)
+    with pytest.raises(ValueError, match="quá lớn"):
+        explore.prepare_photo(_png_bytes(600, 600))
+
+
+def test_ngan_sach_thoi_gian_gop_ca_hang_cho(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chờ semaphore mà gần hết ngân sách thì không được mở thêm một lượt gọi model đầy đủ."""
+    monkeypatch.setattr(explore.settings, "ollama_url", "http://ollama.invalid")
+    monkeypatch.setattr(explore.settings, "explore_vision_timeout_seconds", 10.0)
+    clock = iter([0.0, 9.5])  # đặt deadline lúc 0s; sau khi lấy được khoá đã là 9.5s (<1s còn lại)
+    monkeypatch.setattr(explore.time, "monotonic", lambda: next(clock))
+
+    def fail(*_args, **_kwargs):  # pragma: no cover
+        raise AssertionError("không được gọi model khi hết ngân sách")
+
+    monkeypatch.setattr(explore.urllib.request, "urlopen", fail)
+    assert explore.check_photo(b"x", "Dinh Độc Lập", None, "landmark") is None
+
+
+def test_claim_la_object_co_nguon_va_bo_claim_chua_kiem_chung() -> None:
+    """Cột JSONB lưu object, không phải chuỗi — giao diện từng render object như chuỗi và vỡ."""
+    result = explore.claims(
+        [
+            {"title": "Đánh bom dinh", "description": "Năm 1975.", "source": "https://x.test/a", "verified": True},
+            {"description": "Chưa có nguồn.", "verified": False},
+            "Chuỗi cũ",
+            {"description": "  "},
+            None,
+        ]
+    )
+    assert result == [
+        {"title": "Đánh bom dinh", "description": "Năm 1975.", "source": "https://x.test/a"},
+        {"title": None, "description": "Chuỗi cũ", "source": None},
+    ]
+    assert explore.claims(None) == []

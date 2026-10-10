@@ -34,8 +34,9 @@ import hashlib
 import io
 import json
 import logging
-import re
+import math
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -72,6 +73,9 @@ MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_SIDE = 1280
 THUMB_SIDE = 360
 MIN_IMAGE_SIDE = 200
+# Trần số điểm ảnh TRƯỚC khi giải mã: PNG đơn sắc 14000×14000 chỉ ~600 KB mà giải
+# ra hàng trăm MB RAM. Trình duyệt đã thu về ≤ 1280 px nên 40 MP là rất rộng.
+MAX_IMAGE_PIXELS = 40_000_000
 
 # Ngưỡng kết luận từ câu trả lời của model thị giác.
 VERIFY_MIN_CONFIDENCE = 0.5
@@ -193,8 +197,13 @@ def prepare_photo(data: bytes) -> dict[str, Any]:
 
     try:
         image = Image.open(io.BytesIO(data))
+        # Image.open chỉ đọc header: kiểm kích thước trước khi cấp phát bộ nhớ giải mã.
+        if image.width * image.height > MAX_IMAGE_PIXELS:
+            raise ValueError("Ảnh quá lớn về kích thước")
         image = ImageOps.exif_transpose(image).convert("RGB")
-    except (UnidentifiedImageError, OSError, ValueError) as error:
+    except Image.DecompressionBombError as error:
+        raise ValueError("Ảnh quá lớn về kích thước") from error
+    except (UnidentifiedImageError, OSError) as error:
         raise ValueError("Tệp không phải ảnh hợp lệ") from error
     if min(image.size) < MIN_IMAGE_SIDE:
         raise ValueError("Ảnh quá nhỏ để nhận ra địa điểm")
@@ -236,24 +245,41 @@ def parse_verdict(content: str | None) -> dict[str, Any] | None:
     """
     if not content:
         return None
-    found = re.search(r"\{.*\}", content, flags=re.DOTALL)
-    if not found:
-        return None
-    try:
-        raw = json.loads(found.group(0))
-    except ValueError:
-        return None
-    if not isinstance(raw, dict):
+    raw = _first_json_object(content)
+    if raw is None:
         return None
     match = str(raw.get("match", "")).strip().lower()
     if match not in ("yes", "no", "unsure"):
         return None
+    confidence = raw.get("confidence", 0)
+    # bool là con của int: `true` không phải một độ tin cậy. NaN/Infinity thì
+    # json.loads của Python vẫn nhận, và min/max sẽ biến NaN thành 1.0.
+    if isinstance(confidence, bool):
+        confidence = 0.0
     try:
-        confidence = float(raw.get("confidence", 0))
+        confidence = float(confidence)
     except (TypeError, ValueError):
+        confidence = 0.0
+    if not math.isfinite(confidence):
         confidence = 0.0
     seen = str(raw.get("seen") or "").strip()[:240]
     return {"match": match, "confidence": max(0.0, min(1.0, confidence)), "seen": seen}
+
+
+def _first_json_object(content: str) -> dict[str, Any] | None:
+    """Đối tượng JSON đầu tiên đọc được trong chuỗi (model có thể in thêm câu dẫn
+    hoặc nhiều khối). Regex ``{.*}`` tham lam nuốt cả hai khối rồi hỏng."""
+    decoder = json.JSONDecoder()
+    start = content.find("{")
+    while start != -1:
+        try:
+            value, _ = decoder.raw_decode(content, start)
+        except ValueError:
+            value = None
+        if isinstance(value, dict):
+            return value
+        start = content.find("{", start + 1)
+    return None
 
 
 def decide_photo(verdict: dict[str, Any] | None) -> str:
@@ -302,12 +328,20 @@ def check_photo(image_bytes: bytes, name: str, intro: str | None, category: str 
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
+    # MỘT ngân sách thời gian cho cả hàng chờ lẫn lượt gọi model: cộng dồn hai
+    # timeout riêng (100s chờ + 100s chạy) vượt proxy_read_timeout 150s của gateway
+    # — người chơi nhận 504 trong khi backend vẫn lưu lượt khám phá.
+    deadline = time.monotonic() + settings.explore_vision_timeout_seconds
     acquired = _vision_lock.acquire(timeout=settings.explore_vision_timeout_seconds)
     if not acquired:
         logger.warning("Hàng chờ xem ảnh quá lâu — bỏ qua bước AI cho ảnh này")
         return None
     try:
-        with urllib.request.urlopen(request, timeout=settings.explore_vision_timeout_seconds) as response:
+        remaining = deadline - time.monotonic()
+        if remaining < 1.0:
+            logger.warning("Hết ngân sách thời gian trong hàng chờ — bỏ qua bước AI cho ảnh này")
+            return None
+        with urllib.request.urlopen(request, timeout=remaining) as response:
             payload = json.load(response)
     except (TimeoutError, urllib.error.URLError, OSError, ValueError) as error:
         logger.warning("Model thị giác không trả lời: %s", error)
@@ -357,6 +391,30 @@ _OVERVIEW_SQL = f"""
 """
 
 
+def claims(items: list[Any] | None) -> list[dict[str, Any]]:
+    """Claim của `poi_knowledge` → ``{title, description, source}``, bỏ claim chưa kiểm chứng.
+
+    Cột là JSONB: mỗi phần tử là object ``{title?, description, source, verified}``
+    (migration 0022). Chuỗi trần (dữ liệu cũ) vẫn nhận, coi như chỉ có mô tả.
+    """
+    result = []
+    for item in items or []:
+        if isinstance(item, str):
+            item = {"description": item}
+        if not isinstance(item, dict) or item.get("verified") is False:
+            continue
+        description = str(item.get("description") or "").strip()
+        if description:
+            result.append(
+                {
+                    "title": item.get("title") or None,
+                    "description": description,
+                    "source": item.get("source") or None,
+                }
+            )
+    return result
+
+
 def _story(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "contentType": row["contentType"],
@@ -364,8 +422,8 @@ def _story(row: dict[str, Any]) -> dict[str, Any]:
         "intro": row["intro"],
         "specialty": row["specialty"],
         "historicalContext": row["historicalContext"],
-        "historicalEvents": list(row["historicalEvents"] or []),
-        "interestingFacts": list(row["interestingFacts"] or []),
+        "historicalEvents": claims(row["historicalEvents"]),
+        "interestingFacts": claims(row["interestingFacts"]),
         "source": row["source"],
     }
 
@@ -574,8 +632,8 @@ def discover(
                     accuracy_meters, image, thumbnail, width, height, sha256
                 )
                 VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (poi_id, sha256) DO NOTHING
-                RETURNING id::text AS id
+                ON CONFLICT (poi_id, owner_id, sha256) DO NOTHING
+                RETURNING id::text AS id, is_public
                 """,
                 (
                     poi_id,
@@ -594,16 +652,24 @@ def discover(
             ).fetchone()
             if photo_row is None:
                 photo_row = connection.execute(
-                    "SELECT id::text AS id, status FROM poi_visitor_photos WHERE poi_id = %s AND sha256 = %s",
-                    (poi_id, photo["sha256"]),
+                    "SELECT id::text AS id, status, is_public FROM poi_visitor_photos "
+                    "WHERE poi_id = %s AND owner_id = %s AND sha256 = %s",
+                    (poi_id, owner_id, photo["sha256"]),
                 ).fetchone()
                 photo_status = photo_row["status"]
+            is_public = bool(photo_row["is_public"])
             discovery = connection.execute(
                 """
                 INSERT INTO poi_discoveries (owner_id, poi_id, photo_id, distance_meters)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (owner_id, poi_id)
-                DO UPDATE SET photo_id = EXCLUDED.photo_id
+                DO UPDATE SET photo_id = CASE
+                    -- Góp thêm ảnh "chờ xác minh" không được đè ảnh đã xác minh đang làm đại diện.
+                    WHEN (SELECT status FROM poi_visitor_photos WHERE id = poi_discoveries.photo_id) = 'verified'
+                     AND (SELECT status FROM poi_visitor_photos WHERE id = EXCLUDED.photo_id) <> 'verified'
+                    THEN poi_discoveries.photo_id
+                    ELSE EXCLUDED.photo_id
+                END
                 RETURNING (xmax = 0) AS inserted
                 """,
                 (owner_id, poi_id, photo_row["id"], distance),
@@ -621,8 +687,8 @@ def discover(
         "photo": {
             "id": photo_row["id"],
             "status": photo_status,
-            "isPublic": share_publicly,
-            "url": f"/api/v1/visitor-photos/{photo_row['id']}" if photo_status == "verified" and share_publicly else None,
+            "isPublic": is_public,
+            "url": f"/api/v1/visitor-photos/{photo_row['id']}" if photo_status == "verified" and is_public else None,
         },
         "verification": public_verdict,
         "story": _story(row),

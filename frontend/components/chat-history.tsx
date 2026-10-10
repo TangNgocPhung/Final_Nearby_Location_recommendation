@@ -8,9 +8,10 @@ import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
 /* ------------------------------------------------------------------ *
- * Lịch sử chat của trợ lý — lưu ở trình duyệt (localStorage), không cần
- * đăng nhập. Backend chỉ giữ ngữ cảnh của cuộc đang mở trong 30 phút; mở lại
- * cuộc cũ thì khung chat gọi PUT /api/v1/chat/history để nạp lại ngữ cảnh.
+ * Lịch sử chat của trợ lý — lưu ở trình duyệt (localStorage) theo tài khoản,
+ * chỉ khi đã đăng nhập (khách vãng lai không lưu). Backend chỉ giữ ngữ cảnh
+ * của cuộc đang mở trong 30 phút; mở lại cuộc cũ thì khung chat gọi
+ * PUT /api/v1/chat/history (cần đăng nhập) để nạp lại ngữ cảnh.
  * ------------------------------------------------------------------ */
 
 export type SavedConversation<Turn> = {

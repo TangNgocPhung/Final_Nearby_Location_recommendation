@@ -21,6 +21,7 @@ import {
   type MeetupPlan,
   type MeetupResult,
 } from '@/lib/assistant';
+import { authHeaders } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 
 type Participant = {
@@ -178,7 +179,7 @@ export function AssistantMeetup({
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/assistant/meetup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           participants: readyPeople.map((person) => ({
             label: person.label,
@@ -189,6 +190,10 @@ export function AssistantMeetup({
           need_parking: needParking,
         }),
       });
+      if (res.status === 401) {
+        setError('Phiên đăng nhập đã hết hạn, bạn đăng nhập lại để dùng Hẹn nhóm nhé.');
+        return;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setPlan((await res.json()) as MeetupPlan);
     } catch {

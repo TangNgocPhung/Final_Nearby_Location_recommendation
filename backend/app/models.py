@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Coordinates(BaseModel):
@@ -316,3 +316,47 @@ class PoiVideoRequest(BaseModel):
 
     url: str = Field(min_length=1, max_length=300)
     title: str | None = Field(default=None, max_length=160)
+
+
+def _require_http_url(value: str) -> str:
+    value = value.strip()
+    if not value.lower().startswith(("http://", "https://")) or " " in value:
+        raise ValueError("Nguồn phải là một URL http(s)")
+    return value
+
+
+class LandmarkClaim(BaseModel):
+    """Một sự kiện / điều thú vị — luôn kèm nguồn (xem `app/landmarks_admin.py`)."""
+
+    title: str | None = Field(default=None, max_length=160)
+    description: str = Field(min_length=5, max_length=600)
+    source: str = Field(min_length=8, max_length=500)
+
+    _source_is_url = field_validator("source")(_require_http_url)
+
+
+class LandmarkStory(BaseModel):
+    """Bài giới thiệu của một địa danh săn được. Chỉ 4 loại nội dung, không có "medical"."""
+
+    content_type: Literal["historical", "cultural", "architectural", "nature"]
+    intro: str = Field(min_length=20, max_length=800)
+    specialty: str | None = Field(default=None, max_length=400)
+    historical_context: str | None = Field(default=None, max_length=800)
+    source: str = Field(min_length=8, max_length=500)
+    historical_events: list[LandmarkClaim] = Field(default_factory=list, max_length=12)
+    interesting_facts: list[LandmarkClaim] = Field(default_factory=list, max_length=12)
+
+    _source_is_url = field_validator("source")(_require_http_url)
+
+
+class NewLandmarkRequest(LandmarkStory):
+    """Địa danh CHƯA có trong dữ liệu POI: tạo POI mới kèm bài giới thiệu."""
+
+    name: str = Field(min_length=2, max_length=160)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    category: Literal[
+        "landmark", "museum", "park", "theme_park", "market",
+        "place_of_worship", "theatre", "library", "government",
+    ]
+    address: str = Field(default="", max_length=300)
