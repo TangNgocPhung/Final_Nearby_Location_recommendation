@@ -119,6 +119,8 @@ const LANE_HEIGHT = 70;
 const LANE_GAP_PX = 150;
 const MAX_LANES = 4;
 const TOP_SAFE_PX = 72;
+/** Số trạm xe buýt gần nhất được xếp thẻ trước mọi POI khác. */
+const BUS_RESERVED_CARDS = 3;
 const BOTTOM_SAFE_PX = 170;
 /** FOV ngang của cạnh DÀI cảm biến camera sau điện thoại phổ thông (độ). */
 const CAMERA_LONG_FOV = 63;
@@ -520,7 +522,12 @@ export function ArExplorer({
     const horizonY = height / 2 + pose.pitch * pxPerDeg;
     const lanes: number[][] = [];
     const out: { poi: Placed; x: number; y: number; scale: number }[] = [];
-    for (const poi of placed) {
+    // Trạm xe buýt nằm lẫn hàng trăm POI xếp theo khoảng cách nên ở khu đông sẽ
+    // bị MAX_CARDS/làn nuốt mất — cho vài trạm gần nhất đi trước.
+    const stops = placed.filter((poi) => poi.kind === 'bus');
+    const firstStops = new Set(stops.slice(0, BUS_RESERVED_CARDS));
+    const ordered = [...firstStops, ...placed.filter((poi) => !firstStops.has(poi))];
+    for (const poi of ordered) {
       if (out.length >= MAX_CARDS) break;
       if (poi.distance < MIN_AR_DISTANCE) continue;
       const offset = wrap180(poi.bearing - pose.heading);
