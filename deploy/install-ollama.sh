@@ -33,8 +33,16 @@ fi
 
 # After=docker.service: Ollama nghe trên IP của docker0, nên phải khởi động SAU
 # khi Docker dựng xong interface đó — không thì lúc reboot nó bind thất bại.
-mkdir -p /etc/systemd/system/ollama.service.d
-cat > /etc/systemd/system/ollama.service.d/nearby.conf <<EOF
+#
+# Tên "zz-" là bắt buộc: systemd đọc drop-in theo thứ tự chữ cái và file sau
+# THẮNG. Máy đã cài Ollama từ trước thường có sẵn override.conf đặt
+# OLLAMA_HOST khác — đặt tên nearby.conf (bản đầu của script) thì bị nó đè,
+# Ollama vẫn nghe chỗ cũ và mọi container nhận Connection refused (gặp thật
+# trên VPS OVH, 10/10/2026).
+DROPIN_DIR=/etc/systemd/system/ollama.service.d
+mkdir -p "$DROPIN_DIR"
+rm -f "$DROPIN_DIR/nearby.conf"
+cat > "$DROPIN_DIR/zz-nearby.conf" <<EOF
 [Unit]
 After=docker.service
 Wants=docker.service
@@ -60,10 +68,21 @@ if command -v netfilter-persistent >/dev/null \
 fi
 
 export OLLAMA_HOST="${BRIDGE_IP}:11434"
-for _ in $(seq 1 30); do
-  ollama list >/dev/null 2>&1 && break
+ready=0
+for _ in $(seq 1 60); do
+  if ollama list >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
+if [ "$ready" -ne 1 ]; then
+  echo "LỖI: Ollama không trả lời ở $OLLAMA_HOST sau 60 giây." >&2
+  echo "-- Môi trường systemd đang áp cho ollama (dòng OLLAMA_HOST phải là $OLLAMA_HOST):" >&2
+  systemctl show ollama -p Environment >&2
+  echo "-- Đang nghe cổng 11434:" >&2
+  ss -ltnp | grep 11434 >&2 || echo "(không tiến trình nào)" >&2
+  echo "-- Nhật ký ollama:" >&2
+  journalctl -u ollama -n 25 --no-pager >&2
+  exit 1
+fi
 for model in "${MODELS[@]}"; do
   echo "== Tải $model =="
   ollama pull "$model"
