@@ -1052,6 +1052,9 @@ export function LocationExplorer() {
   const watchIdRef = useRef<number | null>(null);
   const lastPingRef = useRef<{ at: number; position: Position } | null>(null);
   // POI đã đăng ký "nhắc khi tới gần": poiId -> subscriptionId.
+  // Bản đồ tự trượt theo chấm xanh (kiểu Google Maps lúc lái xe). Tách khỏi
+  // isWatching: theo dõi vị trí vẫn chạy khi người dùng muốn tự xem bản đồ.
+  const [followMe, setFollowMe] = useState(false);
   // Địa điểm đã lưu của phiên này. Giữ nguyên mảng từ API (đã sắp Nhà/Chỗ làm
   // lên đầu) thay vì sắp lại ở client: thứ tự là quyết định của backend, hai
   // nơi cùng sắp thì sẽ có ngày lệch nhau.
@@ -2259,6 +2262,13 @@ export function LocationExplorer() {
         if (clusterId === undefined || !source) return;
         void source
           .getClusterExpansionZoom(clusterId)
+      // Người dùng tự kéo bản đồ thì thôi bám theo — nếu không, lần ping kế tiếp
+      // giật khung nhìn về lại chấm xanh ngay lúc họ đang xem chỗ khác.
+      // `originalEvent` chỉ có khi là thao tác thật, easeTo từ code thì không.
+      map.on('dragstart', (event) => {
+        if (event.originalEvent) setFollowMe(false);
+      });
+
           .then((zoom) => {
             const geometry = features[0].geometry as GeoJSON.Point;
             map.easeTo({
@@ -2548,6 +2558,18 @@ export function LocationExplorer() {
     if (!selectedPoi) return;
     const marker = new maplibregl.Marker({ color: SELECTED_PIN_COLOR })
       .setLngLat([selectedPoi.longitude, selectedPoi.latitude])
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !followMe || !isWatching) return;
+    map.easeTo({
+      center: [position.longitude, position.latitude],
+      // Giữ mức zoom người dùng đã chọn nếu đã đủ gần để thấy đường.
+      zoom: Math.max(map.getZoom(), 16),
+      duration: 1000,
+      essential: true,
+    });
+  }, [position, followMe, isWatching]);
+
       .addTo(map);
     const element = marker.getElement();
     element.style.cursor = 'pointer';
@@ -2824,7 +2846,9 @@ export function LocationExplorer() {
 
     navigator.geolocation.getCurrentPosition(
       (location) => {
-        acceptLocation(location, 'gps');
+        // Có GPS thật thì tự theo dõi liên tục luôn: trên điện thoại lúc di
+        // chuyển, chấm xanh đứng yên vì không ai bấm "Theo dõi vị trí".
+        if (acceptLocation(location, 'gps')) startWatching();
       },
       (error) => {
         if (error.code === error.PERMISSION_DENIED) {
@@ -2972,6 +2996,7 @@ export function LocationExplorer() {
       ({ coords }) => {
         const nextPosition = {
           latitude: coords.latitude,
+    setFollowMe(false);
           longitude: coords.longitude,
         };
         const now = Date.now();
@@ -2980,6 +3005,8 @@ export function LocationExplorer() {
           ? distanceInMeters(previous.position, nextPosition)
           : Infinity;
         const elapsed = previous ? now - previous.at : Infinity;
+    // Idempotent: bấm "Vị trí của tôi" nhiều lần không được nhân đôi watcher.
+    if (watchIdRef.current !== null) return;
         if (moved < PING_MIN_DISTANCE_M && elapsed < PING_MIN_INTERVAL_MS)
           return;
 
@@ -4331,6 +4358,24 @@ export function LocationExplorer() {
                   ? 'border-slate-900/20 bg-slate-900/90 text-emerald-300 hover:bg-slate-900'
                   : 'border-white/70 bg-white/95 text-primary hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card',
               )}
+            {isWatching && (
+              <button
+                type="button"
+                onClick={() => setFollowMe((on) => !on)}
+                aria-pressed={followMe}
+                aria-label={followMe ? 'Tắt bám theo vị trí' : 'Bật bám theo vị trí — bản đồ tự di chuyển theo bạn'}
+                title="Bám theo vị trí của tôi"
+                className={cn(
+                  'flex h-10 items-center gap-1.5 rounded-full border px-3.5 text-sm font-semibold shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md transition-colors',
+                  followMe
+                    ? 'border-sky-600/30 bg-sky-600 text-white hover:bg-sky-600/90'
+                    : 'border-white/70 bg-white/95 text-primary hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card',
+                )}
+              >
+                <Navigation className="size-5" aria-hidden />
+                Bám theo
+              </button>
+            )}
             >
               <CloudFog className="size-5" aria-hidden />
               Sương mù
