@@ -109,6 +109,7 @@ import { ChatWidget } from '@/components/chat-widget';
 import { VoiceMode } from '@/components/voice-mode';
 import { VoiceSearch } from '@/components/voice-search';
 import { ArExplorer } from '@/components/ar-explorer';
+import { BusFinder } from '@/components/bus-finder';
 import { ChargingFinder } from '@/components/charging-finder';
 import { ConvenienceFinder } from '@/components/convenience-finder';
 import { FuelFinder } from '@/components/fuel-finder';
@@ -874,6 +875,7 @@ export function LocationExplorer() {
   const [fuelOpen, setFuelOpen] = useState(false);
   const [convenienceOpen, setConvenienceOpen] = useState(false);
   const [toiletOpen, setToiletOpen] = useState(false);
+  const [busOpen, setBusOpen] = useState(false);
   // Lớp vẽ tạm của trợ lý (tuyến tour, người trong nhóm hẹn, quán gợi ý) — xem
   // components/chat-widget.tsx. Tách khỏi 'route' để chỉ đường và tour không
   // xoá lẫn nhau.
@@ -3634,9 +3636,16 @@ export function LocationExplorer() {
               onOpenDetail={openParkingDetail}
               onClose={() => setToiletOpen(false)}
             />
+          ) : busOpen ? (
+            <BusFinder
+              apiBaseUrl={API_BASE_URL}
+              mapRef={mapRef}
+              userPosition={position}
+              onShowMap={() => setMobileView('map')}
+              onClose={() => setBusOpen(false)}
+            />
           ) : (
-            // 6 cột: hàng đầu 3 nút (mỗi nút 2 cột), hàng sau 2 nút (mỗi nút 3
-            // cột) — 5 nút mà chia lưới 3 thì hàng sau hụt một ô trông lệch.
+            // 6 nút, lưới 3 cột × 2 hàng (giữ lưới 6 cột để mỗi nút chiếm 2).
             <div className="grid shrink-0 grid-cols-6 gap-2">
               {(
                 [
@@ -3670,15 +3679,21 @@ export function LocationExplorer() {
                     tone: 'bg-teal-50 text-teal-600 ring-teal-600/10 dark:bg-teal-500/15 dark:text-teal-300',
                     open: () => setToiletOpen(true),
                   },
+                  {
+                    label: 'Xe buýt',
+                    Icon: Bus,
+                    tone: 'bg-indigo-50 text-indigo-600 ring-indigo-600/10 dark:bg-indigo-500/15 dark:text-indigo-300',
+                    open: () => setBusOpen(true),
+                  },
                 ] as const
-              ).map(({ label, Icon, tone, open }, index) => (
+              ).map(({ label, Icon, tone, open }) => (
                 <Button
                   key={label}
                   type="button"
                   variant="outline"
                   onClick={open}
                   className={cn(
-                    index < 3 ? 'col-span-2' : 'col-span-3',
+                    'col-span-2',
                     'glass-card group h-auto min-h-11 min-w-0 flex-col gap-2 rounded-2xl px-2 py-3 text-center text-[13px] leading-tight font-semibold whitespace-normal transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-white hover:shadow-[0_14px_32px_-10px_rgb(14_68_48/22%)] dark:hover:bg-card',
                   )}
                 >

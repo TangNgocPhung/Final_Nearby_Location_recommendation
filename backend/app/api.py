@@ -18,6 +18,7 @@ from . import (
     admin,
     assistant,
     auth,
+    bus,
     charging,
     chat,
     chat_tools,
@@ -1202,6 +1203,39 @@ def toilets_search(
         radius=radius,
         limit=limit,
     )
+
+
+@app.get("/api/v1/bus/lines")
+def bus_lines(
+    q: str = Query(default="", max_length=80),
+    limit: int = Query(default=60, ge=1, le=250),
+) -> dict[str, Any]:
+    """Tra tuyến xe buýt theo số tuyến ("14", "1" khớp "01"), tên bến hoặc
+    đường đi qua. Mỗi tuyến gộp các lượt cùng số. Xem `app/bus.py`."""
+    return bus.search_lines(q, limit)
+
+
+@app.get("/api/v1/bus/routes/{route_id}")
+def bus_route(route_id: int) -> Any:
+    """Chi tiết một tuyến từ id một lượt: giờ chạy, giãn cách, giá vé, và với
+    từng lượt — quãng đường, thời gian chuyến, lộ trình, trạm theo thứ tự."""
+    detail = bus.route_detail(route_id)
+    if detail is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có tuyến xe buýt này"})
+    return detail
+
+
+@app.get("/api/v1/bus/stops")
+def bus_stops(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    q: str = Query(default="", max_length=80),
+    radius: int = Query(default=bus.DEFAULT_STOP_RADIUS_METERS, ge=200, le=5_000),
+    limit: int = Query(default=15, ge=1, le=50),
+) -> dict[str, Any]:
+    """Trạm xe buýt gần (xếp theo thời gian ĐI BỘ thật) kèm các tuyến dừng ở
+    trạm; có ``q`` thì tìm trạm theo tên khắp thành phố."""
+    return bus.search_stops(latitude=lat, longitude=lng, query=q, radius=radius, limit=limit)
 
 
 @app.get("/api/v1/parking/{poi_id}")
