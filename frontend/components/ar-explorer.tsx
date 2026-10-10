@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } 
 import {
   Camera,
   CameraOff,
+  ChevronLeft,
+  ChevronRight,
   Coffee,
   Compass,
   Footprints,
@@ -544,6 +546,11 @@ export function ArExplorer({
   }, [placed, pose, viewport, radius]);
 
   const selected = placed.find((poi) => poi.id === selectedId) ?? null;
+  const selectedOffset = selected ? wrap180(selected.bearing - pose.heading) : 0;
+  const turnTo = (bearing: number) => {
+    const h = toRad(bearing);
+    smoothRef.current = { x: Math.sin(h), y: Math.cos(h), pitch: smoothRef.current?.pitch ?? pose.pitch };
+  };
   const checkedIds = useMemo(
     () => new Set((checkInSummary?.checkins ?? []).map((item) => item.poiId)),
     [checkInSummary],
@@ -757,7 +764,14 @@ export function ArExplorer({
                   }}
                   aria-label={`${poi.name}, ${formatMeters(poi.distance)}`}
                   className="pointer-events-auto absolute flex max-w-[150px] origin-bottom flex-col items-center"
-                  style={{ left: x, top: y, transform: `translate(-50%, -100%) scale(${scale})` }}
+                  style={{
+                    left: x,
+                    top: y,
+                    transform: `translate(-50%, -100%) scale(${scale})`,
+                    // Gần nằm trên xa (làn bị kẹp có thể chồng thẻ), đang chọn trên cùng —
+                    // không thì thẻ ở xa che mất thẻ gần và bấm không trúng.
+                    zIndex: selectedId === poi.id ? 3_000 : 2_000 - Math.round(poi.distance),
+                  }}
                 >
                   <span
                     className={cn(
@@ -785,6 +799,30 @@ export function ArExplorer({
               );
             })}
           </div>
+
+          {/* Địa điểm đang chọn nằm ngoài khung hình: ghim ở mép màn hình chỉ hướng quay.
+              Máy kéo-để-xoay thì bấm vào là xoay thẳng tới đó. */}
+          {selected && !showBadges && Math.abs(selectedOffset) > viewport.fov / 2 - 8 && (
+            <button
+              type="button"
+              disabled={sensorMode !== 'drag'}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => turnTo(selected.bearing)}
+              className={cn(
+                'absolute top-[42%] z-20 flex max-w-[62%] items-center gap-1 rounded-full bg-emerald-500/90 px-2.5 py-1.5 text-xs font-semibold shadow-lg backdrop-blur disabled:pointer-events-none',
+                selectedOffset < 0 ? 'left-2' : 'right-2 flex-row-reverse',
+              )}
+              aria-label={`${selected.name} nằm ${selectedOffset < 0 ? 'bên trái' : 'bên phải'} ${Math.round(Math.abs(selectedOffset))} độ`}
+            >
+              {selectedOffset < 0 ? (
+                <ChevronLeft className="size-4 shrink-0" aria-hidden />
+              ) : (
+                <ChevronRight className="size-4 shrink-0" aria-hidden />
+              )}
+              <span className="truncate">{selected.name}</span>
+              <span className="shrink-0 text-white/80">{formatMeters(selected.distance)}</span>
+            </button>
+          )}
 
           {/* Gợi ý */}
           <div className="pointer-events-none absolute inset-x-0 bottom-44 z-20 flex flex-col items-center gap-2 px-4 text-center">
