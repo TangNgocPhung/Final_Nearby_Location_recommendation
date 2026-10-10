@@ -167,6 +167,7 @@ Cách sạch nhất là để máy chủ tự lấy từ OpenStreetMap:
 
 ```bash
 $COMPOSE --profile data run --rm osm-import
+$COMPOSE --profile data run --rm bus-import
 $COMPOSE --profile data run --rm search-index
 $COMPOSE --profile data run --rm graph-sync
 $COMPOSE --profile data run --rm feature-store
@@ -175,6 +176,21 @@ $COMPOSE --profile data run --rm feature-store
 `OSM_BBOX` trong `config/production.env` đã đặt `10.20,106.00,11.40,107.40`, khớp
 vùng phủ của ba đồ thị OSRM (dựng với `105.95,10.15,107.45,11.45`). Máy dev với
 bbox này có **15.988 POI**.
+
+`bus-import` nạp tuyến + trạm xe buýt (bảng `bus_routes`, `bus_route_stops`).
+Bỏ bước này thì ô "Tra cứu tuyến" luôn báo "Không có tuyến nào khớp" — migration
+chỉ tạo bảng rỗng. Nếu có `backend/results/bus_osm.json` (ảnh chụp Overpass
+~28 MB, bị `.gitignore` nên không đi theo git) thì nó nhập từ file đó, không cần
+mạng. Chưa có thì nó tải từ Overpass — truy vấn lớn, hay bị 504 — và lưu lại ảnh
+chụp cho lần sau. Nên chép sẵn ảnh chụp từ máy dev (cùng bbox):
+
+```bash
+# Trên máy dev
+scp backend/results/bus_osm.json <user>@<VPS>:~/nearby/backend/results/
+```
+
+Kiểm chứng: `curl -s "https://<PUBLIC_HOST>/api/v1/bus/lines?q=" | head -c 200`
+phải có `total` khác 0 (máy dev, ảnh chụp 2026-10-10: 368 lượt / 196 tuyến, 6.718 trạm).
 
 > `production.env.example` vẫn ghi bbox cũ `10.70,106.60,10.90,106.82` — hẹp hơn
 > nhiều, nhập theo đó sẽ mất khoảng 7 nghìn POI ngoài trung tâm. File

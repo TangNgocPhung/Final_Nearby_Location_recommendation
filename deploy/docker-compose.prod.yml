@@ -68,6 +68,9 @@ services:
   osm-import:
     <<: *ollama
 
+  bus-import:
+    <<: *ollama
+
   # Reindex tính embedding bge-m3 cho từng POI qua Ollama. Không có Ollama vẫn
   # index được, chỉ là thiếu vector — kênh Vector tắt, còn BM25 + PostGIS.
   search-index:
