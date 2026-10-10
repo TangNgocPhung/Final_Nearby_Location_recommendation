@@ -6,6 +6,7 @@ import { Bike, Car, Clock, LoaderCircle, MapPin, PlugZap, Zap, X } from 'lucide-
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { formatStreetAddress, type StreetAddress } from '@/lib/address';
 import { formatPrice, type ParkingResult } from '@/lib/parking';
 import { cn, formatMeters } from '@/lib/utils';
 
@@ -16,6 +17,7 @@ type Station = ParkingResult & {
   driveMinutes: number | null;
   driveMeters: number | null;
   network: string | null;
+  streetAddress?: StreetAddress | null;
 };
 
 type ChargingResponse = {
@@ -208,7 +210,11 @@ export function ChargingFinder({
                         <span className="block truncate text-sm font-medium">{station.name}</span>
                         <span className="block truncate text-muted-foreground">
                           {station.network ?? 'Chưa rõ mạng sạc'}
-                          {station.address ? ` · ${station.address}` : ''}
+                          {station.address
+                            ? ` · ${station.address}`
+                            : station.streetAddress
+                              ? ` · ~${formatStreetAddress(station.streetAddress)}`
+                              : ''}
                         </span>
                         <span className="mt-0.5 flex flex-wrap gap-x-2 text-muted-foreground">
                           <span>

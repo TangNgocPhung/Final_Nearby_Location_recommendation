@@ -167,6 +167,11 @@ def search_stations(
     for station in routed:
         station["network"] = network_of(station)
     routed.sort(key=lambda item: (item["driveMinutes"] is None, item["driveMinutes"] or 0, item["distanceMeters"]))
+    # Trạm sạc OSM gần như không có địa chỉ: chỉ với các trạm SẼ hiển thị, mượn
+    # tên đường sát trạm (ước lượng, có cache) — giống `rank_by_travel_time`.
+    for station in routed[:limit]:
+        if not station.get("address"):
+            station["streetAddress"] = directions.nearest_streets(station["latitude"], station["longitude"])
     return {
         "vehicle": vehicle,
         "network": network,

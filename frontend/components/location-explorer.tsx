@@ -150,6 +150,7 @@ import { authHeaders, useAuth } from '@/lib/auth';
 import { AccountMenu } from '@/components/account-menu';
 import type { AssistantOverlay } from '@/lib/assistant';
 import { cn, formatMeters } from '@/lib/utils';
+import { formatStreetAddress, type StreetAddress } from '@/lib/address';
 
 type Poi = {
   id: string;
@@ -531,6 +532,10 @@ type DirectionsResponse = {
   poiId: string;
   poiName: string;
   reason?: 'osrm-unavailable' | 'no-route';
+  destination?: {
+    address?: string | null;
+    streetAddress?: StreetAddress | null;
+  };
   route: {
     geometry: GeoJSON.LineString;
     distanceMeters: number;
@@ -546,6 +551,10 @@ type DirectionsResponse = {
 type RoutePlan = {
   poiId: string;
   poiName: string;
+  // Địa chỉ điểm đến: `address` là dữ liệu thật, `streetAddress` là tên đường
+  // sát điểm đó (ước lượng) khi POI không có địa chỉ.
+  destinationAddress: string | null;
+  destinationStreet: StreetAddress | null;
   geometry: GeoJSON.LineString;
   distanceMeters: number;
   durationMinutes: number;
@@ -1389,6 +1398,19 @@ export function LocationExplorer() {
     () => visiblePois.find((item) => item.id === selectedPoiId) ?? null,
     [visiblePois, selectedPoiId],
   );
+  // Địa chỉ hiện dưới tên điểm đến ở thẻ chỉ đường: địa chỉ thật nếu có, không
+  // thì tên đường sát điểm đó (đánh dấu "~" vì là ước lượng từ OSRM).
+  const directionsAddress = useMemo(() => {
+    if (!selectedPoi) return null;
+    if (selectedPoi.address) return selectedPoi.address;
+    if (route && route.poiId === selectedPoi.id) {
+      if (route.destinationAddress) return route.destinationAddress;
+      if (route.destinationStreet)
+        return `~${formatStreetAddress(route.destinationStreet)}`;
+    }
+    return null;
+  }, [selectedPoi, route]);
+
   useEffect(() => {
     // Bỏ lần chạy đầu: 'poi-001' được chọn sẵn lúc mở trang, không phải thao tác của người dùng.
     if (skipFirstSelectScrollRef.current) {
@@ -1479,6 +1501,8 @@ export function LocationExplorer() {
           // tuyến với địa điểm đang chọn.
           poiId: selectedPoiId,
           poiName: selectedPoiName,
+          destinationAddress: data.destination?.address ?? null,
+          destinationStreet: data.destination?.streetAddress ?? null,
           geometry: data.route.geometry,
           distanceMeters: data.route.distanceMeters,
           durationMinutes: data.route.durationMinutes,
@@ -4748,6 +4772,11 @@ export function LocationExplorer() {
                         Từ vị trí của bạn tới
                       </p>
                       <h2 className="text-lg font-bold">{selectedPoi.name}</h2>
+                      {directionsAddress && (
+                        <p className="mt-0.5 text-sm text-muted-foreground">
+                          {directionsAddress}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-start gap-1">

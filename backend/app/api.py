@@ -1286,6 +1286,16 @@ def bus_route(route_id: int) -> Any:
     return detail
 
 
+@app.get("/api/v1/bus/stops/around")
+def bus_stops_around(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    radius: int = Query(default=600, ge=50, le=5_000),
+) -> list[dict[str, Any]]:
+    """Trạm xe buýt quanh một điểm, GẦN NHẤT trước — nhẹ, cho chế độ AR."""
+    return bus.stops_around(lat, lng, radius)
+
+
 @app.get("/api/v1/bus/stops")
 def bus_stops(
     lat: float = Query(ge=-90, le=90),
