@@ -267,3 +267,91 @@ def test_tai_tro_khac_loai_khong_duoc_chen_vao_top() -> None:
     ordered = insert_sponsored(results, intent_categories=RESTAURANT)
 
     assert [item["id"] for item in ordered] == ["r0", "r1", "r2", "g-tt"]
+
+
+# --- truy vấn nêu loại KÈM tên riêng (đo 2026-10-10) ----------------------------
+#
+# "nhà thờ Đức Bà" quanh Quận 1: "nhà thờ" là từ khoá loại place_of_worship, mà
+# POI "Nhà thờ Đức Bà" lại gắn loại landmark, nên luật lệch loại đẩy nó ra sau
+# mọi nơi thờ tự và "Đền Sri Thenday Yutthapani" (chỉ khớp qua search_keywords,
+# gần hơn) lên hạng 1.
+
+WORSHIP = frozenset({"place_of_worship"})
+
+
+def named(poi_id: str, name: str, category: str, **kwargs) -> dict:
+    return {**candidate(poi_id, category, **kwargs), "name": name}
+
+
+def test_ten_chua_tron_cum_truy_van_thang_luat_lech_loai() -> None:
+    den_sri = named("den-sri", "Đền Sri Thenday Yutthapani", "place_of_worship", distance=244, text=0.15)
+    vinh_hoi = named("vinh-hoi", "Nhà thờ Vĩnh Hội", "place_of_worship", distance=1508, text=0.43)
+    duc_ba = named("duc-ba", "Nhà thờ Đức Bà", "landmark", distance=499, text=1.0)
+
+    ranked = rerank(
+        deepcopy([den_sri, vinh_hoi, duc_ba]),
+        has_query_text=True,
+        intent_categories=WORSHIP,
+        query_text="nhà thờ Đức Bà",
+    )
+
+    assert ranked[0]["id"] == "duc-ba"
+
+
+def test_chi_chua_phan_ten_rieng_thi_van_bi_ha() -> None:
+    """Đòi trọn cụm: "Nhà Sách Đức Bà Hoà Binh" (367 m) có "đức bà" nhưng không
+    phải thứ người dùng tìm khi gõ "nhà thờ Đức Bà"."""
+    nha_sach = named("nha-sach", "Nhà Sách Đức Bà Hoà Binh", "bookstore", distance=367, text=0.6)
+    den_sri = named("den-sri", "Đền Sri Thenday Yutthapani", "place_of_worship", distance=244, text=0.15)
+
+    ranked = rerank(
+        deepcopy([nha_sach, den_sri]),
+        has_query_text=True,
+        intent_categories=WORSHIP,
+        query_text="nhà thờ Đức Bà",
+    )
+
+    assert [item["id"] for item in ranked] == ["den-sri", "nha-sach"]
+
+
+def test_ten_khop_khong_dau_khi_ten_poi_khong_dau() -> None:
+    den_sri = named("den-sri", "Đền Sri Thenday Yutthapani", "place_of_worship", distance=244, text=0.15)
+    duc_ba = named("duc-ba", "Nha tho Duc Ba", "landmark", distance=499, text=1.0)
+
+    ranked = rerank(
+        deepcopy([den_sri, duc_ba]),
+        has_query_text=True,
+        intent_categories=WORSHIP,
+        query_text="nha tho duc ba",
+    )
+
+    assert ranked[0]["id"] == "duc-ba"
+
+
+def test_truy_van_thuan_loai_khong_mien_ha_hang_theo_ten() -> None:
+    """"quán bình dân" bỏ từ khoá loại xong là rỗng: không có tên riêng nào để
+    miễn, UBND vẫn phải đứng sau quán cơm."""
+    ubnd = named("ubnd", "Ủy ban nhân dân Phường 8", "government", distance=500, text=0.11)
+    quan_com = named("quan-com", "Cơm Tấm Cô Ba", "restaurant", distance=1200, text=1.0, rating=3.0)
+
+    ranked = rerank(
+        deepcopy([ubnd, quan_com]),
+        has_query_text=True,
+        intent_categories=RESTAURANT,
+        query_text="quán bình dân",
+    )
+
+    assert [item["id"] for item in ranked] == ["quan-com", "ubnd"]
+
+
+def test_truy_van_thuan_loai_khong_day_ten_chua_tu_khoa_len_dau() -> None:
+    """"cà phê" là thuần loại: quán tên "Cà phê X" xa hơn không được nhảy lên
+    trước quán cà phê gần hơn chỉ vì tên chứa từ khoá."""
+    gan = named("gan", "Highlands Coffee", "cafe", distance=100)
+    xa = named("xa", "Cà phê Vợt", "cafe", distance=1800)
+
+    ranked = rerank(
+        deepcopy([xa, gan]), has_query_text=True, intent_categories=frozenset({"cafe"}), query_text="cà phê"
+    )
+
+    assert [item["id"] for item in ranked] == ["gan", "xa"]

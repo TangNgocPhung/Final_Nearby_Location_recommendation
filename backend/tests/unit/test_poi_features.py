@@ -160,7 +160,9 @@ from app.poi_features import (  # noqa: E402
     CATEGORY_MAP,
     categories_for_query,
     category_keywords,
+    name_contains_phrase,
     osm_category,
+    query_names_a_place,
 )
 
 
@@ -268,6 +270,31 @@ def test_cho_co_dau_khong_bi_hieu_thanh_cho_mua_ban() -> None:
     assert categories_for_query("chợ Bến Thành") == ("market",)
     # Gõ không dấu thì vẫn so khớp không dấu như cũ.
     assert categories_for_query("cho ben thanh") == ("market",)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("nhà thờ Đức Bà", True),
+        ("nha tho duc ba", True),
+        ("chợ Bến Thành", True),
+        ("quán bình dân", False),
+        ("cà phê", False),
+        ("quán cà phê", False),
+        ("", False),
+    ],
+)
+def test_truy_van_con_ten_rieng_sau_khi_bo_tu_khoa_loai(query: str, expected: bool) -> None:
+    assert query_names_a_place(query) is expected
+
+
+def test_ten_chua_cum_giu_dau_khi_ca_hai_co_dau() -> None:
+    assert name_contains_phrase("Nhà thờ Đức Bà Sài Gòn", "nhà thờ Đức Bà")
+    assert name_contains_phrase("Nha tho Duc Ba", "nhà thờ Đức Bà")
+    assert not name_contains_phrase("Phố Phở Hà Nội", "phở phố cổ")
+    # "phố" có dấu khác "phở": cả hai cùng có dấu thì không được gộp.
+    assert not name_contains_phrase("Phố đi bộ", "phở")
+    assert not name_contains_phrase("Nhà Sách Đức Bà Hoà Binh", "nhà thờ Đức Bà")
 
 
 def test_tu_khoa_mot_am_tiet_khop_theo_ranh_gioi_tu() -> None:

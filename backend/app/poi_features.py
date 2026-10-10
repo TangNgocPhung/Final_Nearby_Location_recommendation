@@ -558,6 +558,44 @@ def categories_for_query(query_text: str | None) -> tuple[str, ...]:
     return tuple(sorted(matched))
 
 
+def query_names_a_place(query_text: str | None) -> bool:
+    """Truy vấn còn lại chữ nào sau khi bỏ hết từ khoá loại trong `CATEGORY_KEYWORDS`.
+
+    "nhà thờ Đức Bà" còn "đức bà" — phần tên riêng, nên truy vấn đang gọi TÊN
+    một nơi cụ thể chứ không chỉ hỏi loại. "quán bình dân", "cà phê" bỏ từ khoá
+    xong thì rỗng: thuần hỏi loại. So khớp theo cùng dạng chữ (giữ dấu hay
+    không) với `categories_for_query`.
+    """
+    if not normalize_text(query_text):
+        return False
+    keyword_form = _lower_words if _has_vietnamese_marks(query_text or "") else normalize_text
+    remaining = f" {keyword_form(query_text or '')} "
+    keywords = {keyword_form(k) for keywords in CATEGORY_KEYWORDS.values() for k in keywords}
+    # Dài trước để "quán bình dân" bị bỏ trọn chứ không chỉ còn "quán" sau khi
+    # "bình dân" đi trước; lặp vì `replace` không chồng lấn nên hai từ khoá
+    # liền nhau dùng chung một dấu cách sẽ sót cái thứ hai.
+    for keyword in sorted(keywords, key=len, reverse=True):
+        while f" {keyword} " in remaining:
+            remaining = remaining.replace(f" {keyword} ", " ")
+    return bool(remaining.strip())
+
+
+def name_contains_phrase(name: str | None, phrase: str | None) -> bool:
+    """Tên chứa trọn cụm `phrase`, theo ranh giới từ.
+
+    Giữ dấu khi CẢ HAI cùng có dấu — "phở" không được khớp "Phố" (lỗi đã sửa ở
+    đường tìm kiếm). Một bên không dấu (tên OSM gõ "Nha tho Duc Ba", hay người
+    dùng gõ không dấu) thì so trên dạng bỏ dấu, nếu không sẽ không bao giờ khớp.
+    """
+    if not normalize_text(phrase) or not normalize_text(name):
+        return False
+    if _has_vietnamese_marks(phrase or "") and _has_vietnamese_marks(name or ""):
+        form = _lower_words
+    else:
+        form = normalize_text
+    return f" {form(phrase or '')} " in f" {form(name or '')} "
+
+
 def _lower_words(value: str) -> str:
     """Chữ thường, GIỮ dấu, mọi ký tự không phải chữ/số thành một dấu cách."""
     return re.sub(r"[\W_]+", " ", unicodedata.normalize("NFC", value).lower()).strip()
