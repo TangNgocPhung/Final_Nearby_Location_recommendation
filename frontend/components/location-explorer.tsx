@@ -161,6 +161,8 @@ type Poi = {
   popularityScore: number;
   distanceMeters?: number;
   reason?: string;
+  /** Chỉ /recommendations: địa điểm nằm ở ô H3 người dùng chưa từng đi qua. */
+  unexplored?: boolean;
   openNow?: boolean | null;
   closesInMinutes?: number | null;
   opensInMinutes?: number | null;
@@ -849,6 +851,7 @@ function renderPoiIcon(icon: LucideIcon): ImageData | null {
 
 // Số chip danh mục hiện khi thu gọn — vừa đủ hai hàng trong cột 430px.
 const COLLAPSED_CATEGORY_COUNT = 7;
+const RADIUS_OPTIONS = [1_000, 3_000, 5_000, 10_000] as const;
 // Độ trễ giữa các lần thử lại `/api/v1/categories` khi backend chưa sẵn sàng.
 const CATEGORY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
 
@@ -1136,6 +1139,16 @@ export function LocationExplorer() {
     active: fogOn,
   });
   const recordExploration = exploration.record;
+  const exploredCellCount = exploration.overview?.cellCount ?? 0;
+  // Backend đã xếp theo độ liên quan; lấy chỗ gần nhất trong số chưa tới để làm
+  // đích cho người đang bật sương mù.
+  const nextFogTarget = useMemo(
+    () =>
+      recommendations
+        .filter((poi) => poi.unexplored)
+        .sort((a, b) => (a.distanceMeters ?? Infinity) - (b.distanceMeters ?? Infinity))[0] ?? null,
+    [recommendations],
+  );
 
   // Chế độ sương mù có GPS RIÊNG, không dùng "Theo dõi vị trí": cái đó còn gửi
   // ping telemetry, còn sương mù chỉ ghi ô — bật cái này không được kéo theo
@@ -1970,8 +1983,11 @@ export function LocationExplorer() {
           session_id: telemetryState.sessionId,
           limit: '6',
         });
+        // Header để backend nhận ra chủ sở hữu (tài khoản hoặc phiên) và biết
+        // vùng nào người dùng đã đi qua — xem `exploration.mix_unexplored`.
         const response = await fetch(
           `${API_BASE_URL}/api/v1/recommendations?${params}`,
+          { headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined },
         );
         if (!response.ok) return;
         const data = (await response.json()) as RecommendationsResponse;
@@ -1983,7 +1999,8 @@ export function LocationExplorer() {
     return () => {
       cancelled = true;
     };
-  }, [telemetryState.sessionId, position.latitude, position.longitude]);
+    // Mở thêm ô mới thì danh sách "vùng chưa tới" đổi theo.
+  }, [telemetryState.sessionId, position.latitude, position.longitude, authToken, exploredCellCount]);
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
@@ -2707,7 +2724,7 @@ export function LocationExplorer() {
     const handleFinalError = (error: GeolocationPositionError) => {
       if (error.code === error.PERMISSION_DENIED) {
         setGpsStatus('Quyền vị trí đang bị chặn trong trình duyệt');
-        setStatus('Hãy cho phép quyền vị trí rồi tải lại trang');
+        setStatus('Vị trí đang bị chặn — bật lại trong cài đặt trình duyệt');
       } else {
         setGpsStatus('Không lấy được vị trí từ thiết bị hoặc mạng');
         setStatus(
@@ -2987,6 +3004,8 @@ export function LocationExplorer() {
       },
     });
     setShowSteps(true);
+    // Chỉ đường bấm từ danh sách kết quả: tuyến vẽ trên bản đồ nên phải sang đó.
+    showMapOnMobile();
     if (selectedPoiId !== poi.id) {
       // "Chỉ đường" trong panel chi tiết có thể thuộc một POI chưa được chọn
       // (deep link, địa điểm tương tự). Tuyến chỉ tính cho POI đang chọn, nên
@@ -3282,17 +3301,19 @@ export function LocationExplorer() {
               mobileView !== 'search' && 'max-lg:hidden',
             )}
           >
-            <CardHeader className="px-4 pt-4 pb-2 sm:px-5 sm:pt-5 sm:pb-3">
+            {/* Điện thoại: bỏ dòng mô tả và biểu tượng trang trí để ô tìm kiếm,
+                bán kính và các tiện ích hiện đủ trong MỘT màn hình, không phải cuộn. */}
+            <CardHeader className="px-4 pt-4 pb-2 max-lg:pt-3 max-lg:pb-0 sm:px-5 sm:pt-5 sm:pb-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <CardTitle className="text-[22px] font-bold tracking-tight">
                     Bạn muốn đi đâu?
                   </CardTitle>
-                  <CardDescription>
+                  <CardDescription className="max-lg:hidden">
                     Tìm địa điểm phù hợp trong vài giây.
                   </CardDescription>
                 </div>
-                <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-50 text-primary ring-1 ring-emerald-600/10 dark:from-emerald-500/20 dark:to-teal-500/5 dark:ring-emerald-400/15">
+                <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-50 text-primary ring-1 ring-emerald-600/10 max-lg:hidden dark:from-emerald-500/20 dark:to-teal-500/5 dark:ring-emerald-400/15">
                   <Sparkles className="size-5" />
                 </div>
               </div>
@@ -3341,7 +3362,7 @@ export function LocationExplorer() {
                         setSuggestionsOpen(false);
                       }
                     }}
-                    placeholder="Cà phê, phở, công viên…"
+                    placeholder="Cà phê, phở, ATM…"
                     aria-label="Từ khóa tìm kiếm"
                     // Input bọc một <input> thật; role="combobox" là mẫu ARIA
                     // combobox chuẩn (kèm aria-controls/aria-activedescendant
@@ -3442,70 +3463,80 @@ export function LocationExplorer() {
                 </Button>
               </form>
               <div className="flex items-center justify-between gap-3 rounded-2xl bg-emerald-50/70 px-3.5 py-2 ring-1 ring-emerald-600/[0.06] dark:bg-white/5 dark:ring-white/5">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <SlidersHorizontal className="size-4 text-primary" />
+                <div className="flex shrink-0 items-center gap-2 text-sm font-medium whitespace-nowrap">
+                  <SlidersHorizontal className="size-4 text-primary max-sm:hidden" />
                   <span>Bán kính</span>
                 </div>
-                <select
-                  className="cursor-pointer rounded-xl border border-emerald-950/10 bg-white px-3 py-1.5 text-sm font-medium shadow-[0_1px_2px_rgb(14_68_48/6%)] outline-none focus:ring-2 focus:ring-ring/40 dark:border-white/10 dark:bg-input/40"
-                  value={radius}
-                  onChange={(event) => {
-                    // Trước đây chỉ setRadius: bán kính mới chỉ có hiệu lực ở lần
-                    // bấm "Tìm" kế tiếp, nên đổi 1 km <-> 10 km trông như không
-                    // làm gì với danh sách đang hiện.
-                    const nextRadius = Number(event.target.value);
-                    setRadius(nextRadius);
-                    void runSearch(
-                      query,
-                      selectedCategory,
-                      undefined,
-                      nextRadius,
-                    );
-                  }}
+                {/* Bốn nút chọn thẳng thay cho <select>: một chạm thay vì mở hộp
+                    chọn của hệ điều hành rồi chạm lần nữa. */}
+                <fieldset
                   aria-label="Bán kính tìm kiếm"
+                  className="m-0 flex min-w-0 max-w-64 flex-1 gap-1 rounded-xl border-0 bg-white p-1 shadow-[0_1px_2px_rgb(14_68_48/6%)] ring-1 ring-emerald-950/10 dark:bg-input/40 dark:ring-white/10"
                 >
-                  <option value={1_000}>1 km</option>
-                  <option value={3_000}>3 km</option>
-                  <option value={5_000}>5 km</option>
-                  <option value={10_000}>10 km</option>
-                </select>
+                  {RADIUS_OPTIONS.map((meters) => (
+                    <button
+                      key={meters}
+                      type="button"
+                      aria-pressed={radius === meters}
+                      onClick={() => {
+                        if (meters === radius) return;
+                        // Trước đây chỉ setRadius: bán kính mới chỉ có hiệu lực ở
+                        // lần bấm "Tìm" kế tiếp, nên đổi 1 km <-> 10 km trông như
+                        // không làm gì với danh sách đang hiện.
+                        setRadius(meters);
+                        void runSearch(query, selectedCategory, undefined, meters);
+                      }}
+                      className={cn(
+                        'nearby-chip min-w-11 flex-1 rounded-lg px-1.5 py-1 text-sm font-semibold whitespace-nowrap tabular-nums transition-colors',
+                        radius === meters
+                          ? 'bg-primary text-primary-foreground shadow-sm'
+                          : 'text-foreground/70 hover:bg-muted',
+                      )}
+                    >
+                      {meters / 1000} km
+                    </button>
+                  ))}
+                </fieldset>
               </div>
+              {/* Điện thoại: MỘT hàng chip vuốt ngang, đủ mọi danh mục — thay
+                  cho lưới chip xuống dòng chiếm nửa màn hình và nút "+N danh
+                  mục". Từ lg vẫn là lưới xuống dòng thu gọn như cũ. */}
               {categoryOptions.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 hide-scrollbar sm:-mx-5 sm:px-5 lg:mx-0 lg:flex-wrap lg:overflow-visible lg:px-0 lg:pb-0">
                   <button
                     type="button"
                     onClick={() => {
                       setSelectedCategory(null);
                       void runSearch(query, null);
                     }}
-                    className={`inline-flex items-center gap-1.5 ${chipClass(
+                    className={`inline-flex shrink-0 items-center gap-1.5 ${chipClass(
                       selectedCategory === null,
                     )}`}
                   >
                     <LayoutGrid className="size-3.5" aria-hidden />
                     Tất cả
                   </button>
-                  {categoryOptions
-                    .filter(
-                      (option, index) =>
-                        categoriesExpanded ||
-                        index < COLLAPSED_CATEGORY_COUNT ||
-                        // Danh mục đang chọn luôn hiện, kể cả khi nằm ngoài
-                        // hai hàng đầu — không thì không biết đang lọc gì.
-                        option.category === selectedCategory,
-                    )
-                    .map((option) => {
+                  {categoryOptions.map((option, index) => {
                     // `aria-hidden` vì nhãn ngay bên cạnh đã nói đúng nội dung
                     // đó rồi; đọc thêm tên icon chỉ làm trình đọc màn hình lặp.
                     const Icon = categoryChipIcon(option.categoryLabel);
+                    // Chỉ ẩn ở lg+: dưới lg mọi chip luôn hiện trong hàng vuốt.
+                    // Danh mục đang chọn luôn hiện, kể cả khi nằm ngoài hai
+                    // hàng đầu — không thì không biết đang lọc gì.
+                    const hiddenOnDesktop =
+                      !categoriesExpanded &&
+                      index >= COLLAPSED_CATEGORY_COUNT &&
+                      option.category !== selectedCategory;
                     return (
                       <button
                         key={option.category}
                         type="button"
                         onClick={() => toggleCategory(option.category)}
-                        className={`inline-flex items-center gap-1.5 ${chipClass(
-                          selectedCategory === option.category,
-                        )}`}
+                        className={cn(
+                          'inline-flex shrink-0 items-center gap-1.5',
+                          chipClass(selectedCategory === option.category),
+                          hiddenOnDesktop && 'lg:hidden',
+                        )}
                       >
                         <Icon className="size-3.5" aria-hidden />
                         {option.categoryLabel}
@@ -3517,7 +3548,7 @@ export function LocationExplorer() {
                       type="button"
                       onClick={() => setCategoriesExpanded((current) => !current)}
                       aria-expanded={categoriesExpanded}
-                      className="nearby-chip inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
+                      className="nearby-chip inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/10 max-lg:hidden"
                     >
                       {categoriesExpanded
                         ? 'Thu gọn'
@@ -3531,9 +3562,26 @@ export function LocationExplorer() {
                   )}
                 </div>
               )}
-              <p className="text-xs text-muted-foreground" aria-live="polite">
-                {status}
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="min-w-0 text-xs text-muted-foreground" aria-live="polite">
+                  {status}
+                </p>
+                {/* Chưa có vị trí thì "gần bạn" chỉ là trung tâm TP.HCM — đưa
+                    thẳng nút xin quyền ra đây thay vì bắt người dùng tự đi tìm
+                    biểu tượng ở góc trên. */}
+                {!hasLocationConsent && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="shrink-0 gap-1.5 rounded-full px-3 text-xs font-semibold lg:hidden"
+                    onClick={requestCurrentLocation}
+                  >
+                    <LocateFixed className="size-4" aria-hidden />
+                    Dùng vị trí của tôi
+                  </Button>
+                )}
+              </div>
               {/* Dải tín hiệu CẤP TRUY VẤN — những thứ dùng chung cho cả lượt
                   tìm, không lặp lại trên từng dòng kết quả. Mỗi chip hoặc có số
                   kèm đơn vị, hoặc là một câu nói rõ vì sao chưa có dữ liệu.
@@ -3676,42 +3724,48 @@ export function LocationExplorer() {
                 [
                   {
                     label: 'Tìm chỗ gửi xe',
+                    short: 'Gửi xe',
                     Icon: CircleParking,
                     tone: 'bg-emerald-50 text-emerald-600 ring-emerald-600/10 dark:bg-emerald-500/15 dark:text-emerald-300',
                     open: () => setParkingOpen(true),
                   },
                   {
                     label: 'Trạm sạc xe điện',
+                    short: 'Trạm sạc',
                     Icon: Zap,
                     tone: 'bg-sky-50 text-sky-600 ring-sky-600/10 dark:bg-sky-500/15 dark:text-sky-300',
                     open: () => setChargingOpen(true),
                   },
                   {
                     label: 'Tìm trạm xăng',
+                    short: 'Trạm xăng',
                     Icon: Fuel,
                     tone: 'bg-amber-50 text-amber-600 ring-amber-600/10 dark:bg-amber-500/15 dark:text-amber-300',
                     open: () => setFuelOpen(true),
                   },
                   {
                     label: 'Cửa hàng tiện lợi',
+                    short: 'Tiện lợi',
                     Icon: Store,
                     tone: 'bg-blue-50 text-blue-600 ring-blue-600/10 dark:bg-blue-500/15 dark:text-blue-300',
                     open: () => setConvenienceOpen(true),
                   },
                   {
                     label: 'Nhà vệ sinh',
+                    short: 'Nhà vệ sinh',
                     Icon: Toilet,
                     tone: 'bg-teal-50 text-teal-600 ring-teal-600/10 dark:bg-teal-500/15 dark:text-teal-300',
                     open: () => setToiletOpen(true),
                   },
                   {
                     label: 'Xe buýt',
+                    short: 'Xe buýt',
                     Icon: Bus,
                     tone: 'bg-indigo-50 text-indigo-600 ring-indigo-600/10 dark:bg-indigo-500/15 dark:text-indigo-300',
                     open: () => setBusOpen(true),
                   },
                 ] as const
-              ).map(({ label, Icon, tone, open }) => (
+              ).map(({ label, short, Icon, tone, open }) => (
                 <Button
                   key={label}
                   type="button"
@@ -3719,18 +3773,19 @@ export function LocationExplorer() {
                   onClick={open}
                   className={cn(
                     'col-span-2',
-                    'glass-card group h-auto min-h-11 min-w-0 flex-col gap-2 rounded-2xl px-2 py-3 text-center text-[13px] leading-tight font-semibold whitespace-normal transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-white hover:shadow-[0_14px_32px_-10px_rgb(14_68_48/22%)] dark:hover:bg-card',
+                    'glass-card group h-auto min-h-11 min-w-0 flex-col gap-1.5 rounded-2xl px-2 py-2.5 text-center max-lg:text-xs lg:gap-2 lg:py-3 text-[13px] leading-tight font-semibold whitespace-normal transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-white hover:shadow-[0_14px_32px_-10px_rgb(14_68_48/22%)] dark:hover:bg-card',
                   )}
                 >
                   <span
                     className={cn(
-                      'grid size-10 place-items-center rounded-xl ring-1 transition-transform group-hover:scale-105',
+                      'grid size-9 place-items-center rounded-xl ring-1 transition-transform group-hover:scale-105 lg:size-10',
                       tone,
                     )}
                   >
                     <Icon className="size-5" aria-hidden />
                   </span>
-                  {label}
+                  <span className="lg:hidden">{short}</span>
+                  <span className="max-lg:hidden">{label}</span>
                 </Button>
               ))}
             </div>
@@ -3863,6 +3918,11 @@ export function LocationExplorer() {
                       <p className="truncate text-sm font-semibold">
                         {poi.name}
                       </p>
+                      {poi.unexplored && (
+                        <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                          <CloudFog className="size-3" aria-hidden /> Vùng mới
+                        </span>
+                      )}
                       <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
                         {poi.reason}
                       </p>
@@ -3898,16 +3958,19 @@ export function LocationExplorer() {
                   telemetry lúc impression — đó mới là số dùng để phân tích
                   position bias, và nó không cần khớp với số đang hiển thị. */}
               {pois.map((poi, index) => (
-                <button
-                  type="button"
+                <div
                   key={poi.id}
-                  onClick={() => focusPoi(poi)}
-                  aria-label={`Chọn địa điểm ${poi.name}`}
-                  className={`group w-full rounded-3xl border bg-white p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-14px_rgb(14_68_48/25%)] dark:bg-card ${
+                  className={`group w-full rounded-3xl border bg-white text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-14px_rgb(14_68_48/25%)] dark:bg-card ${
                     selectedPoiId === poi.id
                       ? 'border-primary/45 shadow-[0_12px_35px_rgb(15_138_98/14%)] ring-4 ring-primary/10'
                       : 'border-emerald-950/[0.08] shadow-[0_1px_2px_rgb(14_68_48/6%)] hover:border-primary/20 dark:border-white/10'
                   }`}
+                >
+                <button
+                  type="button"
+                  onClick={() => focusPoi(poi)}
+                  aria-label={`Chọn địa điểm ${poi.name}`}
+                  className="block w-full rounded-3xl p-4 text-left max-lg:p-3.5"
                 >
                   <div className="flex gap-3">
                     <div
@@ -3937,7 +4000,7 @@ export function LocationExplorer() {
                           {poi.categoryLabel}
                         </Badge>
                       </div>
-                      <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
+                      <p className="mt-2 line-clamp-2 text-sm text-muted-foreground max-lg:line-clamp-1">
                         {poi.description}
                       </p>
                       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -4035,6 +4098,29 @@ export function LocationExplorer() {
                     </div>
                   </div>
                 </button>
+                {/* Điện thoại: chỉ đường / xem chi tiết ngay trên thẻ, khỏi phải
+                    chạm thẻ để sang bản đồ rồi mới tìm nút. Nằm NGOÀI nút chọn
+                    thẻ — hai <button> lồng nhau là HTML sai. */}
+                <div className="flex gap-2 px-3.5 pb-3.5 lg:hidden">
+                  <Button
+                    type="button"
+                    className="flex-1 gap-1.5 rounded-xl"
+                    onClick={() => startNavigation(poi)}
+                  >
+                    <Route className="size-4" aria-hidden />
+                    Chỉ đường
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="flex-1 gap-1.5 rounded-xl"
+                    onClick={() => openDetail(poi.id, 'list')}
+                  >
+                    <Info className="size-4" aria-hidden />
+                    Chi tiết
+                  </Button>
+                </div>
+                </div>
               ))}
               {pois.length === 0 && (
                 <div className="rounded-3xl border border-dashed border-emerald-900/15 bg-white/60 p-8 text-center dark:border-white/15 dark:bg-card/60">
@@ -4121,8 +4207,23 @@ export function LocationExplorer() {
               AR
             </button>
           </div>
+          {/* Điện thoại: "Vị trí của tôi" nổi ở góc dưới phải — vùng ngón cái
+              chạm được bằng một tay, thay vì với lên biểu tượng ở góc trên màn
+              hình. Ẩn khi thẻ địa điểm đang chiếm đáy bản đồ. */}
+          {!selectedPoi && (
+            <button
+              type="button"
+              onClick={requestCurrentLocation}
+              aria-label="Vị trí của tôi"
+              title="Vị trí của tôi"
+              className="absolute bottom-16 right-3 z-10 grid size-12 place-items-center rounded-full border border-white/70 bg-white/95 text-primary shadow-[0_8px_24px_rgb(14_68_48/22%)] backdrop-blur-md transition-colors active:bg-emerald-50 lg:hidden dark:border-white/10 dark:bg-card/95"
+            >
+              <LocateFixed className="size-6" aria-hidden />
+            </button>
+          )}
           {fogOn && (
-            <div className="absolute left-3 top-[4.25rem] z-10 flex max-w-[calc(100%-9.5rem)] items-center gap-2 rounded-2xl border border-slate-900/20 bg-slate-900/90 px-3 py-2 text-white shadow-lg backdrop-blur-md lg:left-4 lg:top-16 lg:max-w-xs">
+            <div className="absolute left-3 top-[4.25rem] z-10 flex max-w-[calc(100%-9.5rem)] flex-col items-start gap-2 lg:left-4 lg:top-16 lg:max-w-xs">
+            <div className="flex w-full items-center gap-2 rounded-2xl border border-slate-900/20 bg-slate-900/90 px-3 py-2 text-white shadow-lg backdrop-blur-md">
               <CloudFog className="size-5 shrink-0 text-emerald-300" aria-hidden />
               <div className="min-w-0 text-xs leading-tight">
                 {fogGps === 'denied' ? (
@@ -4158,6 +4259,23 @@ export function LocationExplorer() {
                   <Trash2 className="size-4" aria-hidden />
                 </button>
               )}
+            </div>
+            {/* Cho sương mù một lý do để bật: chỗ hay gần nhất mà bạn chưa từng tới. */}
+            {fogGps !== 'denied' && nextFogTarget && (
+              <button
+                type="button"
+                onClick={() => spotlightPoi(nextFogTarget, 'recommendation')}
+                className="flex w-full items-center gap-2 rounded-2xl border border-white/70 bg-white/95 px-3 py-2 text-left text-xs shadow-lg backdrop-blur-md active:bg-emerald-50 dark:border-white/10 dark:bg-card/95"
+              >
+                <Sparkles className="size-4 shrink-0 text-primary" aria-hidden />
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold">Xua sương tại {nextFogTarget.name}</span>
+                  <span className="text-muted-foreground">
+                    Chưa từng tới · {formatMeters(nextFogTarget.distanceMeters)}
+                  </span>
+                </span>
+              </button>
+            )}
             </div>
           )}
           {/* Chỉ desktop: điện thoại đã chuyển màn bằng thanh tab dưới đáy. */}
@@ -4356,7 +4474,7 @@ export function LocationExplorer() {
                         aria-label={`Chỉ đường tới ${selectedPoi.name}`}
                         title="Chỉ đường"
                         onClick={() => startNavigation(selectedPoi)}
-                        className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+                        className="grid max-sm:hidden size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
                       >
                         <Route className="size-5" />
                       </button>
@@ -4515,22 +4633,26 @@ export function LocationExplorer() {
                       216-256px: không cho xuống dòng là nút thò ra ngoài viền thẻ,
                       đè lên bản đồ rồi bị overflow-hidden của khung bản đồ cắt cụt
                       chữ. Từ ~367px trở lên vẫn nằm gọn một hàng như cũ. */}
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  {/* Điện thoại: bốn thao tác phụ xếp một hàng, biểu tượng trên nhãn
+                      ngắn — thẻ thấp đi một hàng nên che bớt bản đồ. Từ sm trở lên
+                      giữ hàng nút nhãn dài như cũ. */}
+                  <div className="mt-2 grid grid-cols-4 gap-1.5 sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-2">
                     <Button
                       variant="secondary"
                       size="sm"
-                      className="shrink-0"
+                      className="shrink-0 max-sm:h-auto max-sm:flex-col max-sm:gap-0.5 max-sm:py-1.5 max-sm:text-[11px]"
                       onClick={() => openDetail(selectedPoi.id, 'overlay')}
                     >
                       <Info data-icon="inline-start" />
-                      Xem chi tiết
+                      <span className="sm:hidden">Chi tiết</span>
+                      <span className="max-sm:hidden">Xem chi tiết</span>
                     </Button>
                     <Button
                       variant={
                         savedByPoi.has(selectedPoi.id) ? 'default' : 'outline'
                       }
                       size="sm"
-                      className="shrink-0"
+                      className="shrink-0 max-sm:h-auto max-sm:flex-col max-sm:gap-0.5 max-sm:py-1.5 max-sm:text-[11px]"
                       title={
                         savedByPoi.has(selectedPoi.id)
                           ? 'Bỏ khỏi danh sách đã lưu'
@@ -4548,19 +4670,20 @@ export function LocationExplorer() {
                     <Button
                       variant="outline"
                       size="sm"
-                      className="shrink-0"
+                      className="shrink-0 max-sm:h-auto max-sm:flex-col max-sm:gap-0.5 max-sm:py-1.5 max-sm:text-[11px]"
                       title="Đặt địa điểm này làm nhà"
                       onClick={() => void toggleSaved(selectedPoi, 'home')}
                     >
                       <Home data-icon="inline-start" />
-                      Đặt làm nhà
+                      <span className="sm:hidden">Nhà</span>
+                      <span className="max-sm:hidden">Đặt làm nhà</span>
                     </Button>
                     <Button
                       variant={
                         geofences.has(selectedPoi.id) ? 'default' : 'outline'
                       }
                       size="sm"
-                      className="flex-1"
+                      className="flex-1 max-sm:h-auto max-sm:flex-col max-sm:gap-0.5 max-sm:py-1.5 max-sm:text-[11px]"
                       onClick={() => void toggleGeofence(selectedPoi)}
                     >
                       {geofences.has(selectedPoi.id) ? (
@@ -4568,9 +4691,14 @@ export function LocationExplorer() {
                       ) : (
                         <Bell data-icon="inline-start" />
                       )}
-                      {geofences.has(selectedPoi.id)
-                        ? 'Đang nhắc · 300 m'
-                        : 'Nhắc tôi khi tới gần'}
+                      <span className="sm:hidden">
+                        {geofences.has(selectedPoi.id) ? 'Đang nhắc' : 'Nhắc tôi'}
+                      </span>
+                      <span className="max-sm:hidden">
+                        {geofences.has(selectedPoi.id)
+                          ? 'Đang nhắc · 300 m'
+                          : 'Nhắc tôi khi tới gần'}
+                      </span>
                     </Button>
                   </div>
                   {geofences.size > 0 && (
