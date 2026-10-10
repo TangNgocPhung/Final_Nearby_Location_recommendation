@@ -60,6 +60,13 @@ x-backend-environment: &backend-environment
   # Thuyết minh POI + dịch giao diện 134 ngôn ngữ (app/translate.py) — cần
   # model đa ngôn ngữ. qwen3.5:9b hết RAM trên máy dev 15 GB, dùng bản 4b.
   OLLAMA_NARRATION_MODEL: ${OLLAMA_NARRATION_MODEL:-qwen3.5:4b}
+  # Thời gian Ollama giữ model trong RAM sau lượt gọi cuối. Máy dev 15 GB giữ
+  # 5m (lý do RAM ở app/config.py). VPS đặt dài hơn trong production.env: nạp
+  # lại llama3.2:3b/qwen3.5:4b từ đĩa mất 31-36s trên CPU (đo 2026-10-10), quá
+  # timeout của chat — người dùng đầu tiên sau 5 phút nghỉ luôn bị lỗi.
+  OLLAMA_EMBEDDING_KEEP_ALIVE: ${OLLAMA_EMBEDDING_KEEP_ALIVE:-5m}
+  OLLAMA_CHAT_KEEP_ALIVE: ${OLLAMA_CHAT_KEEP_ALIVE:-5m}
+  OLLAMA_VISION_KEEP_ALIVE: ${OLLAMA_VISION_KEEP_ALIVE:-5m}
   # VieNeu-TTS (Phase 16.2) tải model ONNX nhiều file qua huggingface_hub, có
   # dùng "external data" (trọng số lớn tách khỏi file .onnx chính). Cache mặc
   # định của huggingface_hub dùng symlink trỏ vào blobs/<hash khác nhau> cho
