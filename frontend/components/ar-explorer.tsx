@@ -98,6 +98,8 @@ const CHECKIN_RADIUS = 50;
 /** Xa hơn mức này thì kể cả khu đất rộng nhất (công viên 350 m + sai số) cũng
  *  không đạt — khoá nút luôn, đỡ một request chắc chắn bị từ chối. */
 const CHECKIN_HOPELESS_METERS = 400;
+/** Tự check-in bị từ chối tạm thời (too_far/lỗi mạng) thì chờ chừng này mới thử lại. */
+const AUTO_RETRY_MS = 15_000;
 const REFETCH_AFTER_METERS = 40;
 const MAX_CARDS = 14;
 const LANE_HEIGHT = 70;
@@ -194,6 +196,8 @@ export function ArExplorer({
   const smoothRef = useRef<{ x: number; y: number; pitch: number } | null>(null);
   const dragRef = useRef<{ x: number; y: number; heading: number; pitch: number } | null>(null);
   const fetchedAtRef = useRef<Position | null>(null);
+  // poiId -> thời điểm (ms) được phép thử tự check-in lại; Infinity = không thử nữa.
+  const autoTriedRef = useRef(new Map<string, number>());
 
   useWakeLock(started);
 
@@ -517,9 +521,13 @@ export function ArExplorer({
     return () => clearTimeout(timer);
   }, [notice]);
 
-  const checkIn = async (poi: Placed) => {
+  const checkIn = async (poi: Placed, auto = false) => {
     if (!gps || !sessionId) return;
     setCheckingIn(poi.id);
+    // Tự check-in chạy ngầm: chỉ báo khi THÀNH CÔNG, mọi kết quả khác im lặng và
+    // được hẹn giờ thử lại (hoặc bỏ hẳn) — người dùng chưa hề bấm gì nên không
+    // được nhảy thông báo lỗi.
+    const retryLater = () => autoTriedRef.current.set(poi.id, Date.now() + AUTO_RETRY_MS);
     try {
       const response = await fetch(`${apiBaseUrl}/api/v1/checkins`, {
         method: 'POST',
@@ -532,7 +540,8 @@ export function ArExplorer({
         }),
       });
       if (!response.ok) {
-        setNotice({ text: 'Không check-in được lúc này — thử lại sau', tone: 'info' });
+        if (auto) retryLater();
+        else setNotice({ text: 'Không check-in được lúc này — thử lại sau', tone: 'info' });
         return;
       }
       const result = (await response.json()) as CheckInResponse;
@@ -547,19 +556,51 @@ export function ArExplorer({
           tone: 'success',
         });
       } else if (result.status === 'already') {
-        setNotice({ text: 'Bạn đã check-in nơi này rồi', tone: 'info' });
+        if (!auto) setNotice({ text: 'Bạn đã check-in nơi này rồi', tone: 'info' });
       } else if (result.status === 'too_far') {
-        const left = Math.max(1, (result.distanceMeters ?? 0) - (result.allowedMeters ?? 0));
-        setNotice({ text: `Còn cách khoảng ${formatMeters(left)} — đi gần thêm rồi thử lại`, tone: 'info' });
+        // GPS đang cho là gần nhưng server đo vẫn xa: thử lại khi GPS đã ổn định.
+        if (auto) retryLater();
+        else {
+          const left = Math.max(1, (result.distanceMeters ?? 0) - (result.allowedMeters ?? 0));
+          setNotice({ text: `Còn cách khoảng ${formatMeters(left)} — đi gần thêm rồi thử lại`, tone: 'info' });
+        }
       } else if (result.status === 'not_allowed') {
-        setNotice({ text: 'Loại địa điểm này không tính check-in', tone: 'info' });
+        // Bệnh viện, nhà thuốc… không bao giờ tính — đừng hỏi lại.
+        if (auto) autoTriedRef.current.set(poi.id, Infinity);
+        else setNotice({ text: 'Loại địa điểm này không tính check-in', tone: 'info' });
       }
     } catch {
-      setNotice({ text: 'Mất kết nối — check-in chưa được ghi', tone: 'info' });
+      if (auto) retryLater();
+      else setNotice({ text: 'Mất kết nối — check-in chưa được ghi', tone: 'info' });
     } finally {
       setCheckingIn(null);
     }
   };
+
+  // Tự check-in khi đứng trong CHECKIN_RADIUS của một nơi chưa khám phá — không
+  // bắt người dùng bấm nút. Server vẫn là bên quyết định (đo lại bằng PostGIS),
+  // khoảng cách ở đây chỉ để biết lúc nào đáng gửi. Mỗi nơi chỉ gửi một lần cho
+  // tới khi có kết quả; lỗi/too_far thì thử lại sau AUTO_RETRY_MS.
+  const checkInRef = useRef(checkIn);
+  useEffect(() => {
+    checkInRef.current = checkIn;
+  });
+  useEffect(() => {
+    if (!started || !gps || !sessionId || checkingIn !== null) return;
+    const now = Date.now();
+    const target = placed.find(
+      (poi) =>
+        poi.distance <= CHECKIN_RADIUS &&
+        !checkedIds.has(poi.id) &&
+        now >= (autoTriedRef.current.get(poi.id) ?? 0),
+    );
+    if (!target) return;
+    // Đặt mốc NGAY (trước khi gọi): GPS báo mỗi giây, effect chạy lại liên tục.
+    // Lỗi/too_far thì checkIn ghi đè bằng mốc thử lại; thành công/already thì
+    // `checkedIds` đã chứa nơi này nên Infinity vô hại.
+    autoTriedRef.current.set(target.id, Infinity);
+    void checkInRef.current(target, true);
+  }, [started, gps, sessionId, checkingIn, placed, checkedIds]);
 
   const discovered = checkInSummary?.total ?? 0;
   const flatPhone = sensorMode === 'device' && pose.pitch < -50;
@@ -647,7 +688,7 @@ export function ArExplorer({
             </span>
             <h2 className="mt-4 text-lg font-semibold">Giơ điện thoại lên để khám phá</h2>
             <p className="mt-2 text-sm text-white/75">
-              Địa điểm quanh bạn sẽ hiện đúng hướng trên camera. Đi tới gần (≤ {CHECKIN_RADIUS} m) để check-in,
+              Địa điểm quanh bạn sẽ hiện đúng hướng trên camera. Đi tới gần (≤ {CHECKIN_RADIUS} m) là tự check-in,
               mở khoá huy hiệu và xua sương mù trên bản đồ.
             </p>
             <p className="mt-3 text-xs text-white/55">
