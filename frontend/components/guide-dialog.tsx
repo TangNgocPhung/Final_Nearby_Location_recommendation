@@ -180,8 +180,9 @@ function ChapterBody({ chapterKey }: { chapterKey: string }) {
 
   if (chapterKey === 'tips') {
     return (
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="rounded-xl border bg-muted/40 p-4">
+      <div className="grid gap-4 pointer-fine:sm:grid-cols-2">
+        {/* Phím tắt chỉ có nghĩa khi có bàn phím + chuột; ẩn trên thiết bị cảm ứng */}
+        <div className="hidden rounded-xl border bg-muted/40 p-4 pointer-fine:block">
           <h4 className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
             <Keyboard className="size-4" />
             Phím tắt
