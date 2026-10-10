@@ -195,6 +195,27 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Tuyến + trạm xe buýt (app/bus.py). Có ảnh chụp backend/results/bus_osm.json
+  # thì nhập từ đó; chưa có thì tải từ Overpass theo OSM_BBOX rồi lưu lại ảnh
+  # chụp — truy vấn ~28 MB này Overpass hay trả 504, nên lần sau khỏi tải lại.
+  # Mỗi lần chạy THAY TOÀN BỘ dữ liệu xe buýt. Muốn tải mới thì xoá ảnh chụp.
+  bus-import:
+    profiles: ["data"]
+    build: ./backend
+    command:
+      [
+        "sh",
+        "-c",
+        "if [ -f results/bus_osm.json ]; then python -m scripts.import_bus_routes --input results/bus_osm.json; else python -m scripts.import_bus_routes --save-raw results/bus_osm.json; fi",
+      ]
+    environment:
+      <<: *backend-environment
+    volumes:
+      - ./backend/results:/app/results
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   search-index:
     profiles: ["data"]
     build: ./backend
