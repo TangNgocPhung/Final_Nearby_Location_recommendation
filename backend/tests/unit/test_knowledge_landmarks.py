@@ -1,4 +1,4 @@
-"""Nội dung `poi_knowledge` của migration 0028 — khoá quy ước "có nguồn mới được vào".
+"""Nội dung `poi_knowledge` của các migration 0028 và 0040 — khoá quy ước "có nguồn mới được vào".
 
 Dữ liệu là literal trong file migration, nên kiểm được không cần database:
 mỗi claim phải có URL nguồn và `verified`, loại nội dung phải là loại Săn địa
@@ -13,28 +13,47 @@ import pytest
 
 from app import explore
 
-_PATH = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0028_poi_knowledge_landmarks.py"
-_spec = importlib.util.spec_from_file_location("migration_0028", _PATH)
-_module = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_module)
-ROWS = _module.ROWS
-
+_VERSIONS = Path(__file__).resolve().parents[2] / "migrations" / "versions"
 _URL = re.compile(r"^https?://\S+$")
 
 
-def test_revision_id_fits_alembic_version_column():
+def _load(filename: str, label: str):
+    spec = importlib.util.spec_from_file_location(label, _VERSIONS / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# (module, số dòng tối thiểu)
+_MODULES = {
+    "0028": (_load("0028_poi_knowledge_landmarks.py", "migration_0028"), 30),
+    "0040": (_load("0040_poi_knowledge_more_sg.py", "migration_0040"), 15),
+}
+_ALL_ROWS = [(key, row) for key, (module, _) in _MODULES.items() for row in module.ROWS]
+
+
+@pytest.mark.parametrize("key", _MODULES)
+def test_revision_id_fits_alembic_version_column(key):
     # alembic_version.version_num là varchar(32): vượt thì migration chết ở bước ghi phiên bản.
-    assert len(_module.revision) <= 32
+    assert len(_MODULES[key][0].revision) <= 32
 
 
-def test_rows_are_unique_and_nonempty():
-    names = [row[0] for row in ROWS]
-    assert len(ROWS) >= 30
+@pytest.mark.parametrize("key", _MODULES)
+def test_rows_are_unique_and_nonempty(key):
+    module, minimum = _MODULES[key]
+    names = [row[0] for row in module.ROWS]
+    assert len(module.ROWS) >= minimum
     assert len(set(names)) == len(names)
 
 
-@pytest.mark.parametrize("row", ROWS, ids=[row[0] for row in ROWS])
-def test_every_row_is_sourced(row):
+def test_migrations_do_not_overlap():
+    # Hai migration không được gắn bài cho cùng một địa danh (tên + chỗ gần nhau).
+    seen = [(row[0], row[2], row[3]) for _, row in _ALL_ROWS]
+    assert len({name for name, _, _ in seen}) == len(seen)
+
+
+@pytest.mark.parametrize("key,row", _ALL_ROWS, ids=[f"{key}:{row[0]}" for key, row in _ALL_ROWS])
+def test_every_row_is_sourced(key, row):
     name, categories, lat, lon, content_type, intro, intro_source, _spec_, context, context_source, events, facts = row
     assert content_type in explore.HUNTABLE_CONTENT_TYPES
     assert categories and 10.3 <= lat <= 11.3 and 106.3 <= lon <= 107.1
