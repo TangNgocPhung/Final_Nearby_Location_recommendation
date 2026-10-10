@@ -237,3 +237,188 @@ def test_the_bai_xe_va_tram_sac():
     assert second["detail"] == "3 phút đi bộ · ~45.000đ cho 3 giờ (tham khảo)"
     charging_found = {"mode": "motorbike", "results": [{"id": "c", "name": "Trạm", "network": "VinFast / V-Green", "driveMinutes": 2, "hours": {}}]}
     assert chat_tools._charging_cards(charging_found)[0]["categoryLabel"] == "Trạm sạc VinFast / V-Green"
+
+
+# --- Xe buýt ---------------------------------------------------------------------
+
+
+def test_nhan_so_tuyen_xe_buyt_moi_cach_noi():
+    assert chat_tools.detect_bus("xe buýt số 14 chạy mấy giờ") == {"mode": "line", "ref": "14", "ask": "info"}
+    assert chat_tools.detect_bus("tuyến 01")["ref"] == "01"
+    assert chat_tools.detect_bus("xe 1 chạy mấy giờ")["ref"] == "1"
+    assert chat_tools.detect_bus("xe số 14")["ref"] == "14"
+    assert chat_tools.detect_bus("bus 60-1 giá vé bao nhiêu")["ref"] == "60-1"
+    assert chat_tools.detect_bus("tuyến xe buýt 156d")["ref"] == "156D"
+    assert chat_tools.detect_bus("tuyến 52 đi qua những đâu?")["ask"] == "route"
+    assert chat_tools.detect_bus("xe buýt 14 bao lâu nữa tới")["ask"] == "arrival"
+
+
+def test_xe_buyt_theo_ten_ben_va_tram_gan():
+    assert chat_tools.detect_bus("trạm xe buýt gần tôi có tuyến nào?") == {"mode": "stops", "query": ""}
+    assert chat_tools.detect_bus("xe buýt gần đây") == {"mode": "stops", "query": ""}
+    assert chat_tools.detect_bus("trạm xe buýt Bến Thành") == {"mode": "stops", "query": "Bến Thành"}
+    assert chat_tools.detect_bus("xe buýt nào đi Suối Tiên") == {"mode": "lines", "query": "Suối Tiên"}
+
+
+def test_khong_nham_cau_khong_phai_xe_buyt():
+    assert chat_tools.detect_bus("quán cà phê gần trạm xe buýt") is None
+    assert chat_tools.detect_bus("thuê xe 7 chỗ") is None
+    assert chat_tools.detect_bus("cà phê quận 1") is None
+    assert chat_tools.detect_bus("cây xăng gần nhất") is None
+
+
+def _bus_direction(route_id: str, origin: str, destination: str, length: int, minutes: int, source: str = "estimate") -> dict:
+    return {
+        "id": route_id,
+        "name": f"{origin} - {destination}",
+        "origin": origin,
+        "destination": destination,
+        "lengthMeters": length,
+        "tripMinutes": minutes,
+        "tripMinutesSource": source,
+        "streets": ["Đinh Bộ Lĩnh", "Điện Biên Phủ", "Đinh Bộ Lĩnh"],
+        "path": {"type": "MultiLineString", "coordinates": [[[106.71, 10.81], [106.62, 10.74]]]},
+        "stops": [
+            {"id": "1", "name": origin, "latitude": 10.81, "longitude": 106.71},
+            {"id": "2", "name": destination, "latitude": 10.74, "longitude": 106.62},
+        ],
+    }
+
+
+def _bus_14(running_now: bool | None = True, **hours) -> dict:
+    return {
+        "ref": "14",
+        "name": "Bến xe Miền Đông – Bến xe Miền Tây",
+        "charge": 6000,
+        "interval": {"minMinutes": 6, "maxMinutes": 12},
+        "hours": {"raw": "Mo-Su 04:00-20:30", "firstTrip": "04:00", "lastTrip": "20:30", "runningNow": running_now, **hours},
+        "selectedId": "17379412",
+        "directions": [
+            _bus_direction("17379412", "Bến xe Miền Đông", "Bến xe Miền Tây", 16661, 56),
+            _bus_direction("17379413", "Bến xe Miền Tây", "Bến xe Miền Đông", 15963, 53),
+        ],
+    }
+
+
+def _mock_bus(monkeypatch, detail: dict, refs: tuple[str, ...] = ("14", "140")) -> list:
+    calls = []
+    lines = [{"ref": ref, "name": "", "directions": [{"id": "17379412" if ref == "14" else "9"}]} for ref in refs]
+    monkeypatch.setattr(chat_tools.bus, "search_lines", lambda query, limit=60: {"total": len(lines), "lines": lines})
+
+    def route_detail(route_id, at=None):
+        calls.append(route_id)
+        return detail
+
+    monkeypatch.setattr(chat_tools.bus, "route_detail", route_detail)
+    return calls
+
+
+def test_tra_loi_gio_chay_gian_cach_gia_ve_tuyen_14(monkeypatch):
+    calls = _mock_bus(monkeypatch, _bus_14())
+    reply, overlay, replies = chat_tools.bus_answer(chat_tools.detect_bus("xe buýt số 14 chạy mấy giờ"), 10.77, 106.70, NOW)
+    assert calls == [17379412]
+    assert "chạy từ 04:00 đến 20:30, giờ này đang chạy" in reply
+    assert "Cứ 6–12 phút có một chuyến, vé 6.000đ." in reply
+    assert "Bến xe Miền Đông → Bến xe Miền Tây: 16,7 km, khoảng 56 phút (ước tính)" in reply
+    assert "lượt về Bến xe Miền Tây → Bến xe Miền Đông: 16,0 km" in reply
+    # Không có dữ liệu thời gian thực thì không được hứa giờ xe tới.
+    assert "phút nữa" not in reply
+    assert overlay["line"]["type"] == "MultiLineString"
+    assert [point["label"] for point in overlay["points"]] == ["A", "B"]
+    # Câu gợi ý bấm-là-gửi phải quay lại đúng công cụ xe buýt.
+    assert all(chat_tools.detect_bus(text) is not None for text in replies)
+
+
+def test_tuyen_1_khop_01(monkeypatch):
+    _mock_bus(monkeypatch, {**_bus_14(), "ref": "01"}, refs=("10", "01"))
+    reply, _, _ = chat_tools.bus_answer({"mode": "line", "ref": "1", "ask": "info"}, 10.77, 106.70, NOW)
+    assert reply.startswith("Tuyến 01 ")
+
+
+def test_tuyen_ngoai_tphcm_noi_ro_mang(monkeypatch):
+    _mock_bus(monkeypatch, {**_bus_14(), "ref": "02", "network": "Xe buýt Bình Dương"}, refs=("02",))
+    reply, _, _ = chat_tools.bus_answer({"mode": "line", "ref": "2", "ask": "info"}, 10.77, 106.70, NOW)
+    assert reply.startswith("Tuyến 02 của Xe buýt Bình Dương (")
+    _mock_bus(monkeypatch, {**_bus_14(), "network": chat_tools.bus.HCMC_NETWORK})
+    reply, _, _ = chat_tools.bus_answer({"mode": "line", "ref": "14", "ask": "info"}, 10.77, 106.70, NOW)
+    assert reply.startswith("Tuyến 14 (Bến xe Miền Đông")
+
+
+def test_thoi_gian_chuyen_tu_osm_khong_ghi_uoc_tinh(monkeypatch):
+    detail = _bus_14()
+    detail["directions"] = [_bus_direction("17379412", "A", "B", 9000, 40, source="osm")]
+    _mock_bus(monkeypatch, detail)
+    reply, _, _ = chat_tools.bus_answer({"mode": "line", "ref": "14", "ask": "info"}, 10.77, 106.70, NOW)
+    assert "Lộ trình A → B: 9,0 km, khoảng 40 phút." in reply
+    assert "ước tính" not in reply
+
+
+def test_het_chuyen_va_chua_chay(monkeypatch):
+    _mock_bus(monkeypatch, _bus_14(running_now=False, startsInMinutes=7 * 60 + 30))
+    late = NOW.replace(hour=20, minute=30)
+    reply, _, _ = chat_tools.bus_answer({"mode": "line", "ref": "14", "ask": "info"}, 10.77, 106.70, late)
+    assert "hôm nay đã hết chuyến, chuyến đầu sáng mai lúc 04:00" in reply
+    _mock_bus(monkeypatch, _bus_14(running_now=False, startsInMinutes=30))
+    early = NOW.replace(hour=3, minute=30)
+    reply, _, _ = chat_tools.bus_answer({"mode": "line", "ref": "14", "ask": "info"}, 10.77, 106.70, early)
+    assert "giờ này chưa chạy, chuyến đầu lúc 04:00" in reply
+
+
+def test_hoi_bao_lau_xe_toi_chi_noi_gian_cach(monkeypatch):
+    _mock_bus(monkeypatch, _bus_14())
+    reply, _, _ = chat_tools.bus_answer({"mode": "line", "ref": "14", "ask": "arrival"}, 10.77, 106.70, NOW)
+    assert "không có vị trí xe theo thời gian thực" in reply
+    assert reply.endswith("chỉ biết cứ 6–12 phút có một chuyến.")
+
+
+def test_tuyen_di_qua_nhung_duong_nao(monkeypatch):
+    _mock_bus(monkeypatch, _bus_14())
+    reply, _, replies = chat_tools.bus_answer({"mode": "line", "ref": "14", "ask": "route"}, 10.77, 106.70, NOW)
+    assert "Lượt đi Bến xe Miền Đông → Bến xe Miền Tây (16,7 km, ước tính 56 phút, 2 trạm) đi qua Đinh Bộ Lĩnh và Điện Biên Phủ." in reply
+    assert replies[0] == "Xe buýt 14 chạy mấy giờ?"
+
+
+def test_khong_co_tuyen_thi_noi_that(monkeypatch):
+    monkeypatch.setattr(
+        chat_tools.bus,
+        "search_lines",
+        lambda query, limit=60: {"total": 2, "lines": [{"ref": "60-1"}, {"ref": "15"}]},
+    )
+    reply, overlay, replies = chat_tools.bus_answer({"mode": "line", "ref": "60", "ask": "info"}, 10.77, 106.70, NOW)
+    assert reply == "Mình không thấy tuyến xe buýt số 60 trong dữ liệu. Bạn muốn hỏi tuyến 60-1?"
+    assert overlay is None
+    assert replies == ["Xe buýt 60-1 chạy mấy giờ?"]
+
+
+def test_tram_gan_ke_tuyen_va_ve_len_ban_do(monkeypatch):
+    found = {
+        "radius": 800,
+        "approximate": False,
+        "results": [
+            {
+                "id": "7",
+                "name": "Vincom Đồng Khởi",
+                "latitude": 10.7778,
+                "longitude": 106.7022,
+                "distanceMeters": 179,
+                "driveMinutes": 2,
+                "routes": [{"ref": "44"}, {"ref": "180"}, {"ref": "44"}],
+            }
+        ],
+    }
+    monkeypatch.setattr(chat_tools.bus, "search_stops", lambda **kwargs: found)
+    reply, overlay, replies = chat_tools.bus_answer({"mode": "stops", "query": ""}, 10.77, 106.70, NOW)
+    assert reply == "Trạm xe buýt gần bạn nhất: Vincom Đồng Khởi (2 phút đi bộ): tuyến 44 và 180."
+    assert overlay["line"] is None
+    assert overlay["points"][0]["title"] == "Vincom Đồng Khởi · tuyến 44 và 180"
+    assert replies == ["Xe buýt 44 chạy mấy giờ?", "Xe buýt 180 chạy mấy giờ?"]
+
+
+def test_xe_buyt_loi_db_khong_bia(monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(chat_tools.bus, "search_lines", broken)
+    reply, overlay, _ = chat_tools.bus_answer({"mode": "line", "ref": "14", "ask": "info"}, 10.77, 106.70, NOW)
+    assert "chưa tra được xe buýt" in reply
+    assert overlay is None

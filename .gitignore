@@ -27,6 +27,8 @@ dist/
 *.tsbuildinfo
 
 # Local data and IDE files
+# Ảnh chụp Overpass tuyến xe buýt (~28 MB) — tải lại bằng scripts/import_bus_routes.py.
+backend/results/bus_osm.json
 .pnpm-store/
 .vscode/
 .idea/

@@ -18,6 +18,7 @@ from . import (
     admin,
     assistant,
     auth,
+    bus,
     charging,
     chat,
     chat_tools,
@@ -335,13 +336,18 @@ def _plan_chat_turn(payload: ChatRequest) -> tuple[dict[str, Any], str | None]:
     """Phần KHÔNG cần LLM của một lượt chat. Trả ``(response, reply)`` —
     ``reply`` là ``None`` khi còn phải để LLM diễn giải ``response["results"]``.
 
-    Thứ tự, tất cả bằng luật (`app/chat_tools.py`): câu hỏi tiếp trên danh sách
+    Thứ tự, tất cả bằng luật (`app/chat_tools.py`): xe buýt → câu hỏi tiếp trên danh sách
     vừa xem ("số 2 mấy giờ đóng cửa?") → địa danh nêu tên → công cụ chuyên
     biệt (xăng, WC, gửi xe…) → search thường, có bộ lọc ("đang mở", "có
     wifi"). Tách riêng để ``/api/v1/chat`` và ``/api/v1/chat/stream`` dùng
     chung đúng một luồng, chỉ khác ở cách trả phần diễn giải.
     """
     session_id = str(payload.session_id)
+
+    # Xe buýt trước cả câu hỏi tiếp: "xe buýt số 2" là tuyến 02, không phải thẻ số 2.
+    bus_params = chat_tools.detect_bus(payload.message)
+    if bus_params is not None:
+        return _bus_turn(payload, bus_params)
 
     last = chat_tools.recall(session_id)
     plan = chat_tools.follow_up(payload.message, last, payload.latitude, payload.longitude)
@@ -506,6 +512,24 @@ def _tool_turn(
         "tool": tool,
         "quickReplies": chat_tools.quick_replies(tool, len(results)),
         "results": results,
+    }, reply
+
+
+def _bus_turn(payload: ChatRequest, params: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Câu hỏi xe buýt (giờ chạy, lộ trình, trạm gần) — trả lời bằng chữ kèm
+    ``overlay`` để khung chat vẽ lộ trình/trạm lên bản đồ. Không có thẻ: trạm
+    xe buýt không phải POI, bấm thẻ mở chi tiết POI sẽ lỗi. Như thời tiết, giữ
+    nguyên ngữ cảnh cũ để "số 2…" vẫn trỏ vào danh sách địa điểm trước đó."""
+    reply, overlay, replies = chat_tools.bus_answer(params, payload.latitude, payload.longitude)
+    chat.record_turn(str(payload.session_id), payload.message, reply)
+    return {
+        "needsClarification": False,
+        "searchParams": {"query": payload.message, "category": None, "radius": None},
+        "retrievalBackend": "tool:bus",
+        "tool": "bus",
+        "overlay": overlay,
+        "quickReplies": replies,
+        "results": [],
     }, reply
 
 
@@ -1202,6 +1226,39 @@ def toilets_search(
         radius=radius,
         limit=limit,
     )
+
+
+@app.get("/api/v1/bus/lines")
+def bus_lines(
+    q: str = Query(default="", max_length=80),
+    limit: int = Query(default=60, ge=1, le=250),
+) -> dict[str, Any]:
+    """Tra tuyến xe buýt theo số tuyến ("14", "1" khớp "01"), tên bến hoặc
+    đường đi qua. Mỗi tuyến gộp các lượt cùng số. Xem `app/bus.py`."""
+    return bus.search_lines(q, limit)
+
+
+@app.get("/api/v1/bus/routes/{route_id}")
+def bus_route(route_id: int) -> Any:
+    """Chi tiết một tuyến từ id một lượt: giờ chạy, giãn cách, giá vé, và với
+    từng lượt — quãng đường, thời gian chuyến, lộ trình, trạm theo thứ tự."""
+    detail = bus.route_detail(route_id)
+    if detail is None:
+        return JSONResponse(status_code=404, content={"detail": "Không có tuyến xe buýt này"})
+    return detail
+
+
+@app.get("/api/v1/bus/stops")
+def bus_stops(
+    lat: float = Query(ge=-90, le=90),
+    lng: float = Query(ge=-180, le=180),
+    q: str = Query(default="", max_length=80),
+    radius: int = Query(default=bus.DEFAULT_STOP_RADIUS_METERS, ge=200, le=5_000),
+    limit: int = Query(default=15, ge=1, le=50),
+) -> dict[str, Any]:
+    """Trạm xe buýt gần (xếp theo thời gian ĐI BỘ thật) kèm các tuyến dừng ở
+    trạm; có ``q`` thì tìm trạm theo tên khắp thành phố."""
+    return bus.search_stops(latitude=lat, longitude=lng, query=q, radius=radius, limit=limit)
 
 
 @app.get("/api/v1/parking/{poi_id}")

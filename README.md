@@ -150,6 +150,8 @@ Endpoint khác:
   mạng ra ngoài.
 - `GET /api/v1/pois/{poi_id}/photos?limit=8` — ảnh của địa điểm, tách riêng vì
   có thể phải gọi Wikimedia Commons (chậm). Xem mục *Ảnh địa điểm* bên dưới.
+- `GET /api/v1/bus/lines?q=14`, `GET /api/v1/bus/routes/{id}`,
+  `GET /api/v1/bus/stops?lat=&lng=&q=` — xe buýt, xem mục *Xe buýt* bên dưới.
 
 ## Dữ liệu POI thực
 
@@ -249,6 +251,28 @@ docker compose --env-file config/development.env --profile data run --rm --build
 
 Xem độ tươi tại `GET /api/v1/features/status`. Chi tiết ở
 [docs/layer-2-features.md](docs/layer-2-features.md).
+
+## Xe buýt
+
+Nút **Xe buýt** ở cột trái: *Tra cứu tuyến* (gõ "14", tên bến hoặc tên đường) và
+*Trạm gần bạn* (xếp theo thời gian đi bộ thật, kèm các tuyến dừng ở trạm). Bấm
+một tuyến ra giờ hoạt động, giãn cách chuyến, giá vé, và với từng lượt đi/về:
+quãng đường, thời gian một chuyến, danh sách trạm theo thứ tự và lộ trình vẽ
+trên bản đồ. Logic ở `backend/app/bus.py`, giao diện ở
+`frontend/components/bus-finder.tsx`.
+
+Dữ liệu là relation `route=bus` của OpenStreetMap (bảng `bus_routes`,
+`bus_stops`, `bus_route_stops` — migration 0036). Nhập (thay toàn bộ dữ liệu
+xe buýt cũ):
+
+```powershell
+docker compose --env-file config/development.env -p nearby-dev run --rm --no-deps -v ${PWD}/backend/results:/app/results backend python -m scripts.import_bus_routes --save-raw results/bus_osm.json
+```
+
+Overpass hay trả 504 với truy vấn ~28 MB này; đã có ảnh chụp thì nhập lại bằng
+`--input results/bus_osm.json`. Đo 2026-10-10: 368 lượt / 196 tuyến / 6.718
+trạm. Chưa có vị trí xe theo thời gian thực; thời gian chuyến là ước tính
+(18 km/h) trừ khi OSM ghi `duration`.
 
 ## Ảnh địa điểm (Wikimedia Commons)
 

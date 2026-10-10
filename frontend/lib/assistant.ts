@@ -120,7 +120,11 @@ export type MeetupPlan = {
 
 /** Lớp vẽ tạm lên bản đồ do trợ lý yêu cầu (tuyến tour, người trong nhóm…). */
 export type AssistantOverlay = {
-  line?: { type: 'LineString'; coordinates: [number, number][] } | null;
+  /** MultiLineString: lộ trình xe buýt đứt khúc (app/bus.py) — không nối thẳng qua chỗ đứt. */
+  line?:
+    | { type: 'LineString'; coordinates: [number, number][] }
+    | { type: 'MultiLineString'; coordinates: [number, number][][] }
+    | null;
   points: {
     id: string;
     latitude: number;
