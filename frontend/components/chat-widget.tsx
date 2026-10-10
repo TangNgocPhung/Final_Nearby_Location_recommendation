@@ -291,6 +291,7 @@ export function ChatWidget({
   apiBaseUrl,
   sessionId,
   position,
+  accuracyMeters,
   language,
   onViewPoi,
   onDirections,
@@ -305,6 +306,8 @@ export function ChatWidget({
   apiBaseUrl: string;
   sessionId: string;
   position: { latitude: number; longitude: number };
+  /** sai số GPS (m) của `position`; null với vị trí mô phỏng/mặc định */
+  accuracyMeters?: number | null;
   /** ngôn ngữ giao diện — tour thuyết minh đọc bằng ngôn ngữ này */
   language: string;
   onViewPoi: (poiId: string) => void;
@@ -827,6 +830,7 @@ export function ChatWidget({
             apiBaseUrl={apiBaseUrl}
             sessionId={sessionId}
             position={position}
+            accuracyMeters={accuracyMeters}
             language={language}
             onBack={() => {
               setView('chat');

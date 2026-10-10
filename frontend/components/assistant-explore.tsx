@@ -26,6 +26,7 @@ import {
 import {
   resizeImage,
   type DiscoverResult,
+  type ExploreClaim,
   type ExploreOverview,
   type ExplorePlace,
   type ExploreStory,
@@ -44,6 +45,7 @@ export function AssistantExplore({
   apiBaseUrl,
   sessionId,
   position,
+  accuracyMeters,
   language,
   onBack,
   onViewPoi,
@@ -55,6 +57,8 @@ export function AssistantExplore({
   apiBaseUrl: string;
   sessionId: string;
   position: { latitude: number; longitude: number };
+  /** Sai số GPS (m) khi vị trí đến từ GPS thật; null/undefined với vị trí mô phỏng. */
+  accuracyMeters?: number | null;
   language: string;
   onBack: () => void;
   onViewPoi: (poiId: string) => void;
@@ -66,7 +70,12 @@ export function AssistantExplore({
   const [overview, setOverview] = useState<ExploreOverview | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [story, setStory] = useState<ExploreStory | null>(null);
+  // Gắn với poiId: kết quả/câu chuyện trả về muộn của địa danh A không được hiện
+  // dưới địa danh B mà người chơi vừa chuyển sang trong lúc chờ AI xem ảnh.
+  const [storyState, setStoryState] = useState<
+    { poiId: string; story: ExploreStory | null; failed: boolean } | null
+  >(null);
+  const [submittingName, setSubmittingName] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>('idle');
   const [elapsed, setElapsed] = useState(0);
   const [preview, setPreview] = useState<string | null>(null);
@@ -122,6 +131,8 @@ export function AssistantExplore({
   }, [overview, position]);
 
   const selected = places.find((place) => place.poiId === selectedId) ?? null;
+  const story = selected && storyState?.poiId === selected.poiId ? storyState : null;
+  const shownResult = selected && result?.poiId === selected.poiId ? result : null;
 
   // Bản đồ săn: địa danh chưa khám phá là "?", đã khám phá là "✓".
   useEffect(() => {
@@ -140,22 +151,29 @@ export function AssistantExplore({
     });
   }, [onMapOverlay, places]);
 
-  // Mở một địa danh đã khám phá → tải câu chuyện.
+  // Mở một địa danh đã khám phá → tải câu chuyện. Câu chuyện của địa danh khác
+  // (state cũ) bị bỏ qua nhờ khoá poiId ở `story` phía trên.
+  const [storyAttempt, setStoryAttempt] = useState(0);
   useEffect(() => {
-    if (!selected?.discovered) {
-      // oxlint-disable-next-line react/react-compiler
-      setStory(null);
-      return;
-    }
+    if (!selected?.discovered) return;
+    const poiId = selected.poiId;
     const controller = new AbortController();
-    fetch(`${apiBaseUrl}/api/v1/explore/${selected.poiId}/story`, { headers, signal: controller.signal })
-      .then((res): Promise<{ locked: boolean; story?: ExploreStory }> | null => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && !data.locked && data.story) setStory(data.story);
+    fetch(`${apiBaseUrl}/api/v1/explore/${poiId}/story`, { headers, signal: controller.signal })
+      .then((res): Promise<{ locked: boolean; story?: ExploreStory }> => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
       })
-      .catch(() => undefined);
+      .then((data) => {
+        if (data.locked || !data.story) throw new Error('locked');
+        setStoryState({ poiId, story: data.story, failed: false });
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        // Giữ câu chuyện đã có từ phản hồi khám phá nếu lần tải lại này hỏng.
+        setStoryState((prev) => (prev?.poiId === poiId && prev.story ? prev : { poiId, story: null, failed: true }));
+      });
     return () => controller.abort();
-  }, [apiBaseUrl, headers, selected?.discovered, selected?.poiId]);
+  }, [apiBaseUrl, headers, selected?.discovered, selected?.poiId, storyAttempt]);
 
   // Đồng hồ chờ AI xem ảnh — model thị giác trên CPU mất vài chục giây, người
   // chơi cần thấy hệ thống vẫn đang làm việc.
@@ -200,48 +218,52 @@ export function AssistantExplore({
     setNarrating(false);
   }, [language, narrating, player, selected]);
 
-  const submitPhoto = useCallback(
-    async (file: File) => {
-      if (!selected) return;
-      setResult(null);
-      setStage('preparing');
-      try {
-        const { base64, previewUrl } = await resizeImage(file);
-        setPreview(previewUrl);
-        setStage('checking');
-        setElapsed(0);
-        const res = await fetch(`${apiBaseUrl}/api/v1/explore/${selected.poiId}/discover`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify({
-            latitude: position.latitude,
-            longitude: position.longitude,
-            image_base64: base64,
-            share_publicly: sharePublicly,
-          }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as DiscoverResult;
-        setResult(data);
-        if (data.status === 'discovered' || data.status === 'rediscovered') {
-          setStory(data.story);
-          await load();
-        }
-      } catch {
+  const submitPhoto = async (file: File, target: ExplorePlace) => {
+    setResult(null);
+    setStage('preparing');
+    setSubmittingName(target.name);
+    try {
+      const outcome = await sendDiscovery({
+        apiBaseUrl,
+        headers,
+        file,
+        place: target,
+        body: {
+          latitude: position.latitude,
+          longitude: position.longitude,
+          accuracy_meters: accuracyMeters ?? null,
+          share_publicly: sharePublicly,
+        },
+        onResized: (previewUrl) => {
+          setPreview(previewUrl);
+          setStage('checking');
+          setElapsed(0);
+        },
+      });
+      if (outcome.kind === 'failed') {
         setResult({
           status: 'bad_image',
-          poiId: selected.poiId,
-          name: selected.name,
-          detail: 'Không gửi được ảnh — kiểm tra kết nối rồi thử lại.',
-          distanceMeters: selected.distanceMeters,
-          allowedMeters: selected.radiusMeters,
+          poiId: target.poiId,
+          name: target.name,
+          detail: outcome.detail,
+          distanceMeters: target.distanceMeters,
+          allowedMeters: target.radiusMeters,
         });
-      } finally {
-        setStage('idle');
+        // Máy chủ có thể vẫn xử lý xong sau khi cổng đã ngắt: tải lại để thấy kết quả.
+        if (outcome.reload) await load();
+        return;
       }
-    },
-    [apiBaseUrl, headers, load, position.latitude, position.longitude, selected, sharePublicly],
-  );
+      const data = outcome.data;
+      setResult(data);
+      if (data.status === 'discovered' || data.status === 'rediscovered') {
+        setStoryState({ poiId: data.poiId, story: data.story, failed: false });
+        await load();
+      }
+    } finally {
+      setStage('idle');
+      setSubmittingName(null);
+    }
+  };
 
   const simulateHere = useCallback(() => {
     if (!onSimulatePosition) return;
@@ -403,7 +425,7 @@ export function AssistantExplore({
               </div>
             </div>
 
-            {result && <DiscoverOutcome result={result} />}
+            {shownResult && <DiscoverOutcome result={shownResult} />}
 
             {!selected.discovered && (
               <div className="space-y-2 rounded-xl border border-border p-3">
@@ -456,7 +478,7 @@ export function AssistantExplore({
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 event.target.value = '';
-                if (file) void submitPhoto(file);
+                if (file && selected) void submitPhoto(file, selected);
               }}
             />
 
@@ -469,6 +491,7 @@ export function AssistantExplore({
                   <p className="flex items-center gap-1.5 font-semibold">
                     <LoaderCircle className="size-3.5 animate-spin" />
                     {stage === 'preparing' ? 'Đang xử lý ảnh…' : 'Kiểm tra vị trí · AI đang xem ảnh…'}
+                    {submittingName && submittingName !== selected.name ? ` (${submittingName})` : ''}
                   </p>
                   {stage === 'checking' && (
                     <p className="mt-0.5 text-muted-foreground tabular-nums">
@@ -496,7 +519,23 @@ export function AssistantExplore({
                 {narrationText && (
                   <p className="rounded-lg bg-muted px-3 py-2 text-xs leading-relaxed">{narrationText}</p>
                 )}
-                {story ? <StoryView story={story} /> : (
+                {story?.story ? (
+                  <StoryView story={story.story} />
+                ) : story?.failed ? (
+                  <p className="flex items-center justify-between gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    Chưa mở được câu chuyện.
+                    <button
+                      type="button"
+                      className="font-semibold underline"
+                      onClick={() => {
+                        setStoryState(null);
+                        setStoryAttempt((value) => value + 1);
+                      }}
+                    >
+                      Thử lại
+                    </button>
+                  </p>
+                ) : (
                   <p className="flex items-center gap-2 text-xs text-muted-foreground">
                     <LoaderCircle className="size-3.5 animate-spin" /> Đang mở câu chuyện…
                   </p>
@@ -523,6 +562,57 @@ export function AssistantExplore({
       </div>
     </div>
   );
+}
+
+type DiscoveryOutcome =
+  | { kind: 'ok'; data: DiscoverResult }
+  | { kind: 'failed'; detail: string; reload: boolean };
+
+/** Thu nhỏ ảnh rồi gửi lượt khám phá; mọi lỗi đổi thành thông báo đúng nguyên nhân. */
+async function sendDiscovery({
+  apiBaseUrl,
+  headers,
+  file,
+  place,
+  body,
+  onResized,
+}: {
+  apiBaseUrl: string;
+  headers: Record<string, string>;
+  file: File;
+  place: ExplorePlace;
+  body: Record<string, unknown>;
+  onResized: (previewUrl: string) => void;
+}): Promise<DiscoveryOutcome> {
+  let prepared: Awaited<ReturnType<typeof resizeImage>>;
+  try {
+    prepared = await resizeImage(file);
+  } catch {
+    return { kind: 'failed', reload: false, detail: 'Không đọc được ảnh này — thử chụp lại hoặc chọn ảnh JPEG/PNG khác.' };
+  }
+  onResized(prepared.previewUrl);
+  let res: Response;
+  try {
+    res = await fetch(`${apiBaseUrl}/api/v1/explore/${place.poiId}/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ ...body, image_base64: prepared.base64 }),
+    });
+  } catch {
+    return { kind: 'failed', reload: false, detail: 'Không gửi được ảnh — kiểm tra kết nối rồi thử lại.' };
+  }
+  if (res.ok) return { kind: 'ok', data: (await res.json()) as DiscoverResult };
+  if (res.status === 429) {
+    return { kind: 'failed', reload: false, detail: 'Bạn thao tác hơi nhanh — chờ khoảng một phút rồi thử lại.' };
+  }
+  if (res.status === 502 || res.status === 504) {
+    return {
+      kind: 'failed',
+      reload: true,
+      detail: 'Máy chủ xem ảnh quá lâu. Lượt khám phá có thể vẫn được ghi nhận — kiểm tra lại danh sách sau ít phút.',
+    };
+  }
+  return { kind: 'failed', reload: false, detail: `Máy chủ gặp lỗi (HTTP ${res.status}) — thử lại sau nhé.` };
 }
 
 function DiscoverOutcome({ result }: { result: DiscoverResult }) {
@@ -573,6 +663,29 @@ function DiscoverOutcome({ result }: { result: DiscoverResult }) {
   );
 }
 
+function claimKey(item: ExploreClaim): string {
+  return `${item.source ?? ''}|${item.title ?? ''}|${item.description}`;
+}
+
+function ClaimItem({ item }: { item: ExploreClaim }) {
+  return (
+    <li>
+      {item.title && <span className="font-medium">{item.title}: </span>}
+      {item.description}
+      {item.source && /^https?:\/\//.test(item.source) && (
+        <a
+          href={item.source}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ml-1 text-[11px] text-primary underline"
+        >
+          nguồn
+        </a>
+      )}
+    </li>
+  );
+}
+
 function StoryView({ story }: { story: ExploreStory }) {
   return (
     <div className="space-y-2 rounded-xl border border-border p-3 text-xs leading-relaxed">
@@ -592,7 +705,7 @@ function StoryView({ story }: { story: ExploreStory }) {
           <p className="font-semibold">Sự kiện</p>
           <ul className="list-disc space-y-0.5 pl-4">
             {story.historicalEvents.map((item) => (
-              <li key={item}>{item}</li>
+              <ClaimItem key={claimKey(item)} item={item} />
             ))}
           </ul>
         </div>
@@ -602,7 +715,7 @@ function StoryView({ story }: { story: ExploreStory }) {
           <p className="font-semibold">Điều thú vị</p>
           <ul className="list-disc space-y-0.5 pl-4">
             {story.interestingFacts.map((item) => (
-              <li key={item}>{item}</li>
+              <ClaimItem key={claimKey(item)} item={item} />
             ))}
           </ul>
         </div>

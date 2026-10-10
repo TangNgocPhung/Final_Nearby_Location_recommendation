@@ -4942,6 +4942,7 @@ export function LocationExplorer() {
             apiBaseUrl={API_BASE_URL}
             sessionId={telemetryState.sessionId}
             position={position}
+            accuracyMeters={positionAccuracy}
             language={uiLanguage.language}
             onViewPoi={(poiId) => openDetail(poiId, 'chat')}
             onDirections={directionsFromChat}

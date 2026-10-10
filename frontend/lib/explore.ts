@@ -40,14 +40,21 @@ export type ExploreOverview = {
   places: ExplorePlace[];
 };
 
+/** Một claim có nguồn — cùng dạng `poi_knowledge.historical_events` / `interesting_facts`. */
+export type ExploreClaim = {
+  title?: string | null;
+  description: string;
+  source?: string | null;
+};
+
 export type ExploreStory = {
   contentType: string;
   contentTypeLabel: string;
   intro: string | null;
   specialty: string | null;
   historicalContext: string | null;
-  historicalEvents: string[];
-  interestingFacts: string[];
+  historicalEvents: ExploreClaim[];
+  interestingFacts: ExploreClaim[];
   source: string | null;
 };
 
