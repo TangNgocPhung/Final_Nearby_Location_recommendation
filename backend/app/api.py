@@ -1346,6 +1346,7 @@ def trending(limit: int = Query(default=10, ge=1, le=50)) -> dict[str, Any]:
 
 @app.get("/api/v1/recommendations")
 def recommendations(
+    request: Request,
     lat: float = Query(ge=-90, le=90),
     lng: float = Query(ge=-180, le=180),
     radius: int = Query(default=5_000, ge=100, le=50_000),
@@ -1359,20 +1360,33 @@ def recommendations(
     if not affinity and session_id:
         affinity = fetch_category_affinity(str(session_id))
     graph_ids = set(graph_candidate_ids(str(session_id))) if session_id else set()
+
+    # Vùng chưa tới (bản đồ sương mù) chỉ ảnh hưởng việc CHỌN trong nhóm ứng viên
+    # đã xếp hạng, không chạm vào ranker — điểm liên quan vẫn do ranker quyết định.
+    owner_id = _account_owner_id(request, session_id)
+    explored: set[str] = set()
+    if owner_id:
+        try:
+            explored = exploration.explored_cells(owner_id)
+        except psycopg.Error as error:
+            logger.warning("Đọc explored_cells thất bại, bỏ qua gợi ý vùng mới: %s", error)
     results = rank_pois(
         lat,
         lng,
         radius,
         None,
         None,
-        limit,
+        min(limit * 4, 50) if explored else limit,
         category_boost=affinity,
         graph_boost=graph_ids,
         session_id=str(session_id) if session_id else None,
     )
+    results = exploration.mix_unexplored(results, explored, limit)
     top_category = max(affinity, key=affinity.get) if affinity else None
     for poi in results:
-        if poi.get("graphRecommended"):
+        if poi.get("unexplored"):
+            poi["reason"] = f"Vùng bạn chưa từng tới · {poi['categoryLabel']}"
+        elif poi.get("graphRecommended"):
             poi["reason"] = "Người có hành vi tương tự cũng thích địa điểm này"
         elif top_category and poi["category"] == top_category:
             poi["reason"] = f"Vì bạn hay xem địa điểm {poi['categoryLabel']}"
@@ -1383,6 +1397,7 @@ def recommendations(
     return {
         "personalized": bool(affinity) or bool(graph_ids),
         "graphRecommendations": len(graph_ids),
+        "unexploredCount": sum(1 for poi in results if poi["unexplored"]),
         "profileSource": "feature-store" if profile else ("postgres" if affinity else "none"),
         "preferredCategories": sorted(affinity, key=affinity.get, reverse=True),
         "results": results,

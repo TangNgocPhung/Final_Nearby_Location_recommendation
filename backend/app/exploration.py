@@ -13,6 +13,7 @@ phải từng ô: giao diện không cần thư viện H3 và không phải vẽ
 
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
 
 import h3
@@ -108,6 +109,50 @@ def record(
             added = cursor.rowcount
         rows = connection.execute(_LIST_SQL, {"owner": owner_id}).fetchall()
     return {**_overview_from_rows([dict(row) for row in rows]), "added": added}
+
+
+def explored_cells(owner_id: str, database_url: str | None = None) -> set[str]:
+    """Tập ô đã đi qua, không kèm đường bao — dùng để gợi ý, không để vẽ."""
+    with _connect(database_url) as connection:
+        rows = connection.execute(
+            "SELECT cell FROM explored_cells WHERE owner_id = %(owner)s", {"owner": owner_id}
+        ).fetchall()
+    return {row["cell"] for row in rows}
+
+
+def mix_unexplored(
+    candidates: list[dict[str, Any]],
+    explored: set[str],
+    limit: int,
+    min_share: float = 0.5,
+) -> list[dict[str, Any]]:
+    """Chọn ``limit`` gợi ý, dành ít nhất ``min_share`` chỗ cho địa điểm ở ô CHƯA đi.
+
+    Gắn ``unexplored`` cho từng ứng viên rồi giữ nguyên thứ tự xếp hạng gốc trong
+    kết quả: chỉ đổi chỗ nào được chọn, không đảo thứ tự giữa những chỗ được chọn, nên
+    điểm liên quan vẫn là thứ quyết định. Chưa có ô nào (người dùng chưa từng bật
+    sương mù/AR) thì không gắn gì — "mọi nơi đều chưa tới" không phải thông tin.
+    """
+    if not explored:
+        return [{**poi, "unexplored": False} for poi in candidates[:limit]]
+
+    tagged = []
+    for poi in candidates:
+        cell = h3.latlng_to_cell(poi["latitude"], poi["longitude"], RESOLUTION)
+        tagged.append({**poi, "unexplored": cell not in explored})
+
+    quota = min(sum(1 for poi in tagged if poi["unexplored"]), math.ceil(limit * min_share))
+    chosen: set[int] = set()
+    for index, poi in enumerate(tagged):
+        if len(chosen) >= quota:
+            break
+        if poi["unexplored"]:
+            chosen.add(index)
+    for index in range(len(tagged)):
+        if len(chosen) >= limit:
+            break
+        chosen.add(index)
+    return [tagged[index] for index in sorted(chosen)]
 
 
 def clear(owner_id: str, database_url: str | None = None) -> int:
