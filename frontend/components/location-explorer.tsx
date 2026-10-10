@@ -1057,6 +1057,10 @@ export function LocationExplorer() {
   const [followMe, setFollowMe] = useState(false);
   const watchIdRef = useRef<number | null>(null);
   const lastPingRef = useRef<{ at: number; position: Position } | null>(null);
+  // Lần cuối chấm xanh được vẽ lại — dày hơn lastPingRef khi đang bám theo.
+  const lastShownRef = useRef<{ at: number; position: Position } | null>(null);
+  // Bản mới nhất của followMe cho callback watchPosition (đăng ký một lần).
+  const followRef = useRef(false);
   // POI đã đăng ký "nhắc khi tới gần": poiId -> subscriptionId.
   // Địa điểm đã lưu của phiên này. Giữ nguyên mảng từ API (đã sắp Nhà/Chỗ làm
   // lên đầu) thay vì sắp lại ở client: thứ tự là quyết định của backend, hai
@@ -2559,6 +2563,10 @@ export function LocationExplorer() {
   }, [position]);
 
   useEffect(() => {
+    followRef.current = followMe;
+  }, [followMe]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!map || !followMe || !isWatching) return;
     map.easeTo({
@@ -2988,6 +2996,8 @@ export function LocationExplorer() {
   // vi mô thay vì một hành trình.
   const PING_MIN_INTERVAL_MS = 15_000;
   const PING_MIN_DISTANCE_M = 50;
+  const FOLLOW_MIN_INTERVAL_MS = 3_000;
+  const FOLLOW_MIN_DISTANCE_M = 5;
 
   function stopWatching() {
     if (watchIdRef.current !== null) {
@@ -2995,6 +3005,7 @@ export function LocationExplorer() {
       watchIdRef.current = null;
     }
     lastPingRef.current = null;
+    lastShownRef.current = null;
     setIsWatching(false);
     setFollowMe(false);
     setWatchStatus('Theo dõi vị trí: tắt');
@@ -3014,19 +3025,37 @@ export function LocationExplorer() {
           longitude: coords.longitude,
         };
         const now = Date.now();
+
+        // Hai nhịp tách nhau: chấm xanh/bản đồ cập nhật dày khi đang bám theo
+        // (lúc chạy xe 15 s là ~150 m), còn location_ping gửi backend giữ
+        // nguyên 15 s / 50 m để không đẩy hàng nghìn sự kiện mỗi chuyến đi.
+        const shown = lastShownRef.current;
+        const shownMoved = shown
+          ? distanceInMeters(shown.position, nextPosition)
+          : Infinity;
+        const shownElapsed = shown ? now - shown.at : Infinity;
         const previous = lastPingRef.current;
         const moved = previous
           ? distanceInMeters(previous.position, nextPosition)
           : Infinity;
         const elapsed = previous ? now - previous.at : Infinity;
-        if (moved < PING_MIN_DISTANCE_M && elapsed < PING_MIN_INTERVAL_MS)
-          return;
+        const shouldPing =
+          moved >= PING_MIN_DISTANCE_M || elapsed >= PING_MIN_INTERVAL_MS;
+        // Bám theo: 3 s một lần, bỏ qua nhiễu GPS khi đứng yên (< 5 m).
+        const shouldShow = followRef.current
+          ? shownElapsed >= FOLLOW_MIN_INTERVAL_MS &&
+            shownMoved >= FOLLOW_MIN_DISTANCE_M
+          : shouldPing;
+        if (!shouldPing && !shouldShow) return;
 
-        lastPingRef.current = { at: now, position: nextPosition };
+        lastShownRef.current = { at: now, position: nextPosition };
         setPosition(nextPosition);
         setPositionAccuracy(coords.accuracy);
         setHasLocationConsent(true);
         setGpsStatus(`GPS chính xác ±${Math.round(coords.accuracy)} m`);
+        if (!shouldPing) return;
+
+        lastPingRef.current = { at: now, position: nextPosition };
         setWatchStatus(
           `Theo dõi vị trí: bật · ping lúc ${new Date(now).toLocaleTimeString('vi-VN')}`,
         );
