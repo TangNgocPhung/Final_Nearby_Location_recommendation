@@ -24,7 +24,7 @@ import json
 import math
 import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -129,6 +129,34 @@ def service_status(raw: str | None, at: datetime | None = None) -> dict[str, Any
     }
 
 
+def _shift_clock(value: str | None, minutes: int) -> str | None:
+    """``"20:00"`` + 14 phút → ``"20:14"``, qua nửa đêm thì quay về ``"00:…"``."""
+    if value is None:
+        return None
+    total = (int(value[:2]) * 60 + int(value[3:5]) + minutes) % (24 * 60)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def stop_service(raw: str | None, minutes_from_start: int | None, at: datetime | None = None) -> dict[str, Any] | None:
+    """Giờ xe qua MỘT trạm theo biểu đồ giờ — KHÔNG phải vị trí xe thật.
+
+    ``opening_hours`` của tuyến là giờ xuất bến chuyến đầu – chuyến cuối ở bến
+    đầu (khớp biểu đồ giờ của Trung tâm QLGTCC: "05:00 - 22:00" thì chuyến cuối
+    xuất bến 22:00). Xe tới trạm muộn hơn ``minutes_from_start`` phút, nên
+    chuyến qua trạm lúc t là chuyến xuất bến lúc t − offset: trạng thái tại
+    trạm chính là trạng thái tuyến ở bến đầu lùi offset phút. ``None`` khi
+    không biết trạm cách bến đầu bao xa."""
+    if minutes_from_start is None:
+        return None
+    now = at or datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
+    status = service_status(raw, now - timedelta(minutes=minutes_from_start))
+    return {
+        **status,
+        "firstTrip": _shift_clock(status["firstTrip"], minutes_from_start),
+        "lastTrip": _shift_clock(status["lastTrip"], minutes_from_start),
+    }
+
+
 def trip_minutes(duration_raw: str | None, length_meters: float | None) -> tuple[int | None, str]:
     """``(số phút một chuyến, nguồn)`` — nguồn ``osm`` (thẻ ``duration``),
     ``estimate`` (độ dài / vận tốc trung bình) hoặc ``unknown``."""
@@ -138,6 +166,13 @@ def trip_minutes(duration_raw: str | None, length_meters: float | None) -> tuple
     if length_meters:
         return round(length_meters / 1000 / AVERAGE_SPEED_KMH * 60), "estimate"
     return None, "unknown"
+
+
+def minutes_to_stop(trip: int | None, length_meters: float | None, distance_meters: float | None) -> int | None:
+    """Phút từ bến đầu tới trạm — chia đều thời gian chuyến theo quãng đường."""
+    if not trip or not length_meters or distance_meters is None:
+        return None
+    return round(trip * distance_meters / length_meters)
 
 
 def street_sequence(names: list[str | None]) -> list[str]:
@@ -733,7 +768,24 @@ ORDER BY rs.route_id, rs.seq
 """
 
 
-def build_direction(route: dict[str, Any], stops: list[dict[str, Any]]) -> dict[str, Any]:
+def _route_stop(route: dict[str, Any], stop: dict[str, Any], trip: int | None, at: datetime | None) -> dict[str, Any]:
+    minutes = minutes_to_stop(trip, route["length_meters"], stop["distance_meters"])
+    return {
+        "id": stop["id"],
+        "name": stop["name"],
+        "latitude": stop["latitude"],
+        "longitude": stop["longitude"],
+        "shelter": stop["shelter"],
+        # Bến đầu chỉ lên / bến cuối chỉ xuống.
+        "boardingOnly": stop["role"].endswith("entry_only"),
+        "alightingOnly": stop["role"].endswith("exit_only"),
+        "distanceMeters": None if stop["distance_meters"] is None else round(stop["distance_meters"]),
+        "minutesFromStart": minutes,
+        "service": stop_service(route["opening_hours"], minutes, at),
+    }
+
+
+def build_direction(route: dict[str, Any], stops: list[dict[str, Any]], at: datetime | None = None) -> dict[str, Any]:
     minutes, source = trip_minutes(route["duration"], route["length_meters"])
     length = route["length_meters"]
     return {
@@ -747,26 +799,7 @@ def build_direction(route: dict[str, Any], stops: list[dict[str, Any]]) -> dict[
         "tripMinutesSource": source,
         "streets": route["streets"] or [],
         "path": route["path"],
-        "stops": [
-            {
-                "id": stop["id"],
-                "name": stop["name"],
-                "latitude": stop["latitude"],
-                "longitude": stop["longitude"],
-                "shelter": stop["shelter"],
-                # Bến đầu chỉ lên / bến cuối chỉ xuống.
-                "boardingOnly": stop["role"].endswith("entry_only"),
-                "alightingOnly": stop["role"].endswith("exit_only"),
-                "distanceMeters": None if stop["distance_meters"] is None else round(stop["distance_meters"]),
-                # Phút từ bến đầu — chia đều thời gian chuyến theo quãng đường.
-                "minutesFromStart": (
-                    round(minutes * stop["distance_meters"] / length)
-                    if minutes and length and stop["distance_meters"] is not None
-                    else None
-                ),
-            }
-            for stop in stops
-        ],
+        "stops": [_route_stop(route, stop, minutes, at) for stop in stops],
     }
 
 
@@ -788,7 +821,7 @@ def route_detail(route_id: int, at: datetime | None = None) -> dict[str, Any] | 
         "operator": selected["operator"],
         "selectedId": str(route_id),
         "averageSpeedKmh": AVERAGE_SPEED_KMH,
-        "directions": [build_direction(route, stops_by_route[route["id"]]) for route in routes],
+        "directions": [build_direction(route, stops_by_route[route["id"]], at) for route in routes],
         "tripMinutes": minutes,
     }
 
@@ -811,14 +844,28 @@ FROM bus_stops s
 ORDER BY "distanceMeters"
 """
 
+# Tuyến vòng đi qua một trạm hai lần — lấy lần đầu (``seq`` nhỏ nhất).
 _STOP_ROUTES_QUERY = """
-SELECT DISTINCT rs.stop_id::text AS stop_id, r.id::text AS "routeId", r.ref, r.destination, r.colour, r.network
+SELECT DISTINCT ON (rs.stop_id, r.id)
+       rs.stop_id::text AS stop_id, r.id::text AS "routeId", r.ref, r.destination, r.colour, r.network,
+       r.opening_hours, r.interval, r.duration, r.length_meters, rs.distance_meters
 FROM bus_route_stops rs JOIN bus_routes r ON r.id = rs.route_id
 WHERE rs.stop_id = ANY(%(ids)s)
+ORDER BY rs.stop_id, r.id, rs.seq
 """
 
 
-def build_stop(row: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any]:
+def _stop_route(route: dict[str, Any], at: datetime | None) -> dict[str, Any]:
+    trip, _ = trip_minutes(route["duration"], route["length_meters"])
+    minutes = minutes_to_stop(trip, route["length_meters"], route["distance_meters"])
+    return {
+        **{key: route[key] for key in ("routeId", "ref", "destination", "colour")},
+        "interval": parse_interval(route["interval"]),
+        "service": stop_service(route["opening_hours"], minutes, at),
+    }
+
+
+def build_stop(row: dict[str, Any], routes: list[dict[str, Any]], at: datetime | None = None) -> dict[str, Any]:
     return {
         "id": row["id"],
         "name": row["name"],
@@ -832,7 +879,7 @@ def build_stop(row: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, A
         "shelter": row["shelter"],
         "bench": row["bench"],
         "routes": sorted(
-            ({key: route[key] for key in ("routeId", "ref", "destination", "colour")} for route in routes),
+            (_stop_route(route, at) for route in routes),
             key=lambda route: (natural_ref_key(route["ref"]), route["destination"] or ""),
         ),
     }

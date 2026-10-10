@@ -274,6 +274,13 @@ Overpass hay trả 504 với truy vấn ~28 MB này; đã có ảnh chụp thì 
 trạm. Chưa có vị trí xe theo thời gian thực; thời gian chuyến là ước tính
 (18 km/h) trừ khi OSM ghi `duration`.
 
+Giờ xe qua từng trạm (`bus.stop_service`): `opening_hours` của tuyến là giờ
+xuất bến chuyến đầu – chuyến cuối ở bến đầu, cộng thời gian từ bến đầu tới
+trạm. Từ đó app báo "xe qua trạm khoảng 6–12 phút/chuyến · chuyến cuối ~21:26"
+hoặc "hết chuyến · chuyến đầu khoảng 04:56" — ở chip tuyến trong *Trạm gần
+bạn* và ở trạm đang chọn trong chi tiết tuyến. Đây là ước tính theo biểu đồ
+giờ, không phải giờ xe thật.
+
 ## Ảnh địa điểm (Wikimedia Commons)
 
 OpenStreetMap gần như không có ảnh: trong 3.000 bản ghi nguồn OSM chỉ có 2 thẻ
