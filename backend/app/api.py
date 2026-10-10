@@ -1735,6 +1735,16 @@ def get_exploration(request: Request) -> dict[str, Any]:
     return exploration.overview(owner_id)
 
 
+@app.get("/api/v1/exploration/districts")
+def get_exploration_districts(request: Request) -> dict[str, Any]:
+    """Số ô đã mở theo quận. Tách khỏi `GET /api/v1/exploration` vì mỗi ô phải dò
+    POI gần nhất — chỉ tính khi giao diện mở bảng thống kê."""
+    owner_id = _account_owner_id(request)
+    if not owner_id:
+        return {**exploration.group_by_district([]), "reason": "no-session"}
+    return exploration.district_stats(owner_id)
+
+
 @app.delete("/api/v1/exploration")
 def clear_exploration(request: Request) -> Any:
     """Người dùng tự xoá toàn bộ vùng đã khám phá — dữ liệu vị trí của họ, họ

@@ -119,3 +119,72 @@ def test_request_gioi_han_so_diem() -> None:
         ExplorationRequest(points=[])
     with pytest.raises(ValidationError):
         ExplorationRequest(points=[BEN_THANH] * (exploration.MAX_POINTS_PER_REQUEST + 1))
+
+
+def test_moc_dau_dat_ngay_voi_mot_o() -> None:
+    """Mốc đầu 0,1 km² thấp hơn một ô r9 (~0,105 km²) — mở một ô là đạt."""
+    assert not any(m["earned"] for m in exploration.milestone_progress(0))
+    one = {m["id"]: m for m in exploration.milestone_progress(1)}
+    assert one["first_light"]["earned"] and not one["one_km2"]["earned"]
+
+
+def test_moc_mot_km2_can_du_dien_tich() -> None:
+    cells_for_1km2 = 10  # 10 x ~0,105 = 1,05 km²
+    assert exploration.milestone_progress(cells_for_1km2)[1]["earned"]
+    assert not exploration.milestone_progress(cells_for_1km2 - 1)[1]["earned"]
+
+
+def test_tien_do_moc_bi_chan_o_muc_tieu() -> None:
+    huge = exploration.milestone_progress(100_000)
+    assert all(m["earned"] and m["progressKm2"] == m["goalKm2"] for m in huge)
+
+
+def test_moc_vua_dat_chi_gom_moc_moi_vuot_qua() -> None:
+    assert [m["id"] for m in exploration.newly_unlocked(0, 1)] == ["first_light"]
+    assert [m["id"] for m in exploration.newly_unlocked(1, 10)] == ["one_km2"]
+    assert exploration.newly_unlocked(10, 11) == []
+    assert exploration.newly_unlocked(5, 5) == []
+
+
+def test_tong_quan_co_moc() -> None:
+    assert len(exploration.empty_overview()["milestones"]) == len(exploration.MILESTONES)
+
+
+def test_gop_theo_quan_dem_va_sap_xep() -> None:
+    rows = [
+        {"cell": "a", "district": "Quận 1", "distanceMeters": 100},
+        {"cell": "b", "district": "Quận 1", "distanceMeters": 300},
+        {"cell": "c", "district": "Quận 3", "distanceMeters": 50},
+    ]
+    out = exploration.group_by_district(rows)
+    assert [d["district"] for d in out["districts"]] == ["Quận 1", "Quận 3"]
+    assert out["districts"][0]["cellCount"] == 2
+    assert out["districtCount"] == 2 and out["unassignedCells"] == 0
+
+
+def test_o_xa_moi_poi_khong_gan_quan_nhung_van_duoc_dem() -> None:
+    rows = [
+        {"cell": "a", "district": "Quận 1", "distanceMeters": 100},
+        {"cell": "b", "district": "Quận 7", "distanceMeters": exploration.DISTRICT_MAX_DISTANCE_METERS + 1},
+        {"cell": "c", "district": None, "distanceMeters": None},
+    ]
+    out = exploration.group_by_district(rows)
+    assert out["unassignedCells"] == 2
+    total = sum(d["cellCount"] for d in out["districts"]) + out["unassignedCells"]
+    assert total == len(rows), "tổng các quận cộng ô chưa gán phải khớp số ô"
+
+
+def test_request_nhan_du_hai_tram_diem_gui_bu() -> None:
+    request = ExplorationRequest(points=[BEN_THANH] * exploration.MAX_POINTS_PER_REQUEST)
+    assert len(request.points) == exploration.MAX_POINTS_PER_REQUEST
+
+
+def test_nhieu_diem_mot_lan_ra_dung_so_o() -> None:
+    """Gửi bù: 200 điểm rải trên nhiều ô và nhiều điểm trùng ô."""
+    origin = h3.latlng_to_cell(BEN_THANH["latitude"], BEN_THANH["longitude"], exploration.RESOLUTION)
+    ring = list(h3.grid_disk(origin, 2))
+    points = []
+    for cell in ring:
+        lat, lng = h3.cell_to_latlng(cell)
+        points += [{"latitude": lat, "longitude": lng}] * 3
+    assert len(exploration.cells_for_points(points)) == len(ring)

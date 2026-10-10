@@ -69,6 +69,8 @@ import {
   ScanEye,
   CloudFog,
   Trash2,
+  Trophy,
+  WifiOff,
   Moon,
   Navigation,
   PanelLeftClose,
@@ -904,6 +906,7 @@ export function LocationExplorer() {
   // Bản đồ sương mù: bật thì ghi ô H3 đã đi qua (xem hooks/use-exploration.ts).
   const [fogOn, setFogOn] = useState(false);
   const [fogGps, setFogGps] = useState<'waiting' | 'ok' | 'denied'>('waiting');
+  const [fogDistrictsOpen, setFogDistrictsOpen] = useState(false);
   // Dưới lg bố cục là một ứng dụng ba màn: bản đồ luôn phủ kín vùng giữa, còn
   // "Tìm kiếm" và "Kết quả" là lớp phủ đè lên nó, chuyển bằng thanh tab dưới
   // đáy. Bản đồ KHÔNG bao giờ bị display:none — MapLibre đo khung 0×0 thì
@@ -1049,12 +1052,12 @@ export function LocationExplorer() {
   // Dwell Time, Redis GEO theo phiên lẫn geofence đều đói theo.
   const [isWatching, setIsWatching] = useState(false);
   const [watchStatus, setWatchStatus] = useState('Theo dõi vị trí: tắt');
-  const watchIdRef = useRef<number | null>(null);
-  const lastPingRef = useRef<{ at: number; position: Position } | null>(null);
-  // POI đã đăng ký "nhắc khi tới gần": poiId -> subscriptionId.
   // Bản đồ tự trượt theo chấm xanh (kiểu Google Maps lúc lái xe). Tách khỏi
   // isWatching: theo dõi vị trí vẫn chạy khi người dùng muốn tự xem bản đồ.
   const [followMe, setFollowMe] = useState(false);
+  const watchIdRef = useRef<number | null>(null);
+  const lastPingRef = useRef<{ at: number; position: Position } | null>(null);
+  // POI đã đăng ký "nhắc khi tới gần": poiId -> subscriptionId.
   // Địa điểm đã lưu của phiên này. Giữ nguyên mảng từ API (đã sắp Nhà/Chỗ làm
   // lên đầu) thay vì sắp lại ở client: thứ tự là quyết định của backend, hai
   // nơi cùng sắp thì sẽ có ngày lệch nhau.
@@ -1151,6 +1154,15 @@ export function LocationExplorer() {
   });
   const recordExploration = exploration.record;
   const exploredCellCount = exploration.overview?.cellCount ?? 0;
+  const loadFogDistricts = exploration.loadDistricts;
+  // Bảng quận mỗi lần nạp phải dò POI gần nhất cho từng ô, nên chỉ nạp khi đang
+  // mở và nạp lại khi số ô đổi.
+  useEffect(() => {
+    if (!fogOn || !fogDistrictsOpen) return;
+    // oxlint-disable-next-line react/react-compiler
+    void loadFogDistricts();
+  }, [fogOn, fogDistrictsOpen, exploredCellCount, loadFogDistricts]);
+  const nextFogMilestone = exploration.overview?.milestones.find((milestone) => !milestone.earned) ?? null;
 
   // Địa danh "Săn địa danh Sài Gòn" ở gần: thẻ trên trang chính, marker trên bản
   // đồ và nhắc khi tới gần. Chung một nguồn dữ liệu với màn Săn địa danh.
@@ -2250,6 +2262,13 @@ export function LocationExplorer() {
         }, 0);
       });
 
+      // Người dùng tự kéo bản đồ thì thôi bám theo — nếu không, lần ping kế tiếp
+      // giật khung nhìn về lại chấm xanh ngay lúc họ đang xem chỗ khác.
+      // `originalEvent` chỉ có khi là thao tác thật, easeTo từ code thì không.
+      map.on('dragstart', (event) => {
+        if (event.originalEvent) setFollowMe(false);
+      });
+
       map.on('click', 'clusters', (event) => {
         if (mapPickRef.current) return;
         const features = map.queryRenderedFeatures(event.point, {
@@ -2262,13 +2281,6 @@ export function LocationExplorer() {
         if (clusterId === undefined || !source) return;
         void source
           .getClusterExpansionZoom(clusterId)
-      // Người dùng tự kéo bản đồ thì thôi bám theo — nếu không, lần ping kế tiếp
-      // giật khung nhìn về lại chấm xanh ngay lúc họ đang xem chỗ khác.
-      // `originalEvent` chỉ có khi là thao tác thật, easeTo từ code thì không.
-      map.on('dragstart', (event) => {
-        if (event.originalEvent) setFollowMe(false);
-      });
-
           .then((zoom) => {
             const geometry = features[0].geometry as GeoJSON.Point;
             map.easeTo({
@@ -2546,18 +2558,6 @@ export function LocationExplorer() {
       .addTo(map);
   }, [position]);
 
-  // Ghim pin đỏ lên POI đang chọn. Tạo mới thay vì setLngLat trên marker cũ:
-  // bỏ chọn (selectedPoi = null) thì pin phải BIẾN MẤT, mà một marker sống dai
-  // không có API "ẩn" — remove rồi tạo lại là đường đơn giản và đủ rẻ vì thao
-  // tác chọn không xảy ra hàng chục lần mỗi giây.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    selectedMarkerRef.current?.remove();
-    selectedMarkerRef.current = null;
-    if (!selectedPoi) return;
-    const marker = new maplibregl.Marker({ color: SELECTED_PIN_COLOR })
-      .setLngLat([selectedPoi.longitude, selectedPoi.latitude])
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !followMe || !isWatching) return;
@@ -2570,6 +2570,18 @@ export function LocationExplorer() {
     });
   }, [position, followMe, isWatching]);
 
+  // Ghim pin đỏ lên POI đang chọn. Tạo mới thay vì setLngLat trên marker cũ:
+  // bỏ chọn (selectedPoi = null) thì pin phải BIẾN MẤT, mà một marker sống dai
+  // không có API "ẩn" — remove rồi tạo lại là đường đơn giản và đủ rẻ vì thao
+  // tác chọn không xảy ra hàng chục lần mỗi giây.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    selectedMarkerRef.current?.remove();
+    selectedMarkerRef.current = null;
+    if (!selectedPoi) return;
+    const marker = new maplibregl.Marker({ color: SELECTED_PIN_COLOR })
+      .setLngLat([selectedPoi.longitude, selectedPoi.latitude])
       .addTo(map);
     const element = marker.getElement();
     element.style.cursor = 'pointer';
@@ -2984,6 +2996,7 @@ export function LocationExplorer() {
     }
     lastPingRef.current = null;
     setIsWatching(false);
+    setFollowMe(false);
     setWatchStatus('Theo dõi vị trí: tắt');
   }
 
@@ -2992,11 +3005,12 @@ export function LocationExplorer() {
       setWatchStatus('Trình duyệt không hỗ trợ định vị');
       return;
     }
+    // Idempotent: bấm "Vị trí của tôi" nhiều lần không được nhân đôi watcher.
+    if (watchIdRef.current !== null) return;
     const id = navigator.geolocation.watchPosition(
       ({ coords }) => {
         const nextPosition = {
           latitude: coords.latitude,
-    setFollowMe(false);
           longitude: coords.longitude,
         };
         const now = Date.now();
@@ -3005,8 +3019,6 @@ export function LocationExplorer() {
           ? distanceInMeters(previous.position, nextPosition)
           : Infinity;
         const elapsed = previous ? now - previous.at : Infinity;
-    // Idempotent: bấm "Vị trí của tôi" nhiều lần không được nhân đôi watcher.
-    if (watchIdRef.current !== null) return;
         if (moved < PING_MIN_DISTANCE_M && elapsed < PING_MIN_INTERVAL_MS)
           return;
 
@@ -4346,18 +4358,6 @@ export function LocationExplorer() {
           {/* Khám phá: AR và sương mù — điện thoại xếp dọc dưới thanh tìm kiếm
               nổi, desktop xếp ngang ở góc trên phải. */}
           <div className="absolute right-3 top-[4.25rem] z-10 flex flex-col items-end gap-2 lg:right-4 lg:top-4 lg:flex-row">
-            <button
-              type="button"
-              onClick={() => setFogOn((on) => !on)}
-              aria-pressed={fogOn}
-              aria-label={fogOn ? 'Tắt bản đồ sương mù' : 'Bật bản đồ sương mù — đi tới đâu sáng tới đó'}
-              title="Bản đồ sương mù"
-              className={cn(
-                'flex h-10 items-center gap-1.5 rounded-full border px-3.5 text-sm font-semibold shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md transition-colors',
-                fogOn
-                  ? 'border-slate-900/20 bg-slate-900/90 text-emerald-300 hover:bg-slate-900'
-                  : 'border-white/70 bg-white/95 text-primary hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card',
-              )}
             {isWatching && (
               <button
                 type="button"
@@ -4376,6 +4376,18 @@ export function LocationExplorer() {
                 Bám theo
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setFogOn((on) => !on)}
+              aria-pressed={fogOn}
+              aria-label={fogOn ? 'Tắt bản đồ sương mù' : 'Bật bản đồ sương mù — đi tới đâu sáng tới đó'}
+              title="Bản đồ sương mù"
+              className={cn(
+                'flex h-10 items-center gap-1.5 rounded-full border px-3.5 text-sm font-semibold shadow-[0_8px_24px_rgb(14_68_48/14%)] backdrop-blur-md transition-colors',
+                fogOn
+                  ? 'border-slate-900/20 bg-slate-900/90 text-emerald-300 hover:bg-slate-900'
+                  : 'border-white/70 bg-white/95 text-primary hover:bg-white dark:border-white/10 dark:bg-card/90 dark:hover:bg-card',
+              )}
             >
               <CloudFog className="size-5" aria-hidden />
               Sương mù
@@ -4444,6 +4456,97 @@ export function LocationExplorer() {
                 </button>
               )}
             </div>
+            {exploration.unlocked.length > 0 && (
+              <output
+                className="flex w-full items-start gap-2 rounded-2xl border border-amber-300/40 bg-amber-400/95 px-3 py-2 text-xs text-slate-900 shadow-lg"
+              >
+                <Trophy className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold">Mở khoá mốc mới!</p>
+                  {exploration.unlocked.map((milestone) => (
+                    <p key={milestone.id} className="truncate">
+                      {milestone.title} · {milestone.description}
+                    </p>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={exploration.dismissUnlocked}
+                  className="grid size-5 shrink-0 place-items-center rounded-full hover:bg-black/10"
+                  aria-label="Đóng thông báo mốc"
+                >
+                  <X className="size-3.5" aria-hidden />
+                </button>
+              </output>
+            )}
+            {exploration.pendingCount > 0 && (
+              <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-slate-900/90 px-3 py-1.5 text-[11px] text-white/80 shadow-lg backdrop-blur-md">
+                <WifiOff className="size-3.5 shrink-0 text-amber-300" aria-hidden />
+                {exploration.pendingCount} điểm chờ gửi — sẽ tự gửi khi có mạng
+              </div>
+            )}
+            {fogGps !== 'denied' && (nextFogMilestone || (exploration.overview?.cellCount ?? 0) > 0) && (
+              <div className="w-full rounded-2xl border border-slate-900/20 bg-slate-900/90 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
+                {nextFogMilestone ? (
+                  <>
+                    <p className="flex items-center gap-1.5 font-semibold">
+                      <Trophy className="size-3.5 shrink-0 text-amber-300" aria-hidden />
+                      <span className="truncate">Mốc kế: {nextFogMilestone.title}</span>
+                    </p>
+                    <progress
+                      className="mt-1.5 block h-1.5 w-full overflow-hidden rounded-full bg-white/15 [&::-moz-progress-bar]:bg-emerald-400 [&::-webkit-progress-bar]:bg-white/15 [&::-webkit-progress-value]:bg-emerald-400"
+                      max={nextFogMilestone.goalKm2}
+                      value={nextFogMilestone.progressKm2}
+                      aria-label={nextFogMilestone.description}
+                    />
+                    <p className="mt-1 text-white/70">
+                      {nextFogMilestone.progressKm2.toLocaleString('vi-VN')} / {nextFogMilestone.goalKm2.toLocaleString('vi-VN')} km²
+                    </p>
+                  </>
+                ) : (
+                  <p className="flex items-center gap-1.5 font-semibold">
+                    <Trophy className="size-3.5 shrink-0 text-amber-300" aria-hidden />
+                    Đã đạt mọi mốc khám phá
+                  </p>
+                )}
+                {(exploration.overview?.cellCount ?? 0) > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setFogDistrictsOpen((open) => !open)}
+                      aria-expanded={fogDistrictsOpen}
+                      className="mt-2 flex w-full items-center justify-between border-t border-white/10 pt-2 text-white/80 hover:text-white"
+                    >
+                      <span>Theo quận</span>
+                      {fogDistrictsOpen ? (
+                        <ChevronUp className="size-4" aria-hidden />
+                      ) : (
+                        <ChevronDown className="size-4" aria-hidden />
+                      )}
+                    </button>
+                    {fogDistrictsOpen && (
+                      <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto">
+                        {!exploration.districts && <li className="text-white/60">Đang tính…</li>}
+                        {exploration.districts?.districts.map((item) => (
+                          <li key={item.district} className="flex justify-between gap-2">
+                            <span className="truncate">{item.district}</span>
+                            <span className="shrink-0 text-white/70">
+                              {item.areaKm2.toLocaleString('vi-VN')} km² · {item.cellCount} ô
+                            </span>
+                          </li>
+                        ))}
+                        {!!exploration.districts?.unassignedCells && (
+                          <li className="flex justify-between gap-2 text-white/50">
+                            <span>Ngoài vùng có dữ liệu</span>
+                            <span className="shrink-0">{exploration.districts.unassignedCells} ô</span>
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             {/* Cho sương mù một lý do để bật: chỗ hay gần nhất mà bạn chưa từng tới. */}
             {fogGps !== 'denied' && nextFogTarget && (
               <button
