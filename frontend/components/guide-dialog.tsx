@@ -103,6 +103,7 @@ const TOPICS: {
     Icon: CloudFog,
     items: [
       'Bấm "Sương mù" ở góc trên bản đồ: toàn bộ bản đồ phủ sương, bạn đi tới đâu vùng đó sáng lên.',
+      'Mở đủ diện tích (0,1 → 100 km²) để đạt mốc; bảng "Theo quận" cho biết đã đi bao nhiêu ở mỗi quận.',
     ],
   },
   {
