@@ -85,19 +85,62 @@ def semantic_embedding(text: str, *, timeout: float = REQUEST_TIMEOUT_SECONDS) -
     return [float(value) for value in embeddings[0]]
 
 
-def start_warmup() -> None:
-    """Nạp sẵn bge-m3 ở thread nền lúc khởi động, để lượt tìm kiếm đầu tiên
-    không bị timeout và mất kênh vector (chỉ còn BM25 — câu mô tả dài như
-    "chỗ nào yên tĩnh để ngồi làm việc" khi đó chỉ ra 1 kết quả)."""
+_warmup_lock = threading.Lock()
+_warmup_thread: threading.Thread | None = None
+
+
+def warmup_in_progress() -> bool:
+    with _warmup_lock:
+        return _warmup_thread is not None and _warmup_thread.is_alive()
+
+
+def start_warmup() -> bool:
+    """Nạp sẵn bge-m3 ở thread nền, để lượt tìm kiếm sau không bị timeout và
+    mất kênh vector (chỉ còn BM25 — câu mô tả dài như "chỗ nào yên tĩnh để
+    ngồi làm việc" khi đó chỉ ra 1 kết quả).
+
+    Gọi lúc khởi động và mỗi khi `query_embedding` quá hạn. Chỉ một lần nạp
+    chạy cùng lúc: mỗi truy vấn hỏng mà mở thêm một thread nữa thì chỉ chồng
+    thêm request vào hàng đợi Ollama. Trả về có mở thread mới hay không."""
+    global _warmup_thread
     if not settings.ollama_url:
-        return
-    threading.Thread(
-        target=semantic_embedding,
-        args=("khởi động",),
-        kwargs={"timeout": WARMUP_TIMEOUT_SECONDS},
-        name="embedding-warmup",
-        daemon=True,
-    ).start()
+        return False
+    with _warmup_lock:
+        if _warmup_thread is not None and _warmup_thread.is_alive():
+            return False
+        _warmup_thread = threading.Thread(
+            target=semantic_embedding,
+            args=("khởi động",),
+            kwargs={"timeout": WARMUP_TIMEOUT_SECONDS},
+            name="embedding-warmup",
+            daemon=True,
+        )
+        _warmup_thread.start()
+        return True
+
+
+def query_embedding(text: str) -> list[float] | None:
+    """Embedding cho truy vấn NGƯỜI DÙNG: chờ tối đa
+    ``settings.ollama_query_embedding_timeout_seconds`` thay vì 10 s.
+
+    Đo 2026-10-10: bge-m3 đã nạp thì embed mất 230–270 ms (1,6 s khi reindex
+    tranh Ollama); bge-m3 bị dỡ thì lượt đó mất 11–13 s vì chờ nạp mô hình.
+    Thà trả BM25 ngay rồi nạp ở nền cho lượt sau còn hơn bắt người dùng — nhất
+    là người khiếm thị đang chờ giọng đọc — ngồi im hơn 10 s.
+
+    Đang nạp ở nền thì bỏ qua luôn, không gọi: request mới cũng chỉ xếp hàng
+    sau lần nạp đó và chắc chắn quá hạn. Job reindex không đi qua đây — nó gọi
+    thẳng `semantic_embedding` với timeout mặc định.
+    """
+    if not settings.ollama_url or not text.strip():
+        return None
+    if warmup_in_progress():
+        logger.info("bge-m3 đang được nạp ở nền, bỏ kênh vector lượt này")
+        return None
+    embedding = semantic_embedding(text, timeout=settings.ollama_query_embedding_timeout_seconds)
+    if embedding is None:
+        start_warmup()
+    return embedding
 
 
 def available() -> bool:

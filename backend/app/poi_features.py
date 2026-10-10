@@ -629,6 +629,70 @@ def is_real_mall(name: str | None, tags: dict[str, Any]) -> bool:
     return any(marker in folded for marker in _DEPARTMENT_STORE_MARKERS)
 
 
+def _mark_signature(word: str) -> tuple[str, str]:
+    """(dạng bỏ dấu, tập dấu) của một âm tiết đã viết thường.
+
+    So TẬP dấu chứ không so chuỗi: "hoà" và "hòa" là cùng một chữ, chỉ khác kiểu
+    đặt dấu thanh cũ/mới, nên không được tính là khác dấu.
+    """
+    decomposed = unicodedata.normalize("NFD", word)
+    marks = sorted(char for char in decomposed if unicodedata.combining(char))
+    return normalize_text(word), "".join(marks) + ("đ" if "đ" in word else "")
+
+
+def matches_query_marks(query_text: str | None, texts: Iterable[str | None]) -> bool:
+    """Văn bản `texts` có khớp truy vấn MÀ KHÔNG nhờ gộp nhầm dấu hay không.
+
+    Analyzer ``vi_folded`` của OpenSearch bỏ dấu cả hai phía để người gõ không
+    dấu vẫn tìm được, nhưng nó gộp luôn những chữ khác nghĩa: đo 2026-10-10,
+    chế độ giọng nói nói "quán phở" ở Quận 1 trả "Nhà Hát Thành Phố" ở hạng 3
+    ("phở" và "phố" cùng thành "pho"), kéo theo Bảo tàng Thành phố, Trường THPT
+    ("phổ"), Phòng khám… (``name.prefix``: "pho" là tiền tố của "phòng").
+
+    Truy vấn GÕ CÓ DẤU thì dấu là thông tin thật (cùng lý do với
+    ``categories_for_query``). Một từ có dấu của truy vấn được tính là khớp khi:
+
+    - giá trị có dấu chứa đúng chữ đó (cùng dấu) hoặc một chữ bắt đầu bằng nó;
+    - giá trị KHÔNG có dấu nào (dữ liệu nhập không dấu: "Pho Hien", thẻ OSM)
+      chứa dạng bỏ dấu của nó — chỉ ở đây mới chịu được lệch dấu.
+
+    Xét dấu theo TỪNG giá trị chứ không theo từng chữ: "quan" trong "cơ quan"
+    là chữ không dấu thật, khác "quán", còn "Pho" trong "Pho Hien" là "Phở" bị
+    mất dấu. Chỉ phân biệt được hai trường hợp đó bằng việc cả giá trị có dấu
+    hay không.
+
+    Từ không dấu trong truy vấn thì khớp lỏng như analyzer (theo tiền tố bỏ
+    dấu). Truy vấn hoàn toàn không dấu ("pho") luôn trả True.
+    """
+    if not _has_vietnamese_marks(query_text or ""):
+        return True
+    query_words = _lower_words(query_text or "").split()
+    for value in texts:
+        if not value:
+            continue
+        if _has_vietnamese_marks(value):
+            words = _lower_words(value).split()
+            signatures = {_mark_signature(word) for word in words}
+            for query_word in query_words:
+                if not _has_vietnamese_marks(query_word):
+                    if any(normalize_text(word).startswith(query_word) for word in words):
+                        return True
+                elif _mark_signature(query_word) in signatures or any(
+                    len(word) > len(query_word) and word.startswith(query_word) for word in words
+                ):
+                    return True
+        else:
+            folded = normalize_text(value).split()
+            for query_word in query_words:
+                target = normalize_text(query_word)
+                if target in folded or (
+                    not _has_vietnamese_marks(query_word)
+                    and any(word.startswith(target) for word in folded)
+                ):
+                    return True
+    return False
+
+
 def osm_category(tags: dict[str, str]) -> tuple[str, str] | None:
     # Thứ tự khoá là thứ tự ƯU TIÊN, không phải tuỳ ý: một POI mang nhiều thẻ
     # (nhà thờ vừa `amenity=place_of_worship` vừa `tourism=attraction`) sẽ lấy

@@ -39,6 +39,12 @@ def _min_should_match() -> dict[str, Any]:
     value = (settings.search_text_min_should_match or "").strip()
     return {"minimum_should_match": value} if value else {}
 
+# Các trường văn bản mà kênh BM25 so khớp, lấy kèm trong hit để
+# ``retrieval`` loại được hit chỉ khớp nhờ gộp nhầm dấu ("phở" -> "Phố") —
+# xem ``poi_features.matches_query_marks``.
+BM25_TEXT_FIELDS = ("name", "category_label", "search_keywords", "tags", "brand", "description")
+
+
 def bm25_body(
     query_text: str,
     latitude: float,
@@ -72,7 +78,7 @@ def bm25_body(
     filters = _category_filter(category) + [_geo_filter(latitude, longitude, radius_m)]
     return {
         "size": size,
-        "_source": ["poi_id"],
+        "_source": ["poi_id", *BM25_TEXT_FIELDS],
         "query": {
             "bool": {
                 "must": [

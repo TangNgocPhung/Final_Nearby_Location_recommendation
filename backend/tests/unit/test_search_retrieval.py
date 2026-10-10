@@ -1,3 +1,6 @@
+import threading
+import time
+
 from app.config import settings
 from app.search import retrieval
 from app.search.client import is_search_configured, reset_client_cache
@@ -269,3 +272,248 @@ def test_multi_channel_falls_back_when_cluster_unreachable(monkeypatch) -> None:
     assert retrieval.multi_channel_candidates(10.0, 106.0, 1000, "phở", None, 50) is None
 
     reset_client_cache()
+
+
+# --- Hit BM25 chỉ khớp nhờ gộp nhầm dấu ------------------------------------------
+#
+# Đo 2026-10-10 (chế độ giọng nói, "quán phở" quanh 10.7757, 106.7009): BM25
+# trả 11 quán phở rồi tới "Nhà Hát Thành Phố", "Bảo tàng Thành phố"… vì
+# vi_folded biến cả "phở" lẫn "phố" thành "pho". Diversify kéo ngay POI khác
+# loại đầu tiên lên sau hai quán phở → "Nhà Hát Thành Phố" đứng hạng 3.
+
+
+def _hit(poi_id: str, name: str, label: str = "Ăn uống", tags: list[str] | None = None) -> dict:
+    return {
+        "_score": 1.0,
+        "_source": {"poi_id": poi_id, "name": name, "category_label": label, "tags": tags or []},
+    }
+
+
+def _bm25_response() -> dict:
+    return {
+        "hits": {
+            "hits": [
+                _hit("pho-nha-minh", "Phở Nhà Mình", tags=["restaurant"]),
+                _hit("pho-hien", "Pho Hien", tags=["restaurant"]),
+                _hit("nha-hat", "Nhà Hát Thành Phố", "Ga tàu"),
+                _hit("bao-tang", "Bảo tàng Thành phố", "Văn hóa", ["museum"]),
+                _hit("phong-kham", "Trung Tâm Y Tế Dự Phòng - Phòng Khám", "Y tế", ["hospital"]),
+            ]
+        }
+    }
+
+
+def test_bm25_bo_hit_pho_khop_nham_pho() -> None:
+    filtered = retrieval._drop_mark_collisions(_bm25_response(), "phở")
+
+    ids = [poi_id for poi_id, _ in retrieval.query_builder.extract_ranked_hits(filtered)]
+    assert ids == ["pho-nha-minh", "pho-hien"]
+
+
+def test_bm25_khong_loc_khi_go_khong_dau() -> None:
+    response = _bm25_response()
+
+    assert retrieval._drop_mark_collisions(response, "pho") is response
+
+
+def test_bm25_giu_nguyen_khi_loc_het() -> None:
+    """Gõ sai dấu ("phơ") thì không hit nào khớp đúng dấu — khớp nhờ bỏ dấu
+    vẫn hơn trả rỗng. ("Pho Hien" không dấu thì vẫn khớp nên bỏ khỏi đây.)"""
+    response = _bm25_response()
+    response["hits"]["hits"] = [
+        hit for hit in response["hits"]["hits"] if hit["_source"]["poi_id"] != "pho-hien"
+    ]
+
+    assert retrieval._drop_mark_collisions(response, "phơ") is response
+
+
+class _Bm25OnlyClient:
+    def __init__(self) -> None:
+        self.bodies: list[dict] = []
+
+    def search(self, index: str, body: dict) -> dict:
+        self.bodies.append(body)
+        if "multi_match" in str(body["query"]):
+            return _bm25_response()
+        # Kênh không gian: mọi POI, cái khớp nhầm dấu ở gần nhất.
+        ids = ["nha-hat", "bao-tang", "phong-kham", "pho-nha-minh", "pho-hien"]
+        return {"hits": {"hits": [{"_source": {"poi_id": poi_id}, "_score": None} for poi_id in ids]}}
+
+
+def test_multi_channel_khong_dua_poi_khop_nham_dau_vao_ung_vien(monkeypatch) -> None:
+    client = _Bm25OnlyClient()
+    hydrated: dict = {}
+
+    def fake_hydrate(ranked, *args, **kwargs):
+        hydrated["ids"] = [poi_id for poi_id, _ in ranked]
+        hydrated["bm25"] = kwargs["bm25_scores"]
+        return []
+
+    monkeypatch.setattr(retrieval, "search_available", lambda: True)
+    monkeypatch.setattr(retrieval, "get_client", lambda: client)
+    monkeypatch.setattr(retrieval, "_trending_ids", lambda *args: [])
+    monkeypatch.setattr(retrieval, "hydrate_candidates", fake_hydrate)
+    monkeypatch.setattr(settings, "opensearch_knn_enabled", False, raising=False)
+
+    retrieval.multi_channel_candidates(10.7757, 106.7009, 2000, "phở", None, 100)
+
+    assert sorted(hydrated["ids"]) == ["pho-hien", "pho-nha-minh"]
+    assert set(hydrated["bm25"]) == {"pho-hien", "pho-nha-minh"}
+    bm25_body = next(body for body in client.bodies if "multi_match" in str(body["query"]))
+    assert {"name", "tags", "search_keywords"} <= set(bm25_body["_source"])
+
+
+# --- Chạy song song các kênh ---------------------------------------------------
+#
+# Đo 2026-10-10 (voice "phở", Quận 1): BM25 ~200 ms, embed ~250 ms, k-NN
+# ~450 ms, geo ~250 ms, h3 ~250 ms chạy TUẦN TỰ — riêng phần truy xuất đã
+# ~1,4 s. Các kênh không phụ thuộc nhau nên phải chạy cùng lúc.
+
+
+def _channel_of(body: dict) -> str:
+    query = str(body["query"])
+    if "'knn'" in query:
+        return "vector"
+    if "multi_match" in query:
+        return "bm25"
+    if "'terms'" in query:
+        return "h3"
+    return "geo"
+
+
+class _ParallelClient:
+    """Mỗi truy vấn đứng chờ ở một barrier đủ 4 bên (bm25, vector, geo, h3):
+    chạy tuần tự thì truy vấn đầu tiên không bao giờ qua được barrier."""
+
+    def __init__(self, parties: int = 4, fail: str | None = None) -> None:
+        self.barrier = threading.Barrier(parties, timeout=5)
+        self.fail = fail
+        self.channels: list[str] = []
+
+    def search(self, index: str, body: dict) -> dict:
+        channel = _channel_of(body)
+        self.channels.append(channel)
+        if channel == self.fail:
+            raise RuntimeError(f"{channel} hỏng")
+        self.barrier.wait()
+        return {"hits": {"hits": [{"_source": {"poi_id": f"{channel}-1"}, "_score": 1.0}]}}
+
+
+def _wire(monkeypatch, client, embedding=lambda text: [0.1, 0.2]) -> dict:
+    captured: dict = {}
+
+    def fake_hydrate(ranked, *args, **kwargs):
+        captured["ids"] = [poi_id for poi_id, _ in ranked]
+        captured["channels"] = kwargs["channels"]
+        return [{"id": poi_id} for poi_id, _ in ranked]
+
+    monkeypatch.setattr(retrieval, "search_available", lambda: True)
+    monkeypatch.setattr(retrieval, "get_client", lambda: client)
+    monkeypatch.setattr(retrieval, "_trending_ids", lambda *args: [])
+    monkeypatch.setattr(retrieval, "hydrate_candidates", fake_hydrate)
+    monkeypatch.setattr(retrieval, "query_embedding", embedding)
+    monkeypatch.setattr(settings, "opensearch_knn_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "geo_channel", "both", raising=False)
+    return captured
+
+
+def test_cac_kenh_chay_song_song(monkeypatch) -> None:
+    client = _ParallelClient()
+    _wire(monkeypatch, client)
+    telemetry: dict = {}
+
+    result = retrieval.multi_channel_candidates(
+        10.7757, 106.7009, 2000, "phở", None, 100, telemetry=telemetry
+    )
+
+    assert result is not None
+    assert sorted(client.channels) == ["bm25", "geo", "h3", "vector"]
+    assert telemetry["channelsUsed"] == ["bm25", "geo", "h3", "vector"]
+    assert telemetry["degradedChannels"] is None
+
+
+def test_embed_qua_han_chi_bo_kenh_vector(monkeypatch) -> None:
+    """bge-m3 chưa nạp → `query_embedding` trả None sau timeout ngắn. Truy vấn
+    vẫn đi OpenSearch với 3 kênh còn lại, và việc mất kênh phải hiện ra."""
+    client = _ParallelClient(parties=3)
+    captured = _wire(monkeypatch, client, embedding=lambda text: None)
+    telemetry: dict = {}
+
+    result = retrieval.multi_channel_candidates(
+        10.7757, 106.7009, 2000, "phở", None, 100, telemetry=telemetry
+    )
+
+    assert result is not None
+    assert "vector" not in client.channels
+    assert telemetry["channelsUsed"] == ["bm25", "geo", "h3"]
+    assert telemetry["degradedChannels"] == ["vector"]
+    assert captured["ids"] == ["bm25-1"]
+
+
+def test_knn_loi_chi_bo_kenh_vector(monkeypatch) -> None:
+    client = _ParallelClient(parties=3, fail="vector")
+    _wire(monkeypatch, client)
+    telemetry: dict = {}
+
+    result = retrieval.multi_channel_candidates(
+        10.7757, 106.7009, 2000, "phở", None, 100, telemetry=telemetry
+    )
+
+    assert result is not None
+    assert telemetry["degradedChannels"] == ["vector"]
+    assert "vector" not in telemetry["channelsUsed"]
+
+
+def test_bm25_loi_roi_ve_postgis_khong_cho_kenh_vector(monkeypatch) -> None:
+    """Lỗi ở kênh bắt buộc (BM25/geo/h3) vẫn rơi về PostGIS như trước — và trả
+    về ngay, không ngồi chờ kênh vector đang embed dở."""
+    release = threading.Event()
+
+    def slow_embedding(text: str) -> None:
+        release.wait(5)
+        return None
+
+    client = _ParallelClient(parties=2, fail="bm25")
+    _wire(monkeypatch, client, embedding=slow_embedding)
+
+    started = time.perf_counter()
+    try:
+        result = retrieval.multi_channel_candidates(10.7757, 106.7009, 2000, "phở", None, 100)
+        elapsed = time.perf_counter() - started
+    finally:
+        release.set()
+
+    assert result is None
+    assert elapsed < 2
+
+
+def test_khong_co_query_chi_chay_kenh_khong_gian(monkeypatch) -> None:
+    client = _ParallelClient(parties=2)
+
+    def no_embedding(text: str) -> None:
+        raise AssertionError("không có chữ thì không được embed")
+
+    _wire(monkeypatch, client, embedding=no_embedding)
+    telemetry: dict = {}
+
+    result = retrieval.multi_channel_candidates(
+        10.7757, 106.7009, 2000, None, None, 100, telemetry=telemetry
+    )
+
+    assert result is not None
+    assert sorted(client.channels) == ["geo", "h3"]
+    assert telemetry["degradedChannels"] is None
+
+
+def test_spatial_channels_dung_executor_khi_co(monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(settings, "geo_channel", "both", raising=False)
+    client = _ParallelClient(parties=2)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        channels, _info = retrieval._spatial_channels(
+            client, 10.7757, 106.7009, 2000, None, executor=pool
+        )
+
+    assert channels == {"geo": ["geo-1"], "h3": ["h3-1"]}

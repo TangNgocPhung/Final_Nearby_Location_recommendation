@@ -452,3 +452,59 @@ def test_ghi_de_tiffany_trong_migration_0037_la_danh_muc_co_that() -> None:
     spec.loader.exec_module(module)
     assert module.CATEGORY in set(CATEGORY_MAP.values())
     assert osm_category({"shop": "jewelry"}) == module.CATEGORY
+
+
+# --- Khớp giữ dấu cho truy vấn gõ có dấu ----------------------------------------
+#
+# Đo 2026-10-10: chế độ giọng nói "quán phở" ở Quận 1 trả "Nhà Hát Thành Phố"
+# ở hạng 3 — analyzer vi_folded gộp "phở" và "phố" về cùng "pho".
+
+from app.poi_features import matches_query_marks  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["Nhà Hát Thành Phố"],
+        ["Bảo tàng Thành phố", "Văn hóa", "museum"],
+        ["Trường Trung học phổ thông Lương Thế Vinh"],
+        ["Trung Tâm Y Tế Dự Phòng - Phòng Khám Tiêm Phòng"],
+    ],
+)
+def test_pho_co_dau_khong_khop_chu_khac_dau(texts: list[str]) -> None:
+    assert matches_query_marks("phở", texts) is False
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["Phở Nhà Mình"],
+        ["PHỞ SOL - Q1 (Phở & Các Món Ngon Từ Phở)"],
+        # Dữ liệu nhập không dấu: chỉ ở đây mới chịu lệch dấu.
+        ["Pho Hien", "Ăn uống", "restaurant"],
+        ["Bánh mì", "Ăn uống", "pho"],
+    ],
+)
+def test_pho_co_dau_van_khop_quan_pho(texts: list[str]) -> None:
+    assert matches_query_marks("phở", texts) is True
+
+
+def test_truy_van_khong_dau_van_khop_moi_dau() -> None:
+    """Người gõ không dấu "pho" không cho biết là phở hay phố — giữ nguyên
+    hành vi của analyzer, không lọc gì."""
+    assert matches_query_marks("pho", ["Nhà Hát Thành Phố"]) is True
+    assert matches_query_marks("pho", ["Phở Nhà Mình"]) is True
+
+
+def test_kieu_dat_dau_cu_moi_la_cung_mot_chu() -> None:
+    assert matches_query_marks("hòa bình", ["Chợ Hoà Bình"]) is True
+    assert matches_query_marks("hoà", ["Phở Hòa Pasteur"]) is True
+
+
+def test_chu_khong_dau_that_trong_gia_tri_co_dau_khong_khop_chu_co_dau() -> None:
+    """"quan" trong "cơ quan nhà nước" là chữ không dấu thật, khác "quán"."""
+    assert matches_query_marks("quán", ["UBND Phường 8", "cơ quan nhà nước"]) is False
+
+
+def test_tu_khong_dau_trong_truy_van_co_dau_khop_theo_tien_to() -> None:
+    assert matches_query_marks("phở bo", ["Phố Bò Viên"]) is True
