@@ -55,6 +55,19 @@ body {
   font-family: var(--font-app-sans);
 }
 
+/* Điện thoại: không cho trình duyệt tự phóng chữ khi xoay ngang, và chặn kéo-xuống-
+   để-tải-lại / cuộn nảy ra ngoài trang — kéo bản đồ hay cuộn danh sách ở mép trên
+   không được làm cả ứng dụng tải lại. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body {
+  overscroll-behavior: none;
+}
+
 /* maplibre-gl.css nạp sau Tailwind và không nằm trong layer nào, nên
    .maplibregl-map{position:relative} đè utility `absolute` của div chứa bản đồ
    (utility Tailwind v4 nằm trong @layer utilities, mà CSS không layer luôn thắng
@@ -342,6 +355,18 @@ body {
     min-height: 52px;
   }
 
+  /* Bàn phím ảo đang mở (ô tìm kiếm / ô nhập đang focus): thanh tab dưới đáy
+     nằm ngay trên bàn phím, ăn mất ~60px của khoảng nhìn vốn đã còn chừng nửa
+     màn hình. Ẩn tới khi nhập xong — chạm ra ngoài là hiện lại. */
+  .nearby-app:has(input:focus, textarea:focus) .mobile-tabbar {
+    display: none;
+  }
+
+  /* Không đánh nháy xám khi chạm; trạng thái :active của từng nút đã đủ phản hồi. */
+  .nearby-app {
+    -webkit-tap-highlight-color: transparent;
+  }
+
   /* Trợ lý đã có ô riêng trên thanh tab dưới đáy — nút tròn nổi chỉ còn che
      thẻ địa điểm ở đáy bản đồ. Vẫn giữ trong DOM: ô tab bấm hộ nó. */
   .chat-launcher {
@@ -426,6 +451,16 @@ body {
 .dark [data-slot='dialog-content'],
 .dark [data-slot='dialog-content'] * {
   scrollbar-color: oklch(1 0 0 / 18%) transparent;
+}
+
+/* Hàng chip vuốt ngang: ẩn thanh cuộn. Selector hai class để thắng luật
+   `.nearby-app *` ở trên (utility Tailwind một class sẽ thua nó). */
+.nearby-app .hide-scrollbar {
+  scrollbar-width: none;
+}
+
+.nearby-app .hide-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* Thẻ "kính mờ" dùng chung cho các khối nổi trên nền gradient. */
