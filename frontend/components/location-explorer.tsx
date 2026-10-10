@@ -117,7 +117,9 @@ import { ConvenienceFinder } from '@/components/convenience-finder';
 import { FuelFinder } from '@/components/fuel-finder';
 import { ToiletFinder } from '@/components/toilet-finder';
 import { ParkingFinder, type ParkingRequest } from '@/components/parking-finder';
+import { useLandmarkAlerts, useNearbyLandmarks } from '@/hooks/use-nearby-landmarks';
 import { useProximityNotifications } from '@/hooks/use-proximity';
+import { NearbyLandmarksCard } from '@/components/nearby-landmarks-card';
 import { usePoiDetail } from '@/hooks/use-poi-detail';
 import { fogGeometry, useExploration } from '@/hooks/use-exploration';
 import {
@@ -889,6 +891,7 @@ export function LocationExplorer() {
   const [assistantOverlay, setAssistantOverlay] = useState<AssistantOverlay | null>(null);
   const assistantMarkersRef = useRef<Marker[]>([]);
   const assistantOverlayKeyRef = useRef<string>('');
+  const landmarkMarkersRef = useRef<Marker[]>([]);
   // "Chạm lên bản đồ để chọn vị trí" (hẹn nhóm). Ref để handler click của
   // MapLibre — đăng ký MỘT lần lúc khởi tạo — luôn đọc giá trị mới nhất.
   const mapPickRef = useRef<((latitude: number, longitude: number) => void) | null>(null);
@@ -966,6 +969,8 @@ export function LocationExplorer() {
     ranks: Map<string, number>;
   } | null>(null);
   const [position, setPosition] = useState(DEFAULT_POSITION);
+  // Sai số của GPS thật ứng với `position`; null khi vị trí là mô phỏng/mặc định/đã lưu.
+  const [positionAccuracy, setPositionAccuracy] = useState<number | null>(null);
   // POI trong vùng bản đồ đang nhìn — nạp lại mỗi khi kéo/zoom xong (moveend).
   // Tách khỏi `pois`: danh sách kết quả bên trái vẫn là của lần tìm kiếm, còn
   // các chấm trên bản đồ là hợp của cả hai — không có nó thì kéo bản đồ ra
@@ -1143,6 +1148,43 @@ export function LocationExplorer() {
   });
   const recordExploration = exploration.record;
   const exploredCellCount = exploration.overview?.cellCount ?? 0;
+
+  // Địa danh "Săn địa danh Sài Gòn" ở gần: thẻ trên trang chính, marker trên bản
+  // đồ và nhắc khi tới gần. Chung một nguồn dữ liệu với màn Săn địa danh.
+  const nearbyLandmarks = useNearbyLandmarks({
+    apiBaseUrl: API_BASE_URL,
+    sessionId: telemetryState.sessionId,
+    position,
+  });
+  const refreshNearbyLandmarks = nearbyLandmarks.refresh;
+  // Khám phá xong trong khung chat thì trạng thái ✓ phải cập nhật khi đóng nó.
+  useEffect(() => {
+    if (!chatOpen) void refreshNearbyLandmarks();
+  }, [chatOpen, refreshNearbyLandmarks]);
+  const landmarkAlerts = useLandmarkAlerts({
+    landmarks: nearbyLandmarks.landmarks,
+    // `positionAccuracy` chỉ khác null khi vị trí đến từ GPS thật.
+    hasRealGps: positionAccuracy !== null,
+  });
+  const [landmarkLayerOn, setLandmarkLayerOn] = useState(true);
+  const openLandmark = useCallback(
+    (landmark: { poiId: string }) => {
+      flyToOnDetailRef.current = landmark.poiId;
+      showMapOnMobile();
+      openDetailRef.current(landmark.poiId, 'landmark');
+    },
+    [showMapOnMobile],
+  );
+  // Bấm vào thông báo "gần địa danh" (Service Worker) thì mở đúng địa danh đó.
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; poiId?: string } | null;
+      if (data?.type === 'nearby:focus-poi' && data.poiId) openLandmark({ poiId: data.poiId });
+    };
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage);
+  }, [openLandmark]);
   // Backend đã xếp theo độ liên quan; lấy chỗ gần nhất trong số chưa tới để làm
   // đích cho người đang bật sương mù.
   const nextFogTarget = useMemo(
@@ -2422,6 +2464,47 @@ export function LocationExplorer() {
     }
   }, [assistantOverlay]);
 
+  // Lớp địa danh nổi bật: luôn có trên bản đồ (bật/tắt ở thẻ "Địa danh gần bạn"),
+  // kể cả khi chưa mở trợ lý. Ẩn khi trợ lý đang vẽ lớp của nó — màn Săn địa danh
+  // vẽ lại đúng các địa danh này với nhãn ?/✓, vẽ hai lần là chồng marker.
+  // Khoá theo (id, đã khám phá) để không dựng lại marker mỗi lần GPS nhích.
+  const landmarksRef = useRef(nearbyLandmarks.landmarks);
+  useEffect(() => {
+    landmarksRef.current = nearbyLandmarks.landmarks;
+  }, [nearbyLandmarks.landmarks]);
+  const landmarkPinKey = nearbyLandmarks.landmarks
+    .map((place) => `${place.poiId}:${place.discovered ? 1 : 0}`)
+    .sort()
+    .join('|');
+  const landmarkLayerVisible = landmarkLayerOn && assistantOverlay === null;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const marker of landmarkMarkersRef.current) marker.remove();
+    landmarkMarkersRef.current = [];
+    if (!landmarkLayerVisible) return;
+
+    for (const place of landmarksRef.current) {
+      const pin = document.createElement('button');
+      pin.type = 'button';
+      pin.className = cn(
+        'grid size-7 place-items-center rounded-full border-2 bg-white text-sm shadow-md transition-transform hover:scale-110',
+        place.discovered ? 'border-emerald-500' : 'border-amber-500',
+      );
+      pin.textContent = place.discovered ? '✓' : '🏛️';
+      const label = place.discovered ? place.name : `${place.name} · địa danh chưa khám phá`;
+      pin.title = label;
+      pin.setAttribute('aria-label', label);
+      pin.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openDetailRef.current(place.poiId, 'landmark');
+      });
+      landmarkMarkersRef.current.push(
+        new maplibregl.Marker({ element: pin }).setLngLat([place.longitude, place.latitude]).addTo(map),
+      );
+    }
+  }, [landmarkPinKey, landmarkLayerVisible]);
+
   useEffect(() => {
     const canvas = mapRef.current?.getCanvas();
     if (canvas) canvas.style.cursor = mapPicking ? 'crosshair' : '';
@@ -2680,6 +2763,7 @@ export function LocationExplorer() {
       };
       positionRef.current = nextPosition;
       setPosition(nextPosition);
+      setPositionAccuracy(source === 'gps' ? coords.accuracy : null);
       setHasLocationConsent(true);
       setGpsStatus(
         `${source === 'gps' ? 'GPS' : 'Vị trí mạng'} chính xác ±${Math.round(coords.accuracy)} m`,
@@ -2792,6 +2876,7 @@ export function LocationExplorer() {
     (latitude: number, longitude: number) => {
       const nextPosition = { latitude, longitude };
       setPosition(nextPosition);
+      setPositionAccuracy(null);
       setGpsStatus('Vị trí mô phỏng (trình diễn) · không phải GPS');
       setStatus('Đang dùng vị trí mô phỏng đặt trên bản đồ');
       mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 16, essential: true });
@@ -2900,6 +2985,7 @@ export function LocationExplorer() {
 
         lastPingRef.current = { at: now, position: nextPosition };
         setPosition(nextPosition);
+        setPositionAccuracy(coords.accuracy);
         setHasLocationConsent(true);
         setGpsStatus(`GPS chính xác ±${Math.round(coords.accuracy)} m`);
         setWatchStatus(
@@ -3742,7 +3828,8 @@ export function LocationExplorer() {
               onClose={() => setBusOpen(false)}
             />
           ) : (
-            // 6 nút, lưới 3 cột × 2 hàng (giữ lưới 6 cột để mỗi nút chiếm 2).
+            <div className="grid gap-3">
+            {/* 6 nút, lưới 3 cột × 2 hàng (giữ lưới 6 cột để mỗi nút chiếm 2). */}
             <div className="grid shrink-0 grid-cols-6 gap-2">
               {(
                 [
@@ -3812,6 +3899,34 @@ export function LocationExplorer() {
                   <span className="max-lg:hidden">{label}</span>
                 </Button>
               ))}
+            </div>
+            <NearbyLandmarksCard
+              landmarks={nearbyLandmarks.landmarks}
+              discovered={nearbyLandmarks.discovered}
+              total={nearbyLandmarks.total}
+              loaded={nearbyLandmarks.loaded}
+              failed={nearbyLandmarks.failed}
+              hasRealGps={positionAccuracy !== null}
+              layerOn={landmarkLayerOn}
+              onToggleLayer={() => setLandmarkLayerOn((value) => !value)}
+              alertsEnabled={landmarkAlerts.enabled}
+              alertsPermission={landmarkAlerts.permission}
+              onToggleAlerts={() => {
+                if (landmarkAlerts.enabled) {
+                  landmarkAlerts.disable();
+                  return;
+                }
+                void landmarkAlerts.enable().then((ok) => {
+                  if (!ok) return;
+                  // Nhắc chỉ có ích khi vị trí được cập nhật lúc di chuyển.
+                  if (!isWatching) startWatching();
+                  setStatus('Đã bật nhắc khi tới gần địa danh · đang theo dõi vị trí');
+                });
+              }}
+              alert={landmarkAlerts.alert}
+              onDismissAlert={landmarkAlerts.dismiss}
+              onOpen={openLandmark}
+            />
             </div>
           )}
           </div>
