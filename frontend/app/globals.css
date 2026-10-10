@@ -379,12 +379,6 @@ body {
     overflow-wrap: anywhere;
   }
 
-  /* Pinch-zoom là thao tác chuẩn trên điện thoại; hai nút +/- 44px chỉ chiếm
-     chỗ ngay góc mà thẻ địa điểm cần. */
-  .nearby-app .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
-    display: none;
-  }
-
   .chat-panel,
   .poi-detail-mobile {
     padding-top: env(safe-area-inset-top);
@@ -394,6 +388,23 @@ body {
   .voice-mode button[aria-pressed='true'] {
     border-color: #6ee7b7;
     background-color: rgb(16 185 129 / 15%);
+  }
+}
+
+/* Pinch-zoom là thao tác chuẩn trên điện thoại; hai nút +/- 44px chỉ chiếm chỗ
+   ngay góc mà thẻ địa điểm cần. Cũng ẩn trên máy cảm ứng rộng ≥640px (điện thoại
+   xoay ngang, máy tính bảng): nếu để, nút +/- đè lên nút "Vị trí của tôi" nổi. */
+@media (max-width: 639px), (max-width: 1023px) and (pointer: coarse) {
+  .nearby-app .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
+    display: none;
+  }
+}
+
+/* Cửa sổ trình duyệt hẹp dùng chuột (640–1023px): nút +/- vẫn hiện nên nâng nút
+   "Vị trí của tôi" nổi lên trên cụm đó thay vì đè lên. */
+@media (min-width: 640px) and (max-width: 1023px) and (pointer: fine) {
+  .nearby-app .locate-fab {
+    bottom: 7.5rem;
   }
 }
 
@@ -417,6 +428,62 @@ body {
   .voice-mode .voice-mic svg {
     width: 40px;
     height: 40px;
+  }
+}
+
+/* viewportFit: 'cover' cho nội dung vẽ tới sát mép màn hình — xoay ngang thì tai
+   thỏ / Dynamic Island nằm ở hai bên và che nút đầu hàng. Chừa vùng an toàn cho
+   thanh trên và thanh tab dưới (padding gốc của chúng là px-3 / sm:px-6 / px-2). */
+@media (max-width: 1023px) {
+  .app-header {
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+  }
+
+  .nearby-app .mobile-tabbar {
+    padding-left: max(0.5rem, env(safe-area-inset-left));
+    padding-right: max(0.5rem, env(safe-area-inset-right));
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1023px) {
+  .app-header {
+    padding-left: max(1.5rem, env(safe-area-inset-left));
+    padding-right: max(1.5rem, env(safe-area-inset-right));
+  }
+}
+
+/* Điện thoại xoay ngang (cao ≤ 500px): thanh trên 69px + thanh tab 63px nuốt gần
+   40% chiều cao 360px, chỉ còn ~230px cho nội dung. Gọn lại: ẩn dòng mô tả, logo
+   nhỏ hơn, tab xếp biểu tượng cạnh nhãn. Nút vẫn giữ vùng chạm 44px / 40px. */
+@media (max-height: 500px) and (max-width: 1023px) {
+  .app-header {
+    padding-top: max(0.25rem, env(safe-area-inset-top));
+    padding-bottom: 0.25rem;
+  }
+
+  .app-header .brand-mark {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .app-header p {
+    display: none;
+  }
+
+  .nearby-app .mobile-tabbar {
+    padding-top: 0;
+  }
+
+  .nearby-app .mobile-tabbar button {
+    min-height: 40px;
+    flex-direction: row;
+    gap: 0.5rem;
+  }
+
+  .nearby-app .mobile-tabbar .mobile-tab > span {
+    width: 2rem;
+    height: 1.5rem;
   }
 }
 
@@ -461,6 +528,19 @@ body {
 
 .nearby-app .hide-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Mọi dải vuốt ngang (gợi ý, ảnh, chip trong panel chi tiết...) trên màn cảm ứng /
+   hẹp: ngón tay đã là thanh cuộn, vạch xanh mảnh dưới dải chỉ giống một đường kẻ
+   lạc. Màn rộng dùng chuột vẫn giữ thanh cuộn để biết còn nội dung. */
+@media (pointer: coarse), (max-width: 639px) {
+  .nearby-app .overflow-x-auto {
+    scrollbar-width: none;
+  }
+
+  .nearby-app .overflow-x-auto::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Thẻ "kính mờ" dùng chung cho các khối nổi trên nền gradient. */

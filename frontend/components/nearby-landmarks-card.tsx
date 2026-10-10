@@ -178,7 +178,7 @@ export function NearbyLandmarksCard({
           ))}
         </div>
       ) : (
-        <ul className="grid gap-2">
+        <ul className="grid grid-cols-1 gap-2">
           {shown.map((place) => {
             const inside = place.distanceMeters <= place.radiusMeters;
             return (

@@ -180,7 +180,7 @@ export function FuelFinder({
           <select
             value={brand}
             onChange={(event) => setBrand(event.target.value as Brand)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            className="h-8 max-w-full rounded-md border border-input bg-background px-2 text-xs"
             aria-label="Hãng xăng dầu"
           >
             {BRAND_OPTIONS.map((option) => (

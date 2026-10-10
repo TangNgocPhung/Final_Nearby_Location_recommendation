@@ -190,7 +190,7 @@ export function ToiletFinder({
           <select
             value={source}
             onChange={(event) => setSource(event.target.value as Source)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            className="h-8 max-w-full rounded-md border border-input bg-background px-2 text-xs"
             aria-label="Nguồn nhà vệ sinh"
           >
             <option value="all">WC công cộng + cây xăng, TTTM</option>

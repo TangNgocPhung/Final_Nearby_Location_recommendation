@@ -3520,7 +3520,10 @@ export function LocationExplorer() {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3 px-4 pb-4 sm:px-5 sm:pb-5">
+            {/* flex-col + gap thay cho space-y: space-y vẫn cộng margin-dưới cho phần tử
+                kế cuối dù phần tử cuối đang `hidden`, để lại khoảng trống thừa ở
+                đáy thẻ trên điện thoại (lưới "Định vị / Event stream" chỉ hiện từ lg). */}
+            <CardContent className="flex flex-col gap-3 px-4 pb-4 max-sm:pb-0 sm:px-5 sm:pb-5">
               <form
                 className="flex gap-2"
                 onSubmit={(event) => {
@@ -3664,7 +3667,7 @@ export function LocationExplorer() {
                   {isLoading ? 'Đang tìm…' : 'Tìm'}
                 </Button>
               </form>
-              <div className="flex items-center justify-between gap-3 rounded-2xl bg-emerald-50/70 px-3.5 py-2 ring-1 ring-emerald-600/[0.06] dark:bg-white/5 dark:ring-white/5">
+              <div className="flex items-center justify-between gap-2 rounded-2xl bg-emerald-50/70 px-3 py-2 ring-1 ring-emerald-600/[0.06] dark:bg-white/5 dark:ring-white/5">
                 <div className="flex shrink-0 items-center gap-2 text-sm font-medium whitespace-nowrap">
                   <SlidersHorizontal className="size-4 text-primary max-sm:hidden" />
                   <span>Bán kính</span>
@@ -3673,7 +3676,7 @@ export function LocationExplorer() {
                     chọn của hệ điều hành rồi chạm lần nữa. */}
                 <fieldset
                   aria-label="Bán kính tìm kiếm"
-                  className="m-0 flex min-w-0 max-w-64 flex-1 gap-1 rounded-xl border-0 bg-white p-1 shadow-[0_1px_2px_rgb(14_68_48/6%)] ring-1 ring-emerald-950/10 dark:bg-input/40 dark:ring-white/10"
+                  className="m-0 flex min-w-0 max-w-64 flex-1 gap-0.5 rounded-xl border-0 sm:gap-1 bg-white p-1 shadow-[0_1px_2px_rgb(14_68_48/6%)] ring-1 ring-emerald-950/10 dark:bg-input/40 dark:ring-white/10"
                 >
                   {RADIUS_OPTIONS.map((meters) => (
                     <button
@@ -3689,7 +3692,7 @@ export function LocationExplorer() {
                         void runSearch(query, selectedCategory, undefined, meters);
                       }}
                       className={cn(
-                        'nearby-chip min-w-11 flex-1 rounded-lg px-1.5 py-1 text-sm font-semibold whitespace-nowrap tabular-nums transition-colors',
+                        'nearby-chip min-w-11 flex-[1_1_auto] rounded-lg px-1 py-1 text-[13px] font-semibold whitespace-nowrap tabular-nums transition-colors sm:flex-1 sm:px-1.5 sm:text-sm',
                         radius === meters
                           ? 'bg-primary text-primary-foreground shadow-sm'
                           : 'text-foreground/70 hover:bg-muted',
@@ -3920,7 +3923,10 @@ export function LocationExplorer() {
               onClose={() => setBusOpen(false)}
             />
           ) : (
-            <div className="grid gap-3">
+            <div className="grid grid-cols-1 gap-3">
+            {/* grid-cols-1 = minmax(0,1fr): thiếu nó cột ngầm là `auto`, bị min-content
+                của thẻ Địa danh (tên dài không xuống dòng) nới rộng quá khung —
+                lưới 6 nút và thẻ tràn khỏi mép phải màn điện thoại. */}
             {/* 6 nút, lưới 3 cột × 2 hàng (giữ lưới 6 cột để mỗi nút chiếm 2). */}
             <div className="grid shrink-0 grid-cols-6 gap-2">
               {(
@@ -4465,7 +4471,7 @@ export function LocationExplorer() {
               onClick={requestCurrentLocation}
               aria-label="Vị trí của tôi"
               title="Vị trí của tôi"
-              className="absolute bottom-16 right-3 z-10 grid size-12 place-items-center rounded-full border border-white/70 bg-white/95 text-primary shadow-[0_8px_24px_rgb(14_68_48/22%)] backdrop-blur-md transition-colors active:bg-emerald-50 lg:hidden dark:border-white/10 dark:bg-card/95"
+              className="locate-fab absolute bottom-16 right-3 z-10 grid size-12 place-items-center rounded-full border border-white/70 bg-white/95 text-primary shadow-[0_8px_24px_rgb(14_68_48/22%)] backdrop-blur-md transition-colors active:bg-emerald-50 lg:hidden dark:border-white/10 dark:bg-card/95"
             >
               <LocateFixed className="size-6" aria-hidden />
             </button>

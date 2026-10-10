@@ -235,7 +235,7 @@ export function ParkingFinder({
             <select
               value={minutes}
               onChange={(event) => setMinutes(Number(event.target.value))}
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+              className="h-8 max-w-full rounded-md border border-input bg-background px-2 text-sm"
             >
               {DURATION_OPTIONS.map((option) => (
                 <option key={option.minutes} value={option.minutes}>

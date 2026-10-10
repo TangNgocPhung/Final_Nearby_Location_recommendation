@@ -192,7 +192,7 @@ export function ConvenienceFinder({
           <select
             value={brand}
             onChange={(event) => setBrand(event.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            className="h-8 max-w-full rounded-md border border-input bg-background px-2 text-xs"
             aria-label="Chuỗi cửa hàng"
           >
             {BRAND_OPTIONS.map((option) => (
