@@ -22,6 +22,8 @@ export type SearchAction = {
   longitude: number;
   radius: number;
   count?: number;
+  /** Bữa ăn để backend bỏ quán sai bữa (chè, kem khi hỏi bữa sáng). */
+  meal?: 'breakfast' | 'lunch' | 'dinner' | 'late_night';
 };
 
 export type AssistantEvent = {

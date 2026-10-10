@@ -20,6 +20,11 @@ nhưng chưa lệnh nào đọc. Nay ``active_session_points`` dùng GEOSEARCH �
 phiên đang hoạt động quanh một điểm — tín hiệu độ đông thời gian thực lấy từ
 chính dữ liệu đang bị bỏ phí.
 
+Geo set không có TTL cho từng thành viên: một phiên đã GEOADD thì nằm đó mãi,
+nên "đang hoạt động" phải được kiểm riêng. ``ACTIVE_SEEN_KEY`` giữ thời điểm
+cuối mỗi phiên gửi toạ độ hợp lệ; phía đọc chỉ đếm phiên còn trong
+``ACTIVE_WINDOW_SECONDS`` và dọn những phiên đã nguội.
+
 Mọi hàm đọc đều nuốt lỗi Redis và trả giá trị rỗng: Redis chết thì tín hiệu
 trending/độ đông tắt, chứ không được làm hỏng cả truy vấn tìm kiếm.
 """
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
@@ -44,6 +50,7 @@ TRENDING_POIS_PREFIX = "nearby:trending:pois"
 TRENDING_QUERIES_PREFIX = "nearby:trending:queries"
 TRENDING_HEX_PREFIX = "nearby:trending:hex"
 ACTIVE_LOCATIONS_KEY = "nearby:active-locations"
+ACTIVE_SEEN_KEY = "nearby:active-seen"
 
 # Độ phân giải ô cho trending theo khu vực. r8 ~ 0,74 km² — cỡ vài dãy phố,
 # đủ nhỏ để "quanh đây" có nghĩa và đủ lớn để không rỗng sau vài chục sự kiện.
@@ -63,6 +70,12 @@ BUCKET_TTL_SECONDS = 4 * 3600
 
 # Bán kính coi là "quanh POI" khi đếm phiên đang hoạt động.
 CROWD_RADIUS_METERS = 300.0
+
+# Phiên im lặng quá khoảng này thì không còn tính là "đang ở quanh đây". Không
+# kiểm thì geo set đếm mọi phiên TỪNG ghé qua kể từ lúc khởi động Redis — và với
+# một người test bằng vài tab/trình duyệt, badge "3 người quanh đây" là ba lần
+# chính người đó.
+ACTIVE_WINDOW_SECONDS = 15 * 60
 
 
 def get_client() -> redis.Redis | None:
@@ -237,21 +250,44 @@ def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     return 2 * radius * math.asin(math.sqrt(a))
 
 
+def mark_active(
+    pipeline: Any,
+    session_id: str,
+    latitude: float,
+    longitude: float,
+    now: float | None = None,
+) -> None:
+    """Ghi toạ độ phiên kèm thời điểm thấy nó lần cuối (đã qua bộ chấm chất lượng)."""
+    now = time.time() if now is None else now
+    pipeline.geoadd(ACTIVE_LOCATIONS_KEY, (longitude, latitude, session_id))
+    pipeline.zadd(ACTIVE_SEEN_KEY, {session_id: now})
+    # Giữ bảng thời điểm không phình; toạ độ của phiên nguội được dọn ở phía đọc.
+    pipeline.zremrangebyscore(ACTIVE_SEEN_KEY, "-inf", now - ACTIVE_WINDOW_SECONDS)
+
+
 def active_session_points(
     latitude: float,
     longitude: float,
     radius_m: float,
     client: Any | None = None,
+    exclude_session: str | None = None,
+    now: float | None = None,
 ) -> list[tuple[float, float]]:
     """Toạ độ các phiên đang hoạt động trong bán kính, qua GEOSEARCH.
 
     MỘT lệnh Redis cho cả truy vấn, rồi đếm quanh từng POI trong Python — gọi
     GEOSEARCH riêng cho mỗi ứng viên thì một truy vấn 300 ứng viên thành 300
     vòng đi-về.
+
+    Chỉ giữ phiên có mặt trong ``ACTIVE_WINDOW_SECONDS`` gần nhất (thành viên
+    không có thời điểm — ghi trước khi có ``ACTIVE_SEEN_KEY`` — coi là nguội),
+    và bỏ ``exclude_session``: báo cho người dùng rằng có chính họ ở gần là vô
+    nghĩa.
     """
     client = client or get_client()
     if client is None:
         return []
+    now = time.time() if now is None else now
     try:
         rows = client.geosearch(
             ACTIVE_LOCATIONS_KEY,
@@ -261,12 +297,22 @@ def active_session_points(
             unit="m",
             withcoord=True,
         )
+        members = [row[0] for row in rows or []]
+        seen = client.zmscore(ACTIVE_SEEN_KEY, members) if members else []
     except (redis.RedisError, OSError, AttributeError) as error:
         logger.debug("GEOSEARCH lỗi, bỏ tín hiệu độ đông: %s", error)
         return []
 
+    cutoff = now - ACTIVE_WINDOW_SECONDS
     points: list[tuple[float, float]] = []
-    for row in rows or []:
+    stale: list[str] = []
+    for row, seen_at in zip(rows or [], seen):
+        member = row[0]
+        if seen_at is None or float(seen_at) < cutoff:
+            stale.append(member)
+            continue
+        if member == exclude_session:
+            continue
         # geosearch(withcoord=True) trả [member, (lon, lat)] — chú ý THỨ TỰ:
         # Redis trả kinh độ trước, ngược với quy ước (lat, lon) của phần còn lại.
         try:
@@ -274,6 +320,11 @@ def active_session_points(
             points.append((float(coord[1]), float(coord[0])))
         except (TypeError, ValueError, IndexError):
             continue
+    if stale:
+        try:
+            client.zrem(ACTIVE_LOCATIONS_KEY, *stale)
+        except (redis.RedisError, OSError, AttributeError) as error:
+            logger.debug("Không dọn được phiên nguội: %s", error)
     return points
 
 

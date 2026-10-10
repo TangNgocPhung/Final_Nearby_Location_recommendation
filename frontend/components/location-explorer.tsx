@@ -2231,7 +2231,10 @@ export function LocationExplorer() {
         radius: String(radiusMeters),
         limit: '100',
       });
-      fetch(`${API_BASE_URL}/api/pois/nearby?${params}`)
+      // X-Session-ID để badge "người quanh đây" không đếm chính người đang xem.
+      fetch(`${API_BASE_URL}/api/pois/nearby?${params}`, {
+        headers: { 'X-Session-ID': telemetry.sessionId },
+      })
         .then((response) =>
           response.ok ? (response.json() as Promise<Poi[]>) : Promise.reject(),
         )

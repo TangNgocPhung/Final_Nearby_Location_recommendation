@@ -5,7 +5,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -77,6 +77,7 @@ from .models import (
 from .features.online import feature_store_status
 from .features.serving import profile_category_boost, session_profile
 from .graph.recommend import graph_candidate_ids
+from .meal_fit import filter_for_meal
 from .poi_import import data_status
 from .ranking import (
     fetch_categories,
@@ -220,14 +221,25 @@ def health(response: Response) -> dict[str, Any]:
 
 @app.get("/api/pois/nearby")
 def nearby_pois(
+    request: Request,
     lat: float = Query(ge=-90, le=90),
     lng: float = Query(ge=-180, le=180),
     radius: int = Query(default=3_000, ge=100, le=50_000),
     q: str | None = Query(default=None, min_length=1, max_length=160),
     category: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=50, ge=1, le=100),
+    meal: Literal["breakfast", "lunch", "dinner", "late_night"] | None = None,
 ) -> list[dict[str, Any]]:
-    return rank_pois(lat, lng, radius, q, category, limit)
+    # Header X-Session-ID (middleware đã kiểm UUID) chỉ để badge "người quanh
+    # đây" không đếm chính người đang xem.
+    session_id = getattr(request.state, "session_id", None)
+    if meal is None:
+        return rank_pois(lat, lng, radius, q, category, limit, session_id=session_id)
+    # Lấy dư ứng viên vì bộ lọc theo bữa sẽ bỏ bớt quán sai bữa (chè, kem lúc
+    # sáng…) — xem `meal_fit`.
+    return filter_for_meal(
+        rank_pois(lat, lng, radius, q, category, 100, session_id=session_id), meal, limit
+    )
 
 
 @app.get("/api/v1/pois/suggest")
@@ -282,6 +294,7 @@ def contextual_search(payload: SearchRequest, request: Request) -> dict[str, Any
         graph_boost=graph_ids,
         ranker=payload.ranker,
         telemetry=geo_telemetry,
+        session_id=str(payload.session_id) if payload.session_id else None,
     )
     # Gán rank Ở ĐÂY chứ không trong ranking.py: results tại điểm này đã là thứ
     # tự CUỐI CÙNG sau diversify() — mà diversify đảo thứ tự so với điểm số. Gán
@@ -444,6 +457,7 @@ def _search_turn(
         chat_tools.FILTER_POOL if filter_keys else 20,
         telemetry=geo_telemetry,
         semantic_text=semantic_query,
+        session_id=session_id,
     )
     note = None
     if filter_keys or unsupported:
@@ -1323,7 +1337,15 @@ def recommendations(
         affinity = fetch_category_affinity(str(session_id))
     graph_ids = set(graph_candidate_ids(str(session_id))) if session_id else set()
     results = rank_pois(
-        lat, lng, radius, None, None, limit, category_boost=affinity, graph_boost=graph_ids
+        lat,
+        lng,
+        radius,
+        None,
+        None,
+        limit,
+        category_boost=affinity,
+        graph_boost=graph_ids,
+        session_id=str(session_id) if session_id else None,
     )
     top_category = max(affinity, key=affinity.get) if affinity else None
     for poi in results:

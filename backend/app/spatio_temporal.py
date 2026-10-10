@@ -179,7 +179,9 @@ def windowed_popularity(
 MIN_EVENTS_FOR_BUSYNESS_ESTIMATE = 3
 
 
-def _busyness_estimate(windows: dict[str, int], recency_score: float) -> dict[str, Any]:
+def _busyness_estimate(
+    windows: dict[str, int], recency_score: float, open_now: bool | None = None
+) -> dict[str, Any]:
     """Ước tính mức độ đông/vắng từ tương tác gần đây của chính Nearby.
 
     KHÔNG PHẢI dữ liệu real-time thật kiểu Google Popular Times — Nearby không
@@ -192,10 +194,18 @@ def _busyness_estimate(windows: dict[str, int], recency_score: float) -> dict[st
     phố — POI đông nhất trong 50 kết quả luôn được gắn "Đông" dù tuyệt đối nó
     chỉ có vài lượt tương tác. Đây là so sánh TƯƠNG ĐỐI trong tập kết quả,
     không phải phép đo tuyệt đối.
+
+    "Đông" là nói về LÚC NÀY, nên cần tương tác trong 1 giờ gần nhất. Trước
+    đây chỉ có tương tác của 24 giờ trước cũng đủ: lúc 2 giờ sáng, quán được
+    bấm nhiều nhất chiều hôm qua vẫn bị gắn "Đông". Quán đang đóng cửa cũng
+    không bao giờ "đông".
     """
+    unknown = {"estimated": False, "level": None, "score": None}
     total_events = windows["w15"] + windows["w1h"] + windows["w24h"]
     if total_events < MIN_EVENTS_FOR_BUSYNESS_ESTIMATE:
-        return {"estimated": False, "level": None, "score": None}
+        return unknown
+    if open_now is False or windows["w1h"] == 0:
+        return unknown
     if recency_score >= 0.66:
         level = "Đông"
     elif recency_score >= 0.33:
@@ -284,7 +294,9 @@ def enrich_candidates(
         candidate["popularityWindows"] = windows
         raw = raw_recency.get(candidate["id"], 0.0)
         candidate["recencyScore"] = round(raw / max_recency, 6) if max_recency else 0.0
-        candidate["busyness"] = _busyness_estimate(windows, candidate["recencyScore"])
+        candidate["busyness"] = _busyness_estimate(
+            windows, candidate["recencyScore"], status["openNow"]
+        )
 
         base_context = _context_score(
             status["openNow"], status["closesInMinutes"], time_match

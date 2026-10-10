@@ -168,3 +168,17 @@ def test_goi_y_moc_thoi_gian_tiep_theo():
     assert chip["title"] == "Gợi ý cho bữa trưa"
     assert "11:00 hôm nay" in chip["subtitle"]
     assert chip["action"]["type"] == "search"
+
+
+def test_goi_y_bua_sang_luc_nua_dem_loc_theo_bua():
+    # 2:47 sáng: chip "Gợi ý cho bữa sáng" phải gửi meal để backend bỏ chè, kem.
+    chip = assistant._upcoming_meal_suggestion(
+        datetime(2026, 10, 10, 2, 47), 10.7757, 106.7009
+    )
+    assert chip["title"] == "Gợi ý cho bữa sáng"
+    assert chip["action"]["meal"] == "breakfast"
+
+
+def test_tra_chieu_khong_gan_bo_loc_bua():
+    chip = assistant._meal_suggestion(datetime(2026, 9, 28, 15, 0), 10.7757, 106.7009)
+    assert "meal" not in chip["action"]

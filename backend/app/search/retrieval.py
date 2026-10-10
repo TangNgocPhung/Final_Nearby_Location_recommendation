@@ -14,6 +14,7 @@ from ..config import settings
 from ..embeddings import semantic_embedding
 from ..poi_features import categories_for_query, h3_ring_geometry, h3_ring_ids
 from . import query as query_builder
+from .accents import drop_accent_mismatches
 from .client import get_client, search_available
 from .enrichment import hydrate_candidates
 from .fusion import fused_channels, reciprocal_rank_fusion
@@ -355,7 +356,7 @@ def multi_channel_candidates(
     ranked = _gate_by_text_relevance(fused, channels, clean_query, vector_scores)[:limit_candidates]
     membership = fused_channels(channels)
     try:
-        return hydrate_candidates(
+        candidates = hydrate_candidates(
             ranked,
             latitude,
             longitude,
@@ -368,3 +369,5 @@ def multi_channel_candidates(
     except Exception as error:  # noqa: BLE001 - lỗi DB ở hydrate cũng nên fallback
         logger.warning("Hydrate ứng viên lỗi, rơi về PostGIS: %s", error)
         return None
+    # "chay" ≠ "cháy" khi người dùng đã gõ có dấu — xem `accents`.
+    return drop_accent_mismatches(candidates, clean_query, semantic_text)

@@ -179,10 +179,7 @@ def process_event(client: redis.Redis, fields: dict[str, str]) -> None:
     if query_text and event_type == "search":
         geo_cache.record_query(pipeline, query_text.strip().lower())
     if trusted:
-        pipeline.geoadd(
-            geo_cache.ACTIVE_LOCATIONS_KEY,
-            (trusted["longitude"], trusted["latitude"], session_id),
-        )
+        geo_cache.mark_active(pipeline, session_id, trusted["latitude"], trusted["longitude"])
     pipeline.execute()
 
     with psycopg.connect(DATABASE_URL) as connection:
