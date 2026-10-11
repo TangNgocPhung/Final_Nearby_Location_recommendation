@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useSyncExternalStore, type ComponentType } from 'react';
+import { Fragment, useState, useSyncExternalStore, type ComponentType } from 'react';
 import {
   Bell,
   BookOpenText,
@@ -119,7 +119,8 @@ const TOPICS: {
     title: 'Tìm bằng giọng nói',
     Icon: Mic,
     items: [
-      'Biểu tượng micro cạnh ô tìm kiếm: nói thay vì gõ.',
+      'Biểu tượng micro cạnh ô tìm kiếm: bấm rồi nói, ví dụ "quán phở gần đây" — ô tìm kiếm được điền và tìm luôn.',
+      'Chế độ giọng nói đầy đủ (đọc to kết quả, dẫn đường, dành cho người khiếm thị): mở từ bảng micro (trên điện thoại: bấm "Chế độ giọng nói đầy đủ" hoặc thẻ "Giọng nói" trong Trợ lý), trên máy tính có thể bấm Alt+V; thoát bằng nút đóng hoặc Esc.',
     ],
   },
   {
@@ -148,7 +149,16 @@ const TOPICS: {
   },
 ];
 
+const SHORTCUTS: { keys: string[]; label: string }[] = [
+  { keys: ['Alt', 'V'], label: 'Mở/đóng chế độ giọng nói đầy đủ (ở bất cứ đâu trên trang)' },
+  { keys: ['Space'], label: 'Trong chế độ giọng nói: bắt đầu/dừng nói' },
+  { keys: ['+'], label: 'Trong chế độ giọng nói: đọc nhanh hơn' },
+  { keys: ['−'], label: 'Trong chế độ giọng nói: đọc chậm lại' },
+  { keys: ['Esc'], label: 'Thoát chế độ giọng nói' },
+];
+
 const PHONE_TIPS = [
+  'Chế độ giọng nói (không có phím Alt trên điện thoại): bấm micro cạnh ô tìm kiếm rồi chọn "Chế độ giọng nói đầy đủ", hoặc mở Trợ lý và bấm thẻ "Giọng nói". Chạm vào màn hình để nói.',
   'Thanh tab dưới đáy có 4 mục: Tìm kiếm, Bản đồ, Kết quả và Trợ lý — chuyển qua lại chỉ bằng một tay.',
   'Nút "Vị trí của tôi" nổi ở góc dưới phải bản đồ.',
   'Menu ⋮ trên cùng chứa ngôn ngữ, giao diện sáng/tối và phần giới thiệu đồ án.',
@@ -187,11 +197,23 @@ function ChapterBody({ chapterKey }: { chapterKey: string }) {
             <Keyboard className="size-4" />
             Phím tắt
           </h4>
-          <p className="flex items-center gap-2 text-sm">
-            <span className="flex items-center gap-1">
-              <Kbd>Alt</Kbd>+<Kbd>V</Kbd>
-            </span>
-            Bật/tắt chế độ giọng nói
+          <ul className="grid gap-2.5 text-sm">
+            {SHORTCUTS.map(({ keys, label }) => (
+              <li key={label} className="flex items-start gap-3">
+                <span className="flex shrink-0 items-center gap-1 pt-px">
+                  {keys.map((key, index) => (
+                    <Fragment key={key}>
+                      {index > 0 && '+'}
+                      <Kbd>{key}</Kbd>
+                    </Fragment>
+                  ))}
+                </span>
+                <span className="min-w-0">{label}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Chế độ giọng nói đọc to kết quả và dẫn đường từng bước, dành cho người khiếm thị.
           </p>
         </div>
         <div className="rounded-xl border bg-muted/40 p-4">

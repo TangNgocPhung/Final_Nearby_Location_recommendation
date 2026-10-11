@@ -272,7 +272,7 @@ export function VoiceSearch({
           <Accessibility className="size-4 shrink-0" aria-hidden />
           <span>
             Chế độ giọng nói đầy đủ — đọc to, dẫn đường{' '}
-            <kbd className="rounded border border-border px-1 font-mono text-xs">Alt+V</kbd>
+            <kbd className="hidden rounded border border-border px-1 font-mono text-xs pointer-fine:inline">Alt+V</kbd>
           </span>
         </button>
       </div>

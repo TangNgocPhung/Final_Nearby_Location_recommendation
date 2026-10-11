@@ -2957,7 +2957,8 @@ export function LocationExplorer() {
   // thấy màn hình không phải đi tìm nút.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.altKey && (event.key === 'v' || event.key === 'V')) {
+      // `code` vì Option+V trên Mac cho ra key "√", không phải "v".
+      if (event.altKey && (event.code === 'KeyV' || event.key === 'v' || event.key === 'V')) {
         event.preventDefault();
         setVoiceSearchOpen(false);
         setVoiceOpen((value) => !value);
