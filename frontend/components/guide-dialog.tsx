@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useState, useSyncExternalStore, type ComponentType } from 'react';
+import { useState, useSyncExternalStore, type ComponentType } from 'react';
 import {
   Bell,
   BookOpenText,
@@ -22,7 +22,6 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Kbd } from '@/components/ui/kbd';
 import {
   Dialog,
   DialogContent,
@@ -120,7 +119,7 @@ const TOPICS: {
     Icon: Mic,
     items: [
       'Biểu tượng micro cạnh ô tìm kiếm: bấm rồi nói, ví dụ "quán phở gần đây" — ô tìm kiếm được điền và tìm luôn.',
-      'Chế độ giọng nói đầy đủ (đọc to kết quả, dẫn đường, dành cho người khiếm thị): mở từ bảng micro (trên điện thoại: bấm "Chế độ giọng nói đầy đủ" hoặc thẻ "Giọng nói" trong Trợ lý), trên máy tính có thể bấm Alt+V; thoát bằng nút đóng hoặc Esc.',
+      'Chế độ giọng nói đầy đủ (đọc to kết quả, dẫn đường, dành cho người khiếm thị): bấm micro cạnh ô tìm kiếm rồi chọn "Chế độ giọng nói đầy đủ", hoặc mở Trợ lý và bấm thẻ "Giọng nói". Chạm vào màn hình để nói.',
     ],
   },
   {
@@ -149,16 +148,7 @@ const TOPICS: {
   },
 ];
 
-const SHORTCUTS: { keys: string[]; label: string }[] = [
-  { keys: ['Alt', 'V'], label: 'Mở/đóng chế độ giọng nói đầy đủ (ở bất cứ đâu trên trang)' },
-  { keys: ['Space'], label: 'Trong chế độ giọng nói: bắt đầu/dừng nói' },
-  { keys: ['+'], label: 'Trong chế độ giọng nói: đọc nhanh hơn' },
-  { keys: ['−'], label: 'Trong chế độ giọng nói: đọc chậm lại' },
-  { keys: ['Esc'], label: 'Thoát chế độ giọng nói' },
-];
-
 const PHONE_TIPS = [
-  'Chế độ giọng nói (không có phím Alt trên điện thoại): bấm micro cạnh ô tìm kiếm rồi chọn "Chế độ giọng nói đầy đủ", hoặc mở Trợ lý và bấm thẻ "Giọng nói". Chạm vào màn hình để nói.',
   'Thanh tab dưới đáy có 4 mục: Tìm kiếm, Bản đồ, Kết quả và Trợ lý — chuyển qua lại chỉ bằng một tay.',
   'Nút "Vị trí của tôi" nổi ở góc dưới phải bản đồ.',
   'Menu ⋮ trên cùng chứa ngôn ngữ, giao diện sáng/tối và phần giới thiệu đồ án.',
@@ -169,7 +159,7 @@ type Chapter = { key: string; title: string; Icon: Icon };
 const CHAPTERS: Chapter[] = [
   { key: 'quick', title: 'Bắt đầu nhanh', Icon: LocateFixed },
   ...TOPICS.map(({ value, title, Icon }) => ({ key: value, title, Icon })),
-  { key: 'tips', title: 'Phím tắt và mẹo cho điện thoại', Icon: Keyboard },
+  { key: 'tips', title: 'Mẹo khi dùng điện thoại', Icon: Route },
 ];
 
 function ChapterBody({ chapterKey }: { chapterKey: string }) {
@@ -190,32 +180,7 @@ function ChapterBody({ chapterKey }: { chapterKey: string }) {
 
   if (chapterKey === 'tips') {
     return (
-      <div className="grid gap-4 pointer-fine:sm:grid-cols-2">
-        {/* Phím tắt chỉ có nghĩa khi có bàn phím + chuột; ẩn trên thiết bị cảm ứng */}
-        <div className="hidden rounded-xl border bg-muted/40 p-4 pointer-fine:block">
-          <h4 className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-            <Keyboard className="size-4" />
-            Phím tắt
-          </h4>
-          <ul className="grid gap-2.5 text-sm">
-            {SHORTCUTS.map(({ keys, label }) => (
-              <li key={label} className="flex items-start gap-3">
-                <span className="flex shrink-0 items-center gap-1 pt-px">
-                  {keys.map((key, index) => (
-                    <Fragment key={key}>
-                      {index > 0 && '+'}
-                      <Kbd>{key}</Kbd>
-                    </Fragment>
-                  ))}
-                </span>
-                <span className="min-w-0">{label}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Chế độ giọng nói đọc to kết quả và dẫn đường từng bước, dành cho người khiếm thị.
-          </p>
-        </div>
+      <div className="grid gap-4">
         <div className="rounded-xl border bg-muted/40 p-4">
           <h4 className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
             <Route className="size-4" />
