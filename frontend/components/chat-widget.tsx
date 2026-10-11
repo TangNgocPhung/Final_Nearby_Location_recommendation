@@ -362,7 +362,12 @@ export function ChatWidget({
   const [view, setView] = useState<'chat' | 'tour' | 'meetup' | 'explore' | 'history'>('chat');
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const [suggestionsFailed, setSuggestionsFailed] = useState(false);
-  const suggestedAtRef = useRef<{ at: number; latitude: number; longitude: number } | null>(null);
+  const suggestedAtRef = useRef<{
+    at: number;
+    owner: string;
+    latitude: number;
+    longitude: number;
+  } | null>(null);
   // Tăng lên để buộc tải lại gợi ý (vd vừa lưu nhà → hiện chip "quán gần nhà").
   const [suggestionsVersion, setSuggestionsVersion] = useState(0);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -469,14 +474,23 @@ export function ChatWidget({
     if (!open) return;
     const last = suggestedAtRef.current;
     const moved = last ? distanceMeters(last, position) : Infinity;
-    if (last && moved < SUGGESTION_MOVE_METERS && Date.now() - last.at < SUGGESTION_REFRESH_MS) return;
-    suggestedAtRef.current = { at: Date.now(), ...position };
+    // Đổi tài khoản (đăng nhập/đăng xuất) thì tiến độ săn địa danh trong gợi ý
+    // đổi theo, nên không dùng lại bản đã tải của chủ sở hữu cũ.
+    const owner = user?.id ?? '';
+    if (
+      last &&
+      last.owner === owner &&
+      moved < SUGGESTION_MOVE_METERS &&
+      Date.now() - last.at < SUGGESTION_REFRESH_MS
+    )
+      return;
+    suggestedAtRef.current = { at: Date.now(), owner, ...position };
     const controller = new AbortController();
     const params = new URLSearchParams({ lat: String(position.latitude), lng: String(position.longitude) });
-    // X-Session-ID: backend đọc địa chỉ "Nhà" đã lưu và tiến độ săn địa danh.
+    // X-Session-ID + token: backend đọc địa chỉ "Nhà" đã lưu và tiến độ săn địa danh.
     fetch(`${apiBaseUrl}/api/v1/assistant/suggestions?${params}`, {
       signal: controller.signal,
-      headers: { 'X-Session-ID': sessionId },
+      headers: { 'X-Session-ID': sessionId, ...authHeaders() },
     })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -493,7 +507,7 @@ export function ChatWidget({
         if (!controller.signal.aborted) setSuggestionsFailed(true);
       });
     return () => controller.abort();
-  }, [apiBaseUrl, open, position, sessionId, suggestionsVersion]);
+  }, [apiBaseUrl, open, position, sessionId, suggestionsVersion, user?.id]);
 
   // Lịch sử trò chuyện chỉ dành cho tài khoản đã đăng nhập, lưu theo tài khoản
   // (không theo phiên): khách vãng lai không lưu và không xem được.

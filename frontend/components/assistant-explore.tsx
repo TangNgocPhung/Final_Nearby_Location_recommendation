@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { useAuth } from '@/lib/auth';
 import {
   NarrationPlayer,
   distanceMeters,
@@ -85,7 +86,16 @@ export function AssistantExplore({
   const [narrating, setNarrating] = useState(false);
   const [player] = useState(() => new NarrationPlayer(apiBaseUrl));
   const fileRef = useRef<HTMLInputElement>(null);
-  const headers = useMemo(() => ({ 'X-Session-ID': sessionId }), [sessionId]);
+  // Tiến độ săn địa danh đi theo tài khoản khi đã đăng nhập (xem
+  // `_account_owner_id` ở backend): token đổi thì `headers` đổi, `load` chạy lại.
+  const { token } = useAuth();
+  const headers = useMemo<Record<string, string>>(
+    () => ({
+      'X-Session-ID': sessionId,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    }),
+    [sessionId, token],
+  );
   // Chỉ tải danh sách khi mở màn hình và sau mỗi lượt khám phá — khoảng cách
   // tới từng địa danh được tính lại tại chỗ khi vị trí đổi (xem `places`), nên
   // `load` đọc vị trí qua ref thay vì chạy lại mỗi lần GPS nhích vài mét.

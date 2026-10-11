@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { distanceMeters } from '@/lib/assistant';
+import { useAuth } from '@/lib/auth';
 import type { ExploreOverview, ExplorePlace } from '@/lib/explore';
 
 /**
@@ -27,6 +28,9 @@ export function useNearbyLandmarks({
   sessionId: string;
   position: Position;
 }) {
+  // Tiến độ đi theo tài khoản khi đã đăng nhập: token đổi (đăng nhập/đăng xuất)
+  // thì `refresh` đổi danh tính và danh sách tự nạp lại theo chủ sở hữu mới.
+  const { token } = useAuth();
   const [overview, setOverview] = useState<ExploreOverview | null>(null);
   const [failed, setFailed] = useState(false);
   // Đọc vị trí qua ref để `refresh` không đổi danh tính mỗi lần GPS nhích.
@@ -43,7 +47,10 @@ export function useNearbyLandmarks({
         lng: String(positionRef.current.longitude),
       });
       const res = await fetch(`${apiBaseUrl}/api/v1/explore?${params}`, {
-        headers: { 'X-Session-ID': sessionId },
+        headers: {
+          'X-Session-ID': sessionId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setOverview((await res.json()) as ExploreOverview);
@@ -51,7 +58,7 @@ export function useNearbyLandmarks({
     } catch {
       setFailed(true);
     }
-  }, [apiBaseUrl, sessionId]);
+  }, [apiBaseUrl, sessionId, token]);
 
   useEffect(() => {
     // Nạp dữ liệu từ server khi có phiên — đồng bộ với hệ thống bên ngoài.

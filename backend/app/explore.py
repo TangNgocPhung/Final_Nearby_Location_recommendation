@@ -798,3 +798,47 @@ def photo_bytes(photo_id: str, thumb: bool = False) -> bytes | None:
             (photo_id,),
         ).fetchone()
     return bytes(row[0]) if row else None
+
+
+def transfer_owner(from_owner: str, to_owner: str) -> int:
+    """Chuyển tiến độ săn địa danh của phiên ẩn danh sang tài khoản vừa đăng
+    nhập. Trả về số địa danh đã chuyển.
+
+    Địa danh tài khoản đã khám phá thì giữ nguyên ảnh đại diện của tài khoản và
+    lấy ngày khám phá sớm hơn. Ảnh của phiên trùng (cùng POI, cùng nội dung) với
+    ảnh tài khoản đã có thì bỏ — tài khoản đã có bản của ảnh đó.
+    """
+    with psycopg.connect(settings.database_url) as connection:
+        with connection.transaction():
+            params = {"from_owner": from_owner, "to_owner": to_owner}
+            connection.execute(
+                """
+                UPDATE poi_visitor_photos AS p SET owner_id = %(to_owner)s
+                WHERE p.owner_id = %(from_owner)s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM poi_visitor_photos AS t
+                      WHERE t.owner_id = %(to_owner)s AND t.poi_id = p.poi_id AND t.sha256 = p.sha256
+                  )
+                """,
+                params,
+            )
+            # Ảnh vừa chuyển đã mang chủ mới nên tự khớp chính nó; ảnh trùng còn ở
+            # phiên thì trỏ sang bản của tài khoản.
+            moved = connection.execute(
+                """
+                INSERT INTO poi_discoveries (owner_id, poi_id, photo_id, distance_meters, discovered_at)
+                SELECT %(to_owner)s, d.poi_id, COALESCE(tp.id, d.photo_id), d.distance_meters, d.discovered_at
+                FROM poi_discoveries AS d
+                LEFT JOIN poi_visitor_photos AS fp ON fp.id = d.photo_id
+                LEFT JOIN poi_visitor_photos AS tp
+                       ON tp.poi_id = fp.poi_id AND tp.owner_id = %(to_owner)s AND tp.sha256 = fp.sha256
+                WHERE d.owner_id = %(from_owner)s
+                ON CONFLICT (owner_id, poi_id) DO UPDATE
+                SET discovered_at = LEAST(poi_discoveries.discovered_at, EXCLUDED.discovered_at)
+                """,
+                params,
+            ).rowcount
+            connection.execute("DELETE FROM poi_discoveries WHERE owner_id = %(from_owner)s", params)
+            # Chỉ còn ảnh trùng với bản của tài khoản; discoveries đã trỏ sang bản kia.
+            connection.execute("DELETE FROM poi_visitor_photos WHERE owner_id = %(from_owner)s", params)
+    return moved

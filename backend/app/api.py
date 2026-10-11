@@ -866,8 +866,8 @@ def get_assistant_suggestions(
     lịch) kèm cửa hàng theo tục lệ (tiệm hoa 20/10, 20/11…), mưa, giờ ăn quanh
     đây và quanh NHÀ, tour thuyết minh, săn địa danh, chế độ giọng nói, hẹn
     nhóm. Xem `app/assistant.py`. ``X-Session-ID`` (nếu có) chỉ dùng để đọc địa
-    chỉ nhà đã lưu và tiến độ săn địa danh."""
-    return assistant.suggestions(lat, lng, owner_id=_owner_id(request))
+    chỉ nhà đã lưu và tiến độ săn địa danh; có token hợp lệ thì đọc theo tài khoản."""
+    return assistant.suggestions(lat, lng, owner_id=_account_owner_id(request))
 
 
 @app.post("/api/v1/assistant/tour")
@@ -900,16 +900,17 @@ def get_explore(
     lng: float = Query(ge=-180, le=180),
 ) -> dict[str, Any]:
     """Bản đồ săn: mọi địa danh có câu chuyện kiểm chứng, gần trước xa sau, kèm
-    trạng thái đã khám phá và tiến độ bộ sưu tập của phiên hiện tại."""
-    return explore.overview(_owner_id(request), lat, lng)
+    trạng thái đã khám phá và tiến độ bộ sưu tập của tài khoản (hoặc phiên ẩn
+    danh nếu chưa đăng nhập)."""
+    return explore.overview(_account_owner_id(request), lat, lng)
 
 
 @app.get("/api/v1/explore/{poi_id}/story")
 def get_explore_story(poi_id: str, request: Request) -> Any:
-    """Câu chuyện của một địa danh — chỉ mở khi phiên này đã khám phá nó."""
+    """Câu chuyện của một địa danh — chỉ mở khi chủ sở hữu này đã khám phá nó."""
     if not is_postgres_uuid(poi_id):
         return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
-    result = explore.story(_owner_id(request), poi_id)
+    result = explore.story(_account_owner_id(request), poi_id)
     if result is None:
         return JSONResponse(status_code=404, content={"detail": "Không phải địa danh săn được"})
     return result
@@ -925,7 +926,7 @@ def post_explore_discover(poi_id: str, payload: ExploreDiscoverRequest, request:
     """
     if not is_postgres_uuid(poi_id):
         return JSONResponse(status_code=400, content={"detail": "poi_id phải là UUID"})
-    owner_id = _owner_id(request, payload.session_id)
+    owner_id = _account_owner_id(request, payload.session_id)
     if not owner_id:
         return JSONResponse(status_code=400, content={"detail": "Cần X-Session-ID hoặc session_id trong body"})
     result = explore.discover(
@@ -1647,11 +1648,14 @@ def _owner_id(request: Request, payload_session: Any = None) -> str | None:
 
 
 def _account_owner_id(request: Request, payload_session: Any = None) -> str | None:
-    """Chủ sở hữu cho dữ liệu đi theo TÀI KHOẢN (địa điểm đã lưu, đánh giá):
-    ``user:<id>`` khi có token hợp lệ, ngược lại là phiên ẩn danh như cũ.
+    """Chủ sở hữu cho dữ liệu đi theo TÀI KHOẢN (địa điểm đã lưu, đánh giá,
+    check-in, săn địa danh): ``user:<id>`` khi có token hợp lệ, ngược lại là
+    phiên ẩn danh như cũ.
 
-    Tách khỏi `_owner_id` có chủ đích: lịch sử chat, săn địa danh, gợi ý trợ lý
-    vẫn ghi theo phiên — đổi chủ sở hữu ở đó thì ghi một nơi, xoá một nẻo.
+    Tách khỏi `_owner_id` có chủ đích: lịch sử chat vẫn ghi theo phiên — đổi chủ
+    sở hữu ở đó thì ghi một nơi, xoá một nẻo. Dữ liệu theo tài khoản phải đọc VÀ
+    ghi cùng một hàm, và khi đăng nhập phải được chuyển sang qua
+    `_adopt_session_data`.
     """
     user = auth.optional_user(request)
     return user.owner_id if user else _owner_id(request, payload_session)
@@ -1849,6 +1853,7 @@ def _adopt_session_data(request: Request, user: AuthUser, payload_session: Any) 
         reviews.transfer_owner(session_id, user.owner_id)
         checkins.transfer_owner(session_id, user.owner_id)
         exploration.transfer_owner(session_id, user.owner_id)
+        explore.transfer_owner(session_id, user.owner_id)
     except psycopg.Error as error:
         logger.warning("Không chuyển được dữ liệu phiên sang tài khoản: %s", error)
 
