@@ -1897,8 +1897,11 @@ def post_change_password(
 
 
 @app.get("/api/v1/admin/overview")
-def admin_overview(_admin: AuthUser = Depends(auth.require_admin)) -> dict[str, Any]:
-    return admin.overview()
+def admin_overview(
+    days: int = Query(default=14, ge=7, le=30),
+    _admin: AuthUser = Depends(auth.require_admin),
+) -> dict[str, Any]:
+    return admin.overview(days=days)
 
 
 @app.get("/api/v1/admin/users")

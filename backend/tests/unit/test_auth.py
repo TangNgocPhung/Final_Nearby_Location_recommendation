@@ -82,7 +82,7 @@ def test_owner_id_co_tien_to_de_khong_trung_session_id() -> None:
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     users = {user.id: user for user in (ADMIN, MEMBER, LOCKED)}
     monkeypatch.setattr(auth, "get_user", lambda user_id, database_url=None: users.get(user_id))
-    monkeypatch.setattr(admin, "overview", lambda database_url=None: {"users": 3})
+    monkeypatch.setattr(admin, "overview", lambda days=14, database_url=None: {"users": 3})
     return TestClient(app)
 
 
@@ -109,6 +109,15 @@ def test_admin_vao_duoc(client: TestClient) -> None:
     response = client.get("/api/v1/admin/overview", headers=_bearer(ADMIN))
     assert response.status_code == 200
     assert response.json() == {"users": 3}
+
+
+def test_dashboard_gioi_han_khoang_thoi_gian(client: TestClient) -> None:
+    assert client.get(
+        "/api/v1/admin/overview?days=30", headers=_bearer(ADMIN)
+    ).status_code == 200
+    assert client.get(
+        "/api/v1/admin/overview?days=31", headers=_bearer(ADMIN)
+    ).status_code == 422
 
 
 def test_tai_khoan_bi_khoa_mat_quyen_ngay_du_token_con_han(client: TestClient) -> None:

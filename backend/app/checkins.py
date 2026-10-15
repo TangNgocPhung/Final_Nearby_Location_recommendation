@@ -33,6 +33,9 @@ CHECKIN_RADIUS_METERS = 50
 WIDE_CATEGORY_RADIUS = {
     "park": 350,
     "theme_park": 350,
+    # Điểm OSM của trường thường nằm giữa khuôn viên; người đứng đúng cổng có
+    # thể vẫn cách điểm đó hơn bán kính 50 m mặc định.
+    "school": 150,
     "university": 200,
     "shopping_mall": 120,
     "sports_field": 120,

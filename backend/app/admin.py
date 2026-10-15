@@ -36,7 +36,13 @@ def _user_json(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def overview(database_url: str | None = None) -> dict[str, Any]:
+# Khoảng thời gian mặc định của dashboard. API giới hạn ở 7/14/30 ngày,
+# nhưng lớp nghiệp vụ vẫn nhận ``days`` để dễ kiểm thử và tái sử dụng.
+_ACTIVITY_DAYS = 14
+_LOCAL_TZ = "Asia/Ho_Chi_Minh"
+
+
+def overview(days: int = _ACTIVITY_DAYS, database_url: str | None = None) -> dict[str, Any]:
     with auth._connect(database_url) as connection:
         row = connection.execute(
             """
@@ -46,37 +52,40 @@ def overview(database_url: str | None = None) -> dict[str, Any]:
                 (SELECT COUNT(*) FROM app_users WHERE NOT is_active)::int AS locked,
                 (SELECT COUNT(*) FROM app_users
                     WHERE created_at > NOW() - INTERVAL '7 days')::int AS new_users_7d,
+                (SELECT COUNT(*) FROM app_users
+                    WHERE created_at > NOW() - (%(days)s * INTERVAL '1 day'))::int
+                    AS new_users_period,
                 (SELECT COUNT(*) FROM pois)::int AS pois,
                 (SELECT COUNT(*) FROM poi_reviews WHERE source = 'user')::int AS reviews,
                 (SELECT COUNT(*) FROM poi_reviews WHERE source = 'user'
                     AND created_at > NOW() - INTERVAL '7 days')::int AS reviews_7d,
+                (SELECT COUNT(*) FROM poi_reviews WHERE source = 'user'
+                    AND created_at > NOW() - (%(days)s * INTERVAL '1 day'))::int
+                    AS reviews_period,
                 (SELECT COUNT(*) FROM saved_places)::int AS saved_places,
                 (SELECT COUNT(*) FROM ingestion_events
                     WHERE received_at > NOW() - INTERVAL '24 hours')::int AS events_24h
-            """
+            """,
+            {"days": days},
         ).fetchone()
-        details = _overview_details(connection)
+        details = _overview_details(connection, days)
     return {
         "users": row["users"],
         "admins": row["admins"],
         "lockedUsers": row["locked"],
         "newUsers7d": row["new_users_7d"],
+        "newUsersPeriod": row["new_users_period"],
         "pois": row["pois"],
         "reviews": row["reviews"],
         "reviews7d": row["reviews_7d"],
+        "reviewsPeriod": row["reviews_period"],
         "savedPlaces": row["saved_places"],
         "events24h": row["events_24h"],
         **details,
     }
 
 
-# Số ngày của biểu đồ hoạt động. Ngày tính theo giờ Việt Nam để cột "hôm nay"
-# khớp với lịch của người xem, không lệch 7 tiếng theo UTC.
-_ACTIVITY_DAYS = 14
-_LOCAL_TZ = "Asia/Ho_Chi_Minh"
-
-
-def _overview_details(connection: Any) -> dict[str, Any]:
+def _overview_details(connection: Any, days: int = _ACTIVITY_DAYS) -> dict[str, Any]:
     """Phần chi tiết của trang Tổng quan: hoạt động theo ngày, phân loại sự
     kiện, địa điểm được quan tâm, độ phủ dữ liệu POI, phân bố điểm đánh giá.
 
@@ -91,12 +100,19 @@ def _overview_details(connection: Any) -> dict[str, Any]:
                 WHERE received_at > NOW() - INTERVAL '24 hours')::int AS sessions_24h,
             (SELECT COUNT(DISTINCT session_id) FROM ingestion_events
                 WHERE received_at > NOW() - INTERVAL '7 days')::int AS sessions_7d,
+            (SELECT COUNT(*) FROM app_users
+                WHERE last_login_at > NOW() - (%(days)s * INTERVAL '1 day'))::int
+                AS active_users_period,
+            (SELECT COUNT(DISTINCT session_id) FROM ingestion_events
+                WHERE received_at > NOW() - (%(days)s * INTERVAL '1 day'))::int
+                AS sessions_period,
             (SELECT COUNT(*) FROM ingestion_events
                 WHERE processing_status IN ('pending', 'queued'))::int AS events_pending,
             (SELECT COUNT(*) FROM ingestion_events
                 WHERE processing_status = 'failed')::int AS events_failed,
             (SELECT MAX(received_at) FROM ingestion_events) AS last_event_at
-        """
+        """,
+        {"days": days},
     ).fetchone()
 
     daily = connection.execute(
@@ -124,7 +140,7 @@ def _overview_details(connection: Any) -> dict[str, Any]:
         FROM days LEFT JOIN counted c USING (day)
         ORDER BY days.day
         """,
-        {"tz": _LOCAL_TZ, "days": _ACTIVITY_DAYS},
+        {"tz": _LOCAL_TZ, "days": days},
     ).fetchall()
 
     event_types = connection.execute(
@@ -134,6 +150,16 @@ def _overview_details(connection: Any) -> dict[str, Any]:
         WHERE received_at > NOW() - INTERVAL '7 days'
         GROUP BY 1 ORDER BY 2 DESC
         """
+    ).fetchall()
+
+    event_types_period = connection.execute(
+        """
+        SELECT event_type, COUNT(*)::int AS count
+        FROM ingestion_events
+        WHERE received_at > NOW() - (%(days)s * INTERVAL '1 day')
+        GROUP BY 1 ORDER BY 2 DESC
+        """,
+        {"days": days},
     ).fetchall()
 
     top_pois = connection.execute(
@@ -150,6 +176,23 @@ def _overview_details(connection: Any) -> dict[str, Any]:
         ORDER BY COUNT(*) DESC, p.name
         LIMIT 8
         """
+    ).fetchall()
+
+    top_pois_period = connection.execute(
+        """
+        SELECT p.id::text AS id, p.name, p.category_label,
+               COUNT(*) FILTER (WHERE e.event_type = 'poi_click')::int AS clicks,
+               COUNT(*) FILTER (WHERE e.event_type = 'navigation_start')::int AS navigations,
+               COUNT(*) FILTER (WHERE e.event_type = 'poi_dwell')::int AS dwells
+        FROM ingestion_events e
+        JOIN pois p ON p.id::text = e.poi_id
+        WHERE e.event_type IN ('poi_click', 'navigation_start', 'poi_dwell')
+          AND e.received_at > NOW() - (%(days)s * INTERVAL '1 day')
+        GROUP BY p.id, p.name, p.category_label
+        ORDER BY COUNT(*) DESC, p.name
+        LIMIT 8
+        """,
+        {"days": days},
     ).fetchall()
 
     categories = connection.execute(
@@ -204,9 +247,12 @@ def _overview_details(connection: Any) -> dict[str, Any]:
     kind_counts = {r["kind"]: r["count"] for r in saved_kinds}
 
     return {
+        "periodDays": days,
         "activeUsers7d": people["active_users_7d"],
+        "activeUsersPeriod": people["active_users_period"],
         "sessions24h": people["sessions_24h"],
         "sessions7d": people["sessions_7d"],
+        "sessionsPeriod": people["sessions_period"],
         "eventsPending": people["events_pending"],
         "eventsFailed": people["events_failed"],
         "lastEventAt": people["last_event_at"].isoformat() if people["last_event_at"] else None,
@@ -221,6 +267,9 @@ def _overview_details(connection: Any) -> dict[str, Any]:
             for r in daily
         ],
         "eventTypes7d": [{"type": r["event_type"], "count": r["count"]} for r in event_types],
+        "eventTypesPeriod": [
+            {"type": r["event_type"], "count": r["count"]} for r in event_types_period
+        ],
         "topPois30d": [
             {
                 "id": r["id"],
@@ -231,6 +280,17 @@ def _overview_details(connection: Any) -> dict[str, Any]:
                 "dwells": r["dwells"],
             }
             for r in top_pois
+        ],
+        "topPoisPeriod": [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "category": r["category_label"],
+                "clicks": r["clicks"],
+                "navigations": r["navigations"],
+                "dwells": r["dwells"],
+            }
+            for r in top_pois_period
         ],
         "poiCategories": top_categories,
         "poiCoverage": {

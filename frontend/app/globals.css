@@ -725,3 +725,61 @@ body {
     animation: none;
   }
 }
+
+/* Bạn đồng hành trong camera AR. Chỉ animate transform/opacity để giữ mượt trên
+   điện thoại; vị trí theo la bàn được đặt ở phần tử cha trong ar-explorer.tsx. */
+@keyframes ar-companion-walk {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1.5deg);
+  }
+  50% {
+    transform: translateY(-7px) rotate(1.5deg);
+  }
+}
+
+@keyframes ar-companion-shadow {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: translateX(-50%) scaleX(1);
+  }
+  50% {
+    opacity: 0.24;
+    transform: translateX(-50%) scaleX(0.72);
+  }
+}
+
+@keyframes ar-companion-celebrate {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  35% {
+    transform: translateY(-13px) rotate(-5deg);
+  }
+  70% {
+    transform: translateY(-5px) rotate(5deg);
+  }
+}
+
+.ar-companion-body {
+  animation: ar-companion-walk 1.05s ease-in-out infinite;
+  will-change: transform;
+}
+
+.ar-companion-shadow {
+  animation: ar-companion-shadow 1.05s ease-in-out infinite;
+}
+
+.ar-companion-celebrate .ar-companion-body {
+  animation: ar-companion-celebrate 780ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ar-companion-body,
+  .ar-companion-shadow,
+  .ar-companion-celebrate .ar-companion-body {
+    animation: none;
+  }
+}

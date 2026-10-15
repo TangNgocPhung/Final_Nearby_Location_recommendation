@@ -32,6 +32,8 @@ def test_sai_so_am_khong_lam_hep_ban_kinh() -> None:
 def test_khu_dat_rong_co_ban_kinh_rong_hon() -> None:
     """Toạ độ công viên là tâm khu đất; đứng ở cổng đã cách vài trăm mét."""
     assert checkins.allowed_distance("park", 0) == 350
+    assert checkins.allowed_distance("school", 0) == 150
+    assert checkins.allowed_distance("university", 0) == 200
     assert checkins.allowed_distance(None, 0) == checkins.CHECKIN_RADIUS_METERS
 
 

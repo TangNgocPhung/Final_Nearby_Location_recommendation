@@ -15,6 +15,7 @@ import {
   MapPin,
   Palette,
   Smartphone,
+  Sparkles,
   Star,
   Trees,
   Trophy,
@@ -35,8 +36,9 @@ import { cn } from '@/lib/utils';
  * có: video camera làm nền, GPS cho vị trí, cảm biến hướng cho góc camera. Mỗi
  * POI đặt theo GÓC LỆCH giữa hướng camera và hướng tới POI, nên đây là AR "theo
  * vị trí" chứ không bám hình — GPS lệch 10-20 m và la bàn trôi vài độ, thẻ chỉ
- * chỉ đúng phía, không dính vào mặt tiền. Gần hơn MIN_AR_DISTANCE thì góc lệch
- * chỉ là nhiễu GPS nên không đặt thẻ, chỉ ghi "ngay quanh bạn" ở khay dưới.
+ * chỉ đúng phía, không dính vào mặt tiền. Khi đã tới rất gần, góc phương vị
+ * không còn đáng tin vì nhiễu GPS lớn hơn khoảng cách tới POI; lúc đó thẻ được
+ * chuyển sang chế độ tĩnh "đã đến nơi" thay vì biến mất khỏi camera.
  *
  * Máy không có cảm biến hướng (laptop) thì kéo màn hình để xoay — đủ để demo.
  *
@@ -49,6 +51,7 @@ import { cn } from '@/lib/utils';
 type ArPoi = {
   id: string;
   name: string;
+  category?: string;
   categoryLabel: string;
   /** Hãng (Petrolimex, PVOIL…) — OSM hay đặt tên trạm là "Cửa hàng xăng dầu số 39"
    *  còn biển trên mặt tiền ghi hãng, nên thẻ phải kèm hãng mới nhận ra được. */
@@ -108,9 +111,26 @@ const BADGE_ICONS: Record<string, LucideIcon> = {
 };
 
 const RADIUS_OPTIONS = [300, 600, 1_200] as const;
-/** Dưới mức này thẻ nhảy lung tung theo nhiễu GPS (±4 m) — không đặt thẻ. Đừng nâng
- *  cao: đứng trước cổng trường 20 m mà không thấy tên trường là lỗi người dùng gặp. */
-const MIN_AR_DISTANCE = 8;
+/** POI gần hơn ngưỡng này được neo tĩnh giữa camera. Hướng tới một điểm cách
+ * vài mét là vô nghĩa khi chính GPS có thể lệch 5–20 m. */
+const STATIC_POI_BASE_METERS = 15;
+/** Không để GPS báo sai số quá lớn biến mọi POI quanh đó thành thẻ tĩnh. */
+const STATIC_POI_MAX_METERS = 40;
+/** Khuôn viên rộng dùng điểm POI ở giữa khu đất, không phải tại cổng. */
+const STATIC_CATEGORY_METERS: Record<string, number> = {
+  school: 150,
+  university: 200,
+  park: 120,
+  theme_park: 120,
+  shopping_mall: 100,
+  sports_field: 100,
+  market: 80,
+};
+/** Các POI gần nhất luôn được dựng thẻ (kẹp ở mép nếu la bàn lệch), trước
+ * khi xét POI xa. Điều này giúp nơi ngay trước mắt không bị POI xa chiếm slot. */
+const PRIORITY_NEAR_METERS = 120;
+const staticDistanceForPoi = (poi: ArPoi, gpsDistance: number) =>
+  Math.max(gpsDistance, STATIC_CATEGORY_METERS[poi.category ?? ''] ?? 0);
 /** Thẻ còn trong khung nhưng tâm lệch sát mép thì kẹp vào đây để không bị cắt/khó bấm. */
 const CARD_EDGE_MARGIN_PX = 76;
 /** Bán kính check-in nhỏ nhất của server (`CHECKIN_RADIUS_METERS`) — chỉ để
@@ -231,6 +251,7 @@ export function ArExplorer({
   const [checkingIn, setCheckingIn] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; tone: 'success' | 'info' } | null>(null);
   const [showBadges, setShowBadges] = useState(false);
+  const [companionEnabled, setCompanionEnabled] = useState(true);
   const [viewport, setViewport] = useState({ width: 390, height: 800, fov: FALLBACK_FOV });
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -240,10 +261,10 @@ export function ArExplorer({
   // 359° và 1° ra 180° — thẻ quay ngược một vòng mỗi lần đi qua hướng bắc.
   const smoothRef = useRef<{ x: number; y: number; pitch: number } | null>(null);
   const dragRef = useRef<{ x: number; y: number; heading: number; pitch: number } | null>(null);
-  const fetchedAtRef = useRef<Position | null>(null);
+  const fetchedAtRef = useRef<{ position: Position; realGps: boolean } | null>(null);
   // Lần nạp POI đang chạy / vừa lỗi — để nhịp GPS mỗi giây không huỷ rồi nạp lại liên tục.
   const fetchCtlRef = useRef<AbortController | null>(null);
-  const inflightRef = useRef<{ position: Position; radius: number } | null>(null);
+  const inflightRef = useRef<{ position: Position; radius: number; realGps: boolean } | null>(null);
   const fetchFailedAtRef = useRef(0);
   // Đã từng nhận sự kiện la bàn: đăng ký lại sau khi quay lại app không được đẩy về "kéo để xoay".
   const sensorSeenRef = useRef(false);
@@ -544,17 +565,31 @@ export function ArExplorer({
   useEffect(() => {
     if (!started) return;
     const here = { latitude: lat, longitude: lng };
+    const realGps = !usingFallback;
     const last = fetchedAtRef.current;
-    if (last && distanceMeters(last, here) < REFETCH_AFTER_METERS) return;
+    // Danh sách nạp bằng vị trí mặc định tuyệt đối không được chặn lần nạp đầu
+    // tiên bằng GPS thật, kể cả hai điểm tình cờ cách nhau dưới 40 m.
+    if (
+      last &&
+      last.realGps === realGps &&
+      distanceMeters(last.position, here) < REFETCH_AFTER_METERS
+    )
+      return;
     // GPS báo mỗi giây và toạ độ nhảy vài mét: huỷ lần nạp đang chạy theo từng nhịp thì
     // nạp chậm hơn 1 s sẽ không bao giờ xong, thẻ đứng yên dù người dùng đang đi.
     const pending = inflightRef.current;
-    if (pending && pending.radius === radius && distanceMeters(pending.position, here) < REFETCH_AFTER_METERS) return;
+    if (
+      pending &&
+      pending.radius === radius &&
+      pending.realGps === realGps &&
+      distanceMeters(pending.position, here) < REFETCH_AFTER_METERS
+    )
+      return;
     if (Date.now() - fetchFailedAtRef.current < FETCH_RETRY_MS) return;
     fetchCtlRef.current?.abort();
     const controller = new AbortController();
     fetchCtlRef.current = controller;
-    inflightRef.current = { position: here, radius };
+    inflightRef.current = { position: here, radius, realGps };
     setLoading(true);
     const params = new URLSearchParams({
       lat: lat.toFixed(6),
@@ -578,7 +613,7 @@ export function ArExplorer({
       .then(async (data) => {
         const stops = await busStops;
         if (controller.signal.aborted) return;
-        fetchedAtRef.current = here;
+        fetchedAtRef.current = { position: here, realGps };
         setPois([
           ...data,
           ...stops.map(
@@ -605,7 +640,7 @@ export function ArExplorer({
         inflightRef.current = null;
         setLoading(false);
       });
-  }, [apiBaseUrl, started, lat, lng, radius]);
+  }, [apiBaseUrl, started, lat, lng, radius, usingFallback]);
 
   // Check-in & huy hiệu của người dùng — nạp một lần khi mở.
   useEffect(() => {
@@ -641,6 +676,18 @@ export function ArExplorer({
     [pois, position, radius],
   );
 
+  // Cộng sai số GPS vào vùng neo tĩnh: điện thoại báo accuracy=12 m thì một
+  // POI cách 20 m vẫn có thể chính là nơi người dùng đang đứng. Kẹp ở 40 m để
+  // khu phố đông không biến toàn bộ thẻ thành "đã đến nơi".
+  const staticPoiDistance = Math.min(
+    STATIC_POI_MAX_METERS,
+    Math.max(STATIC_POI_BASE_METERS, (gps?.accuracy ?? 0) + STATIC_POI_BASE_METERS),
+  );
+  const arrivedPoi =
+    placed.find(
+      (poi) => poi.kind !== 'bus' && poi.distance <= staticDistanceForPoi(poi, staticPoiDistance),
+    ) ?? null;
+
   const nearby = placed.filter((poi) => poi.distance < NEAR_CHIP_METERS);
   // Trạm thưa hơn quán xá nhiều nên hay nằm ngoài khung hình — chip này cho biết
   // trạm gần nhất ở hướng nào dù chưa nhìn thấy.
@@ -655,22 +702,43 @@ export function ArExplorer({
     const pxPerDeg = width / fov;
     const horizonY = height / 2 + pose.pitch * pxPerDeg;
     const boxes: { left: number; right: number; top: number; bottom: number }[] = [];
-    const out: { poi: Placed; x: number; y: number; scale: number }[] = [];
+    const out: { poi: Placed; x: number; y: number; scale: number; fixed: boolean }[] = [];
+    // POI ở ngay vị trí hiện tại luôn xếp trước. Trước đây chúng bị loại hoàn
+    // toàn khi < 8 m, khiến đứng đúng cổng trường thì thẻ/nút biến mất và phải
+    // đi vòng ra xa mới thấy lại.
+    const fixedPois = placed.filter(
+      (poi) => poi.kind !== 'bus' && poi.distance <= staticDistanceForPoi(poi, staticPoiDistance),
+    );
+    const fixedSet = new Set(fixedPois);
+    // POI gần luôn có một slot trước POI xa. Nếu la bàn đang lệch, thẻ được kẹp
+    // ở mép màn hình để người dùng vẫn thấy và có thể chạm/điều hướng tới nó.
+    const priorityPois = placed.filter(
+      (poi) => poi.kind !== 'bus' && !fixedSet.has(poi) && poi.distance <= PRIORITY_NEAR_METERS,
+    );
+    const prioritySet = new Set(priorityPois);
     // Trạm xe buýt nằm lẫn hàng trăm POI xếp theo khoảng cách nên ở khu đông sẽ
     // bị MAX_CARDS/làn nuốt mất — cho vài trạm gần nhất đi trước.
     const stops = placed.filter((poi) => poi.kind === 'bus');
     const firstStops = new Set(stops.slice(0, BUS_RESERVED_CARDS));
-    const ordered = [...firstStops, ...placed.filter((poi) => !firstStops.has(poi))];
+    const ordered = [
+      ...fixedPois,
+      ...priorityPois,
+      ...firstStops,
+      ...placed.filter(
+        (poi) => !fixedSet.has(poi) && !prioritySet.has(poi) && !firstStops.has(poi),
+      ),
+    ];
     for (const poi of ordered) {
       if (out.length >= MAX_CARDS) break;
-      if (poi.distance < MIN_AR_DISTANCE) continue;
-      const offset = wrap180(poi.bearing - pose.heading);
-      if (Math.abs(offset) > fov / 2 + 4) continue;
-      const rawX = width / 2 + offset * pxPerDeg;
+      const fixed = fixedSet.has(poi);
+      const priority = prioritySet.has(poi);
+      const offset = fixed ? 0 : wrap180(poi.bearing - pose.heading);
+      if (!fixed && !priority && Math.abs(offset) > fov / 2 + 4) continue;
+      const rawX = fixed ? width / 2 : width / 2 + offset * pxPerDeg;
       const x = Math.max(CARD_EDGE_MARGIN_PX, Math.min(width - CARD_EDGE_MARGIN_PX, rawX));
       // Xa thì nổi cao hơn đường chân trời một chút và nhỏ hơn — gợi phối cảnh.
       const t = Math.min(1, poi.distance / radius);
-      const scale = 1 - t * 0.25;
+      const scale = fixed ? 1 : 1 - t * 0.25;
       // Kích thước thật đo từ DOM (đo được sau lần vẽ đầu); chưa đo thì ước lượng theo tên.
       const measured = cardSizes[poi.id];
       const textW = poi.name.length * CARD_CHAR_PX;
@@ -686,7 +754,10 @@ export function ArExplorer({
       const minY = TOP_SAFE_PX + h;
       const maxY = height - BOTTOM_SAFE_PX;
       if (minY > maxY) continue;
-      const baseY = Math.max(minY, Math.min(maxY, horizonY - 20 - t * 70));
+      // Thẻ tĩnh không đi theo pitch/la bàn nữa: neo tại 42% chiều cao để tên
+      // và nút không nhảy khi người dùng xoay điện thoại ngay tại POI.
+      const idealY = fixed ? height * 0.42 : horizonY - 20 - t * 70;
+      const baseY = Math.max(minY, Math.min(maxY, idealY));
       const hits = (cy: number) =>
         boxes.some(
           (b) =>
@@ -707,10 +778,10 @@ export function ArExplorer({
       }
       if (y === null) continue;
       boxes.push({ left, right: left + w, top: y - h, bottom: y });
-      out.push({ poi, x, y, scale });
+      out.push({ poi, x, y, scale, fixed });
     }
     return out;
-  }, [placed, pose, viewport, radius, cardSizes]);
+  }, [placed, pose, viewport, radius, cardSizes, staticPoiDistance]);
 
   // Đo thẻ đang hiển thị (offsetWidth/Height không bị scale làm lệch) để lần xếp sau
   // dùng kích thước thật. Chỉ set state khi lệch > 1px nên không lặp vô hạn.
@@ -726,7 +797,7 @@ export function ArExplorer({
       }
     }
     if (next) setCardSizes(next);
-  });
+  }, [cards, cardSizes]);
 
   const selected = placed.find((poi) => poi.id === selectedId) ?? null;
   const selectedOffset = selected ? wrap180(selected.bearing - pose.heading) : 0;
@@ -738,6 +809,31 @@ export function ArExplorer({
     () => new Set((checkInSummary?.checkins ?? []).map((item) => item.poiId)),
     [checkInSummary],
   );
+  const companionTarget = arrivedPoi ?? placed.find((poi) => poi.kind !== 'bus') ?? null;
+  const companionOffset = companionTarget ? wrap180(companionTarget.bearing - pose.heading) : 0;
+  const companionX = companionTarget
+    ? Math.max(
+        72,
+        Math.min(
+          viewport.width - 72,
+          viewport.width / 2 +
+            Math.max(-viewport.fov / 2, Math.min(viewport.fov / 2, companionOffset)) *
+              (viewport.width / viewport.fov) *
+              0.72,
+        ),
+      )
+    : viewport.width - 72;
+  const companionMessage = usingFallback
+    ? 'Cho mình vị trí GPS để cùng khám phá nhé!'
+    : arrivedPoi
+      ? `Tới ${arrivedPoi.name} rồi! Chạm để check-in.`
+      : companionTarget
+        ? Math.abs(companionOffset) <= 12
+          ? `${companionTarget.name} ở ngay phía trước!`
+          : `${companionTarget.name} ở bên ${companionOffset < 0 ? 'trái' : 'phải'}.`
+        : loading
+          ? 'Mình đang tìm địa điểm quanh đây…'
+          : 'Cùng mình đi khám phá nhé!';
   const canCheckIn = (poi: Placed) =>
     !!gps && !!sessionId && poi.distance <= CHECKIN_HOPELESS_METERS && checkingIn === null;
 
@@ -909,6 +1005,21 @@ export function ArExplorer({
         </div>
         <button
           type="button"
+          onClick={() => setCompanionEnabled((enabled) => !enabled)}
+          aria-pressed={companionEnabled}
+          className={cn(
+            'grid size-9 place-items-center rounded-full backdrop-blur transition',
+            companionEnabled
+              ? 'bg-emerald-400 text-emerald-950 shadow-[0_0_18px_rgba(52,211,153,0.45)]'
+              : 'bg-white/15 text-white hover:bg-white/25',
+          )}
+          aria-label={companionEnabled ? 'Ẩn bạn đồng hành AR' : 'Hiện bạn đồng hành AR'}
+          title={companionEnabled ? 'Ẩn bạn đồng hành AR' : 'Hiện bạn đồng hành AR'}
+        >
+          <Sparkles className="size-4" aria-hidden />
+        </button>
+        <button
+          type="button"
           onClick={() => {
             setSelectedId(null);
             setShowBadges((open) => !open);
@@ -957,7 +1068,7 @@ export function ArExplorer({
         <>
           {/* Thẻ địa điểm */}
           <div className="pointer-events-none absolute inset-0 z-10">
-            {cards.map(({ poi, x, y, scale }) => {
+            {cards.map(({ poi, x, y, scale, fixed }) => {
               const done = checkedIds.has(poi.id);
               return (
                 <button
@@ -988,16 +1099,20 @@ export function ArExplorer({
                       'w-full rounded-2xl px-3 py-1.5 text-left shadow-lg ring-1 backdrop-blur-md',
                       selectedId === poi.id
                         ? 'bg-emerald-500/90 ring-white/60'
-                        : done
-                          ? 'bg-amber-500/80 ring-amber-200/50'
-                          : poi.kind === 'bus'
-                            ? 'bg-blue-600/75 ring-blue-200/40'
-                            : 'bg-black/55 ring-white/20',
+                        : fixed
+                          ? 'bg-emerald-600/90 ring-emerald-100/70'
+                          : done
+                            ? 'bg-amber-500/80 ring-amber-200/50'
+                            : poi.kind === 'bus'
+                              ? 'bg-blue-600/75 ring-blue-200/40'
+                              : 'bg-black/55 ring-white/20',
                     )}
                   >
                     <span className="line-clamp-3 break-words text-[13px] font-semibold leading-tight">{poi.name}</span>
                     <span className="flex items-center gap-1.5 text-[11px] text-white/80">
-                      <span className="truncate">{poiSubtitle(poi)}</span>
+                      <span className="truncate">
+                        {fixed ? 'Bạn đã đến nơi · Chạm để check-in' : poiSubtitle(poi)}
+                      </span>
                       <span className="shrink-0 font-semibold text-white">{formatMeters(poi.distance)}</span>
                     </span>
                   </span>
@@ -1029,6 +1144,62 @@ export function ArExplorer({
               )}
               <span className="line-clamp-2 break-words text-left">{selected.name}</span>
               <span className="shrink-0 text-white/80">{formatMeters(selected.distance)}</span>
+            </button>
+          )}
+
+          {/* Bạn đồng hành AR: di chuyển theo hướng POI gần nhất, phản ứng khi tới
+              nơi và có thể chạm để mở thẻ địa điểm. Animation nằm ở lớp con để
+              không ghi đè phép translate dùng cho vị trí/parallax. */}
+          {companionEnabled && !showBadges && !selected && (
+            <button
+              type="button"
+              disabled={!companionTarget}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                if (!companionTarget) return;
+                setSelectedId(companionTarget.id);
+                if (sensorMode === 'drag') turnTo(companionTarget.bearing);
+              }}
+              className={cn(
+                'ar-companion pointer-events-auto absolute z-[19] flex w-[148px] flex-col items-center disabled:pointer-events-none',
+                arrivedPoi && 'ar-companion-celebrate',
+              )}
+              style={{
+                left: companionX,
+                bottom: 'clamp(168px, 24vh, 232px)',
+                transform: `translate(-50%, ${Math.max(-10, Math.min(10, pose.pitch * 0.18))}px)`,
+              }}
+              aria-label={companionTarget ? `${companionMessage} Chạm để mở ${companionTarget.name}` : companionMessage}
+            >
+              <span className="mb-1 max-w-[190px] rounded-2xl rounded-bl-sm border border-white/30 bg-black/65 px-3 py-2 text-center text-[11px] font-semibold leading-snug text-white shadow-xl backdrop-blur-md">
+                {companionMessage}
+              </span>
+              <span className="ar-companion-body relative block h-[112px] w-[108px] origin-bottom">
+                <span
+                  className="block size-full transition-transform duration-300"
+                  style={{ transform: companionOffset < -4 ? 'scaleX(-1)' : 'scaleX(1)' }}
+                >
+                  <img
+                    src="/ar-companion.webp"
+                    alt=""
+                    draggable={false}
+                    className="size-full object-contain drop-shadow-[0_10px_12px_rgba(0,0,0,0.38)]"
+                  />
+                </span>
+                <span className="ar-companion-shadow absolute bottom-0 left-1/2 h-2 w-16 -translate-x-1/2 rounded-full bg-black/35 blur-[2px]" aria-hidden />
+              </span>
+              {companionTarget && !arrivedPoi && (
+                <span className="mt-1 flex items-center gap-1 rounded-full border border-white/20 bg-emerald-500/85 px-2.5 py-1 text-[10px] font-bold text-white shadow-lg backdrop-blur">
+                  {Math.abs(companionOffset) <= 12 ? (
+                    <MapPin className="size-3" aria-hidden />
+                  ) : companionOffset < 0 ? (
+                    <ChevronLeft className="size-3" aria-hidden />
+                  ) : (
+                    <ChevronRight className="size-3" aria-hidden />
+                  )}
+                  {formatMeters(companionTarget.distance)}
+                </span>
+              )}
             </button>
           )}
 
@@ -1160,6 +1331,27 @@ export function ArExplorer({
               <div className="flex items-end gap-3">
                 <Radar placed={placed} heading={pose.heading} fov={viewport.fov} radius={radius} checked={checkedIds} />
                 <div className="min-w-0 flex-1 space-y-2">
+                  {arrivedPoi && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowBadges(false);
+                        setSelectedId(arrivedPoi.id);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-2xl bg-emerald-500/90 px-3 py-2 text-left text-xs font-semibold text-white shadow-lg backdrop-blur hover:bg-emerald-400/90"
+                    >
+                      <MapPin className="size-4 shrink-0" aria-hidden />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[10px] font-medium uppercase tracking-wider text-emerald-50/80">
+                          Bạn đã đến nơi
+                        </span>
+                        <span className="block truncate">{arrivedPoi.name}</span>
+                      </span>
+                      <span className="shrink-0 rounded-full bg-white/20 px-2 py-1">
+                        Mở check-in
+                      </span>
+                    </button>
+                  )}
                   {nearestStop && (
                     <button
                       type="button"

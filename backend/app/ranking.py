@@ -758,6 +758,7 @@ def nearest_pois(latitude: float, longitude: float, radius: int, limit: int) -> 
         SELECT
             id::text AS id,
             name,
+            category,
             category_label AS "categoryLabel",
             brand,
             ST_Y(location::geometry) AS latitude,
