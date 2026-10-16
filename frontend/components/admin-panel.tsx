@@ -51,9 +51,21 @@ type DailyActivity = {
   sessions: number;
   searches: number;
   navigations: number;
+  pageViews: number;
+  visits: number;
+  visitors: number;
 };
 
 type Overview = {
+  traffic: {
+    totalViews: number;
+    viewsToday: number;
+    viewsPeriod: number;
+    visitsPeriod: number;
+    browsersPeriod: number;
+    trackingSince: string | null;
+    devices: { device: string; views: number }[];
+  };
   periodDays: number;
   users: number;
   admins: number;
@@ -110,6 +122,7 @@ type Overview = {
 };
 
 const EVENT_LABELS: Record<string, string> = {
+  page_view: 'Mở website',
   search: 'Tìm kiếm',
   location_ping: 'Cập nhật vị trí',
   poi_impression: 'Hiển thị địa điểm',
@@ -146,6 +159,7 @@ type AdminReview = {
 
 const numberFormat = new Intl.NumberFormat('vi-VN');
 const dateFormat = new Intl.DateTimeFormat('vi-VN', {
+  timeZone: 'Asia/Ho_Chi_Minh',
   dateStyle: 'short',
   timeStyle: 'short',
 });
@@ -332,7 +346,7 @@ function OverviewTab({
     {
       label: 'Sự kiện 24 giờ',
       value: data.events24h,
-      hint: `${data.sessions24h} phiên truy cập · ${data.sessionsPeriod} phiên / ${period} ngày`,
+      hint: `${data.sessions24h} trình duyệt tương tác / 24 giờ · ${data.sessionsPeriod} / ${period} ngày`,
       icon: Activity,
       accent: 'text-emerald-600 dark:text-emerald-400',
     },
@@ -583,6 +597,78 @@ function OverviewTab({
       </section>
 
       <Section
+        title="Lượt truy cập website"
+        hint={
+          data.traffic.trackingSince
+            ? `Ghi nhận từ ${formatDate(data.traffic.trackingSince)} · giờ Việt Nam`
+            : 'Chưa có lượt truy cập được ghi nhận. Dữ liệu bắt đầu từ khi tính năng được bật.'
+        }
+      >
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {[
+            { label: 'Lượt tải trang hôm nay', value: data.traffic.viewsToday },
+            {
+              label: `Lượt tải trang / ${period} ngày`,
+              value: data.traffic.viewsPeriod,
+            },
+            {
+              label: `Phiên mở trang / ${period} ngày`,
+              value: data.traffic.visitsPeriod,
+            },
+            {
+              label: `Trình duyệt khác nhau / ${period} ngày`,
+              value: data.traffic.browsersPeriod,
+            },
+          ].map((item) => (
+            <div key={item.label} className="rounded-xl border bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">{item.label}</p>
+              <p className="mt-2 text-2xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">
+                {numberFormat.format(item.value)}
+              </p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 grid gap-4 md:grid-cols-[2fr_1fr]">
+          <div>
+            <ActivityChart days={data.dailyActivity} trafficOnly />
+          </div>
+          <div className="rounded-xl bg-muted/25 p-3">
+            <p className="mb-3 text-sm font-medium">Thiết bị truy cập</p>
+            {data.traffic.devices.length ? (
+              <BarList
+                items={data.traffic.devices.map((item) => ({
+                  label:
+                    (
+                      {
+                        mobile: 'Điện thoại',
+                        tablet: 'Máy tính bảng',
+                        desktop: 'Máy tính',
+                        unknown: 'Chưa xác định',
+                      } as Record<string, string>
+                    )[item.device] ?? 'Chưa xác định',
+                  value: item.views,
+                }))}
+                total={data.traffic.viewsPeriod}
+              />
+            ) : (
+              <EmptyLine />
+            )}
+            <p className="mt-3 text-xs text-muted-foreground">
+              Tổng cộng {numberFormat.format(data.traffic.totalViews)} lượt tải
+              trang từ khi bắt đầu ghi nhận.
+            </p>
+          </div>
+        </div>
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          Mỗi lần mở hoặc tải lại trang tính một lượt. Tải lại trong cùng một
+          tab vẫn thuộc cùng phiên mở trang. Trình duyệt được nhận diện trên
+          máy, không phải số người thực tế; xoá dữ liệu trình duyệt hoặc đổi máy
+          sẽ được tính riêng. Lượt truy cập gồm cả quản trị viên. Không lưu IP,
+          vị trí hay địa chỉ trang trong sự kiện truy cập.
+        </p>
+      </Section>
+
+      <Section
         title={`Hoạt động ${data.dailyActivity.length} ngày qua`}
         hint="Số sự kiện mỗi ngày (giờ Việt Nam) — rê chuột hoặc chạm vào cột để xem chi tiết"
       >
@@ -806,18 +892,42 @@ function downloadOverviewReport(data: Overview, loadedAt: Date) {
     [`Đánh giá mới / ${data.periodDays} ngày`, data.reviewsPeriod],
     ['Địa điểm đã lưu', data.savedPlaces],
     ['Sự kiện / 24 giờ', data.events24h],
-    [`Phiên / ${data.periodDays} ngày`, data.sessionsPeriod],
+    [`Trình duyệt tương tác / ${data.periodDays} ngày`, data.sessionsPeriod],
+    ['Lượt tải trang hôm nay', data.traffic.viewsToday],
+    [`Lượt tải trang / ${data.periodDays} ngày`, data.traffic.viewsPeriod],
+    [`Phiên mở trang / ${data.periodDays} ngày`, data.traffic.visitsPeriod],
+    [
+      `Trình duyệt truy cập / ${data.periodDays} ngày`,
+      data.traffic.browsersPeriod,
+    ],
+    ['Tổng lượt tải trang', data.traffic.totalViews],
+    ['Bắt đầu ghi nhận', data.traffic.trackingSince ?? 'Chưa ghi nhận'],
     ['Sự kiện đang chờ', data.eventsPending],
     ['Sự kiện lỗi', data.eventsFailed],
     [],
-    ['HOẠT ĐỘNG THEO NGÀY', 'Sự kiện', 'Phiên', 'Tìm kiếm', 'Chỉ đường'],
+    [
+      'HOẠT ĐỘNG THEO NGÀY',
+      'Sự kiện',
+      'Trình duyệt tương tác',
+      'Tìm kiếm',
+      'Chỉ đường',
+      'Lượt tải trang',
+      'Phiên mở trang',
+      'Trình duyệt truy cập',
+    ],
     ...data.dailyActivity.map((day) => [
       day.date,
       day.events,
       day.sessions,
       day.searches,
       day.navigations,
+      day.pageViews,
+      day.visits,
+      day.visitors,
     ]),
+    [],
+    ['THIẾT BỊ TRUY CẬP', 'Lượt tải trang'],
+    ...data.traffic.devices.map((item) => [item.device, item.views]),
     [],
     ['LOẠI SỰ KIỆN', 'Số lượng'],
     ...data.eventTypesPeriod.map((item) => [
@@ -959,21 +1069,43 @@ function BarList({
   );
 }
 
-type ActivityMetric = 'events' | 'sessions' | 'searches' | 'navigations';
+type ActivityMetric =
+  | 'events'
+  | 'sessions'
+  | 'searches'
+  | 'navigations'
+  | 'pageViews'
+  | 'visits'
+  | 'visitors';
 
 const ACTIVITY_METRICS: { key: ActivityMetric; label: string; unit: string }[] =
   [
     { key: 'events', label: 'Sự kiện', unit: 'sự kiện' },
-    { key: 'sessions', label: 'Phiên', unit: 'phiên' },
+    { key: 'sessions', label: 'Trình duyệt', unit: 'trình duyệt tương tác' },
     { key: 'searches', label: 'Tìm kiếm', unit: 'lượt tìm kiếm' },
     { key: 'navigations', label: 'Chỉ đường', unit: 'lượt chỉ đường' },
   ];
 
-function ActivityChart({ days }: { days: DailyActivity[] }) {
+const TRAFFIC_METRICS: { key: ActivityMetric; label: string; unit: string }[] =
+  [
+    { key: 'pageViews', label: 'Lượt tải trang', unit: 'lượt tải trang' },
+    { key: 'visits', label: 'Phiên mở trang', unit: 'phiên mở trang' },
+    { key: 'visitors', label: 'Trình duyệt', unit: 'trình duyệt' },
+  ];
+
+function ActivityChart({
+  days,
+  trafficOnly = false,
+}: {
+  days: DailyActivity[];
+  trafficOnly?: boolean;
+}) {
   const [active, setActive] = useState<number | null>(null);
-  const [metric, setMetric] = useState<ActivityMetric>('events');
-  const metricInfo =
-    ACTIVITY_METRICS.find((item) => item.key === metric) ?? ACTIVITY_METRICS[0];
+  const [metric, setMetric] = useState<ActivityMetric>(
+    trafficOnly ? 'pageViews' : 'events',
+  );
+  const metrics = trafficOnly ? TRAFFIC_METRICS : ACTIVITY_METRICS;
+  const metricInfo = metrics.find((item) => item.key === metric) ?? metrics[0];
   const max = Math.max(1, ...days.map((day) => day[metric]));
   const total = days.reduce((sum, day) => sum + day[metric], 0);
   const shown = active === null ? null : days[active];
@@ -982,7 +1114,7 @@ function ActivityChart({ days }: { days: DailyActivity[] }) {
     <div>
       <fieldset className="mb-3 flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1">
         <legend className="sr-only">Chỉ số biểu đồ</legend>
-        {ACTIVITY_METRICS.map((item) => (
+        {metrics.map((item) => (
           <button
             key={item.key}
             type="button"
@@ -1006,8 +1138,9 @@ function ActivityChart({ days }: { days: DailyActivity[] }) {
               {weekdayFormat.format(parseDay(shown.date))}
             </p>
             <p className="text-muted-foreground tabular-nums">
-              {numberFormat.format(shown.events)} sự kiện · {shown.sessions}{' '}
-              phiên · {shown.searches} tìm kiếm · {shown.navigations} chỉ đường
+              {trafficOnly
+                ? `${shown.pageViews} lượt tải trang · ${shown.visits} phiên · ${shown.visitors} trình duyệt`
+                : `${numberFormat.format(shown.events)} sự kiện · ${shown.sessions} trình duyệt tương tác · ${shown.searches} tìm kiếm · ${shown.navigations} chỉ đường`}
             </p>
           </>
         ) : (
@@ -1016,7 +1149,11 @@ function ActivityChart({ days }: { days: DailyActivity[] }) {
               {numberFormat.format(total)} {metricInfo.unit}
             </p>
             <p className="text-muted-foreground">
-              trung bình{' '}
+              {metric === 'visitors' ||
+              metric === 'visits' ||
+              metric === 'sessions'
+                ? 'Tổng theo ngày · trung bình'
+                : 'trung bình'}{' '}
               {numberFormat.format(
                 Math.round(total / Math.max(1, days.length)),
               )}{' '}

@@ -1998,6 +1998,7 @@ export function LocationExplorer() {
 
   useEffect(() => {
     const unsubscribe = telemetry.subscribe(setTelemetryState);
+    telemetry.capturePageView();
     // drain() thay vì flush(): flush chỉ tiêu thụ MỘT lô 50 sự kiện, mà hàng đợi
     // có thể tới 500 — đóng tab sẽ mất tới 450 sự kiện.
     const flush = () => void telemetry.drain();

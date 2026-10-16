@@ -69,6 +69,7 @@ def overview(days: int = _ACTIVITY_DAYS, database_url: str | None = None) -> dic
             {"days": days},
         ).fetchone()
         details = _overview_details(connection, days)
+        traffic = _traffic_overview(connection, days)
     return {
         "users": row["users"],
         "admins": row["admins"],
@@ -82,7 +83,94 @@ def overview(days: int = _ACTIVITY_DAYS, database_url: str | None = None) -> dic
         "savedPlaces": row["saved_places"],
         "events24h": row["events_24h"],
         **details,
+        "traffic": traffic,
     }
+
+
+def _traffic_overview(connection: Any, days: int) -> dict[str, Any]:
+    """Calendar periods match the daily chart and use Vietnam local time.
+
+    session_id is a browser ID in this app, not a person or a visit. A visit
+    groups page loads in one tab via sessionStorage. Historical searches and
+    GPS pings must never be retroactively presented as website views.
+    """
+    params = {"days": days, "tz": _LOCAL_TZ}
+    counts = connection.execute(
+        """
+        WITH bounds AS (
+            SELECT (NOW() AT TIME ZONE %(tz)s)::date::timestamp AT TIME ZONE %(tz)s AS today,
+                   ((NOW() AT TIME ZONE %(tz)s)::date - (%(days)s - 1))::timestamp
+                       AT TIME ZONE %(tz)s AS period_start
+        )
+        SELECT COUNT(*)::int AS total,
+               MIN(received_at) AS since,
+               COUNT(*) FILTER (WHERE received_at >= today)::int AS today,
+               COUNT(*) FILTER (WHERE received_at >= period_start)::int AS period,
+               COUNT(DISTINCT session_id) FILTER (WHERE received_at >= period_start)::int AS visitors,
+               COUNT(DISTINCT (session_id, COALESCE(metadata->>'visit_id', id::text)))
+                   FILTER (WHERE received_at >= period_start)::int AS visits
+        FROM ingestion_events CROSS JOIN bounds
+        WHERE event_type = 'page_view'
+        """, params,
+    ).fetchone()
+    devices = connection.execute(
+        """
+        SELECT CASE WHEN metadata->>'device' IN ('mobile', 'tablet', 'desktop')
+                    THEN metadata->>'device' ELSE 'unknown' END AS device,
+               COUNT(*)::int AS views
+        FROM ingestion_events
+        WHERE event_type = 'page_view'
+          AND received_at >= ((NOW() AT TIME ZONE %(tz)s)::date - (%(days)s - 1))::timestamp
+                              AT TIME ZONE %(tz)s
+        GROUP BY 1 ORDER BY 2 DESC, 1
+        """, params,
+    ).fetchall()
+    return {
+        "totalViews": counts["total"],
+        "viewsToday": counts["today"],
+        "viewsPeriod": counts["period"],
+        "visitsPeriod": counts["visits"],
+        "browsersPeriod": counts["visitors"],
+        "trackingSince": counts["since"].isoformat() if counts["since"] else None,
+        "devices": [{"device": row["device"], "views": row["views"]} for row in devices],
+    }
+
+
+def _daily_activity(connection: Any, days: int) -> list[dict[str, Any]]:
+    return connection.execute(
+        """
+        WITH days AS (
+            SELECT generate_series(
+                (NOW() AT TIME ZONE %(tz)s)::date - (%(days)s - 1),
+                (NOW() AT TIME ZONE %(tz)s)::date,
+                INTERVAL '1 day'
+            )::date AS day
+        ),
+        counted AS (
+            SELECT (received_at AT TIME ZONE %(tz)s)::date AS day,
+                   COUNT(*)::int AS events,
+                   COUNT(DISTINCT session_id)::int AS sessions,
+                   COUNT(*) FILTER (WHERE event_type = 'search')::int AS searches,
+                   COUNT(*) FILTER (WHERE event_type = 'navigation_start')::int AS navigations,
+                   COUNT(*) FILTER (WHERE event_type = 'page_view')::int AS page_views,
+                   COUNT(DISTINCT (session_id, COALESCE(metadata->>'visit_id', id::text)))
+                       FILTER (WHERE event_type = 'page_view')::int AS visits,
+                   COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'page_view')::int AS visitors
+            FROM ingestion_events
+            WHERE received_at >= ((NOW() AT TIME ZONE %(tz)s)::date - (%(days)s - 1))::timestamp
+                                 AT TIME ZONE %(tz)s
+            GROUP BY 1
+        )
+        SELECT days.day, COALESCE(c.events, 0) AS events, COALESCE(c.sessions, 0) AS sessions,
+               COALESCE(c.searches, 0) AS searches, COALESCE(c.navigations, 0) AS navigations,
+               COALESCE(c.page_views, 0) AS page_views, COALESCE(c.visits, 0) AS visits,
+               COALESCE(c.visitors, 0) AS visitors
+        FROM days LEFT JOIN counted c USING (day)
+        ORDER BY days.day
+        """,
+        {"tz": _LOCAL_TZ, "days": days},
+    ).fetchall()
+
 
 
 def _overview_details(connection: Any, days: int = _ACTIVITY_DAYS) -> dict[str, Any]:
@@ -115,33 +203,7 @@ def _overview_details(connection: Any, days: int = _ACTIVITY_DAYS) -> dict[str, 
         {"days": days},
     ).fetchone()
 
-    daily = connection.execute(
-        """
-        WITH days AS (
-            SELECT generate_series(
-                (NOW() AT TIME ZONE %(tz)s)::date - (%(days)s - 1),
-                (NOW() AT TIME ZONE %(tz)s)::date,
-                INTERVAL '1 day'
-            )::date AS day
-        ),
-        counted AS (
-            SELECT (received_at AT TIME ZONE %(tz)s)::date AS day,
-                   COUNT(*)::int AS events,
-                   COUNT(DISTINCT session_id)::int AS sessions,
-                   COUNT(*) FILTER (WHERE event_type = 'search')::int AS searches,
-                   COUNT(*) FILTER (WHERE event_type = 'navigation_start')::int AS navigations
-            FROM ingestion_events
-            WHERE received_at >= ((NOW() AT TIME ZONE %(tz)s)::date - (%(days)s - 1))
-                                 AT TIME ZONE %(tz)s
-            GROUP BY 1
-        )
-        SELECT days.day, COALESCE(c.events, 0) AS events, COALESCE(c.sessions, 0) AS sessions,
-               COALESCE(c.searches, 0) AS searches, COALESCE(c.navigations, 0) AS navigations
-        FROM days LEFT JOIN counted c USING (day)
-        ORDER BY days.day
-        """,
-        {"tz": _LOCAL_TZ, "days": days},
-    ).fetchall()
+    daily = _daily_activity(connection, days)
 
     event_types = connection.execute(
         """
@@ -263,6 +325,9 @@ def _overview_details(connection: Any, days: int = _ACTIVITY_DAYS) -> dict[str, 
                 "sessions": r["sessions"],
                 "searches": r["searches"],
                 "navigations": r["navigations"],
+                "pageViews": r["page_views"],
+                "visits": r["visits"],
+                "visitors": r["visitors"],
             }
             for r in daily
         ],

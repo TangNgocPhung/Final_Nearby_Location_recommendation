@@ -1,4 +1,5 @@
 export type TelemetryEventType =
+  | 'page_view'
   | 'search'
   | 'location_ping'
   // POI đã được HIỂN THỊ trong kết quả tìm kiếm (metadata: request_id, query, rank)
@@ -36,13 +37,22 @@ export type TelemetryState = {
 const STORAGE_KEY = 'nearby.session-id.v1';
 
 function createEventId(): string {
-  if (typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  if (typeof window.crypto.randomUUID === 'function')
+    return window.crypto.randomUUID();
   // LAN previews use HTTP, where randomUUID is unavailable on mobile browsers.
   const bytes = window.crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0'));
-  return [hex.slice(0, 4), hex.slice(4, 6), hex.slice(6, 8), hex.slice(8, 10), hex.slice(10)].map((part) => part.join('')).join('-');
+  return [
+    hex.slice(0, 4),
+    hex.slice(4, 6),
+    hex.slice(6, 8),
+    hex.slice(8, 10),
+    hex.slice(10),
+  ]
+    .map((part) => part.join(''))
+    .join('-');
 }
 
 class TelemetryClient {
@@ -56,6 +66,7 @@ class TelemetryClient {
   private dropped = 0;
   private failedRounds = 0;
   private timerDelay = Infinity;
+  private pageViewCaptured = false;
 
   constructor(apiBaseUrl: string) {
     this.apiBaseUrl = apiBaseUrl;
@@ -64,14 +75,49 @@ class TelemetryClient {
   get sessionId() {
     if (this.cachedSessionId) return this.cachedSessionId;
     if (typeof window === 'undefined') return '';
-    const existing = window.localStorage.getItem(STORAGE_KEY);
+    let existing: string | null = null;
+    try {
+      existing = window.localStorage.getItem(STORAGE_KEY);
+    } catch {
+      /* Storage may be disabled. */
+    }
     if (existing) {
       this.cachedSessionId = existing;
       return existing;
     }
     this.cachedSessionId = createEventId();
-    window.localStorage.setItem(STORAGE_KEY, this.cachedSessionId);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, this.cachedSessionId);
+    } catch {
+      /* Use the in-memory ID. */
+    }
     return this.cachedSessionId;
+  }
+
+  /** One view per document load; React remounts must not inflate the count.
+   * A visit groups reloads in one tab. No IP, full user agent or URL is sent. */
+  capturePageView() {
+    if (typeof window === 'undefined' || this.pageViewCaptured) return;
+    this.pageViewCaptured = true;
+    let visitId = createEventId();
+    try {
+      visitId = window.sessionStorage.getItem('nearby.visit-id.v1') || visitId;
+      window.sessionStorage.setItem('nearby.visit-id.v1', visitId);
+    } catch {
+      /* The page still counts when storage is unavailable. */
+    }
+    const ua = window.navigator.userAgent;
+    const device =
+      /iPad|Tablet|Android(?!.*Mobile)/i.test(ua) ||
+      (/Macintosh/i.test(ua) && window.navigator.maxTouchPoints > 1)
+        ? 'tablet'
+        : /Mobi|iPhone|iPod/i.test(ua)
+          ? 'mobile'
+          : 'desktop';
+    this.capture({
+      event_type: 'page_view',
+      metadata: { visit_id: visitId, device },
+    });
   }
 
   subscribe(listener: (state: TelemetryState) => void) {
@@ -161,9 +207,14 @@ class TelemetryClient {
         //
         // Nên với 4xx: vứt lô độc, đếm vào `dropped`, rồi đi tiếp. Mất 50 sự
         // kiện còn hơn mất tất cả sự kiện từ giây đó trở đi.
-        const permanent = response.status >= 400 && response.status < 500 && response.status !== 429;
+        const permanent =
+          response.status >= 400 &&
+          response.status < 500 &&
+          response.status !== 429;
         if (permanent) {
-          this.queue = this.queue.filter((item) => !batchIds.has(item.id as string));
+          this.queue = this.queue.filter(
+            (item) => !batchIds.has(item.id as string),
+          );
           this.dropped += batch.length;
           this.transport = 'fallback';
           return;
@@ -173,10 +224,13 @@ class TelemetryClient {
       const result = (await response.json()) as { delivery?: string };
       // Xóa theo DANH TÍNH, không theo vị trí: hàng đợi có thể đã bị cắt bớt
       // trong lúc request bay, khi đó splice(0, n) xóa nhầm sự kiện mới chưa gửi.
-      this.queue = this.queue.filter((item) => !batchIds.has(item.id as string));
+      this.queue = this.queue.filter(
+        (item) => !batchIds.has(item.id as string),
+      );
       this.delivered += batch.length;
       this.failedRounds = 0;
-      this.transport = result.delivery === 'redis-stream' ? 'online' : 'fallback';
+      this.transport =
+        result.delivery === 'redis-stream' ? 'online' : 'fallback';
     } catch {
       this.transport = 'offline';
       this.failedRounds += 1;

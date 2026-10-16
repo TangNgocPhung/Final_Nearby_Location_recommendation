@@ -12,6 +12,7 @@ class Coordinates(BaseModel):
 
 
 EventType = Literal[
+    "page_view",
     "search",
     "location_ping",
     "poi_impression",  # POI đã được HIỂN THỊ trong kết quả (metadata: request_id, query, rank)
