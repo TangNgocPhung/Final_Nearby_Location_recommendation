@@ -731,10 +731,15 @@ body {
 @keyframes ar-companion-walk {
   0%,
   100% {
-    transform: translateY(0) rotate(-1.5deg);
+    transform: translateY(0) rotate(-2deg) scale(1, 1);
   }
-  50% {
-    transform: translateY(-7px) rotate(1.5deg);
+  20%,
+  60% {
+    transform: translateY(-4px) rotate(2deg) scale(0.98, 1.02);
+  }
+  40%,
+  80% {
+    transform: translateY(0) rotate(-1deg) scale(1.03, 0.97);
   }
 }
 
@@ -763,13 +768,48 @@ body {
   }
 }
 
+@keyframes ar-companion-twinkle {
+  0%,
+  65%,
+  100% {
+    opacity: 0;
+    transform: translateY(2px) scale(0.5) rotate(-15deg);
+  }
+  25%,
+  45% {
+    opacity: 0.9;
+    transform: translateY(-3px) scale(1) rotate(10deg);
+  }
+}
+
 .ar-companion-body {
-  animation: ar-companion-walk 1.05s ease-in-out infinite;
+  animation: ar-companion-walk 3.2s ease-in-out infinite;
   will-change: transform;
 }
 
+.ar-companion-sprite {
+  transform-origin: bottom center;
+  transition: transform 180ms ease-out;
+}
+
+.ar-companion:is(:hover, :focus-visible) .ar-companion-sprite {
+  transform: translateY(-3px) rotate(-5deg) scale(1.07);
+}
+
+.ar-companion:active .ar-companion-sprite {
+  transform: scale(0.92, 0.88);
+}
+
+.ar-companion-sparkle {
+  animation: ar-companion-twinkle 2.8s ease-in-out infinite;
+}
+
+.ar-companion-sparkle-delayed {
+  animation-delay: -1.4s;
+}
+
 .ar-companion-shadow {
-  animation: ar-companion-shadow 1.05s ease-in-out infinite;
+  animation: ar-companion-shadow 1.6s ease-in-out infinite;
 }
 
 .ar-companion-celebrate .ar-companion-body {
@@ -778,8 +818,58 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .ar-companion-body,
+  .ar-companion-sparkle,
   .ar-companion-shadow,
   .ar-companion-celebrate .ar-companion-body {
     animation: none;
+  }
+
+  .ar-companion-sparkle {
+    opacity: 0;
+  }
+
+  .ar-companion-sprite {
+    transition: none;
+  }
+
+  .ar-companion:is(:hover, :focus-visible, :active) .ar-companion-sprite {
+    transform: none;
+  }
+}
+
+
+.ar-companion:focus-visible .ar-companion-message {
+  display: block;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ar-companion:hover .ar-companion-message {
+    display: block;
+  }
+}
+
+@media (max-width: 639px) {
+  .ar-tray {
+    padding: 1rem 0.75rem max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .ar-tray:not(.ar-tray-expanded) .ar-tray-extra {
+    display: none;
+  }
+
+  .ar-radar {
+    width: 64px;
+    height: 64px;
+  }
+
+  /* Keep the camera readable while the companion waits to be dragged. */
+  .ar-companion-body,
+  .ar-companion-shadow,
+  .ar-companion-celebrate .ar-companion-body {
+    animation: none;
+  }
+
+  .ar-companion-sparkle {
+    display: none;
   }
 }

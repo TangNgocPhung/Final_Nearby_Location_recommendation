@@ -916,6 +916,7 @@ export function LocationExplorer() {
   const [fogOn, setFogOn] = useState(false);
   const [fogGps, setFogGps] = useState<'waiting' | 'ok' | 'denied'>('waiting');
   const [fogDistrictsOpen, setFogDistrictsOpen] = useState(false);
+  const [fogDetailsOpen, setFogDetailsOpen] = useState(false);
   // Dưới lg bố cục là một ứng dụng ba màn: bản đồ luôn phủ kín vùng giữa, còn
   // "Tìm kiếm" và "Kết quả" là lớp phủ đè lên nó, chuyển bằng thanh tab dưới
   // đáy. Bản đồ KHÔNG bao giờ bị display:none — MapLibre đo khung 0×0 thì
@@ -4442,7 +4443,7 @@ export function LocationExplorer() {
                 )}
               >
                 <Navigation className="size-5" aria-hidden />
-                Bám theo
+                <span className="hidden lg:inline">Bám theo</span>
               </button>
             )}
             <button
@@ -4459,7 +4460,7 @@ export function LocationExplorer() {
               )}
             >
               <CloudFog className="size-5" aria-hidden />
-              Sương mù
+              <span className="hidden lg:inline">Sương mù</span>
             </button>
             <button
               type="button"
@@ -4487,7 +4488,20 @@ export function LocationExplorer() {
             </button>
           )}
           {fogOn && (
-            <div className="absolute left-3 top-[4.25rem] z-10 flex max-w-[calc(100%-9.5rem)] flex-col items-start gap-2 lg:left-4 lg:top-16 lg:max-w-xs">
+            <div className="absolute left-3 top-[4.25rem] z-10 flex max-w-[calc(100%-6.5rem)] flex-col items-start gap-2 lg:left-4 lg:top-16 lg:max-w-xs">
+            <button
+              type="button"
+              onClick={() => setFogDetailsOpen((open) => !open)}
+              aria-expanded={fogDetailsOpen}
+              aria-controls="fog-exploration-details"
+              className="flex max-w-full items-center gap-2 rounded-full border border-white/20 bg-slate-900/90 px-3 py-2 text-xs font-semibold text-white shadow-lg backdrop-blur-md"
+            >
+              <CloudFog className="size-4 shrink-0 text-emerald-300" aria-hidden />
+              <span className="truncate">{fogGps === 'denied' ? 'Bật định vị để khám phá' : `${(exploration.overview?.areaKm2 ?? 0).toLocaleString('vi-VN')} km² đã khám phá`}</span>
+              {fogDetailsOpen ? <ChevronUp className="size-4 shrink-0" aria-hidden /> : <ChevronDown className="size-4 shrink-0" aria-hidden />}
+            </button>
+            {fogDetailsOpen && (
+            <div id="fog-exploration-details" className="flex max-h-[min(50dvh,24rem)] w-full flex-col gap-2 overflow-y-auto overscroll-contain rounded-2xl">
             <div className="flex w-full items-center gap-2 rounded-2xl border border-slate-900/20 bg-slate-900/90 px-3 py-2 text-white shadow-lg backdrop-blur-md">
               <CloudFog className="size-5 shrink-0 text-emerald-300" aria-hidden />
               <div className="min-w-0 text-xs leading-tight">
@@ -4631,6 +4645,8 @@ export function LocationExplorer() {
                   </span>
                 </span>
               </button>
+            )}
+            </div>
             )}
             </div>
           )}

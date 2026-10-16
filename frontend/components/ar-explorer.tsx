@@ -5,6 +5,8 @@ import {
   BusFront,
   Camera,
   CameraOff,
+  ChevronDown,
+  ChevronUp,
   ChevronLeft,
   ChevronRight,
   Coffee,
@@ -252,6 +254,10 @@ export function ArExplorer({
   const [notice, setNotice] = useState<{ text: string; tone: 'success' | 'info' } | null>(null);
   const [showBadges, setShowBadges] = useState(false);
   const [companionEnabled, setCompanionEnabled] = useState(true);
+  const [trayExpanded, setTrayExpanded] = useState(false);
+  const [companionPosition, setCompanionPosition] = useState<{ x: number; y: number } | null>(null);
+  const companionDrag = useRef<{ id: number; x: number; y: number; left: number; top: number; moved: boolean } | null>(null);
+  const companionDragged = useRef(false);
   const [viewport, setViewport] = useState({ width: 390, height: 800, fov: FALLBACK_FOV });
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -729,7 +735,7 @@ export function ArExplorer({
       ),
     ];
     for (const poi of ordered) {
-      if (out.length >= MAX_CARDS) break;
+      if (out.length >= (width < 640 ? 3 : MAX_CARDS)) break;
       const fixed = fixedSet.has(poi);
       const priority = prioritySet.has(poi);
       const offset = fixed ? 0 : wrap180(poi.bearing - pose.heading);
@@ -811,18 +817,13 @@ export function ArExplorer({
   );
   const companionTarget = arrivedPoi ?? placed.find((poi) => poi.kind !== 'bus') ?? null;
   const companionOffset = companionTarget ? wrap180(companionTarget.bearing - pose.heading) : 0;
-  const companionX = companionTarget
-    ? Math.max(
-        72,
-        Math.min(
-          viewport.width - 72,
-          viewport.width / 2 +
-            Math.max(-viewport.fov / 2, Math.min(viewport.fov / 2, companionOffset)) *
-              (viewport.width / viewport.fov) *
-              0.72,
-        ),
-      )
-    : viewport.width - 72;
+  // Store relative coordinates so the chosen position survives screen rotation.
+  const companionLeft = Math.max(40, Math.min(viewport.width - 40, (companionPosition?.x ?? 0.83) * viewport.width));
+  const companionTop = Math.max(100, Math.min(viewport.height - 160, (companionPosition?.y ?? 0.56) * viewport.height));
+  const moveCompanion = (left: number, top: number) => setCompanionPosition({
+    x: Math.max(40, Math.min(viewport.width - 40, left)) / viewport.width,
+    y: Math.max(100, Math.min(viewport.height - 160, top)) / viewport.height,
+  });
   const companionMessage = usingFallback
     ? 'Cho mình vị trí GPS để cùng khám phá nhé!'
     : arrivedPoi
@@ -1100,7 +1101,7 @@ export function ArExplorer({
                       selectedId === poi.id
                         ? 'bg-emerald-500/90 ring-white/60'
                         : fixed
-                          ? 'bg-emerald-600/90 ring-emerald-100/70'
+                          ? 'bg-slate-900/85 ring-emerald-200/60'
                           : done
                             ? 'bg-amber-500/80 ring-amber-200/50'
                             : poi.kind === 'bus'
@@ -1108,10 +1109,10 @@ export function ArExplorer({
                               : 'bg-black/55 ring-white/20',
                     )}
                   >
-                    <span className="line-clamp-3 break-words text-[13px] font-semibold leading-tight">{poi.name}</span>
+                    <span className="line-clamp-2 break-words text-[13px] font-semibold leading-tight">{poi.name}</span>
                     <span className="flex items-center gap-1.5 text-[11px] text-white/80">
                       <span className="truncate">
-                        {fixed ? 'Bạn đã đến nơi · Chạm để check-in' : poiSubtitle(poi)}
+                        {fixed ? 'Chạm để check-in' : poiSubtitle(poi)}
                       </span>
                       <span className="shrink-0 font-semibold text-white">{formatMeters(poi.distance)}</span>
                     </span>
@@ -1147,46 +1148,90 @@ export function ArExplorer({
             </button>
           )}
 
-          {/* Bạn đồng hành AR: di chuyển theo hướng POI gần nhất, phản ứng khi tới
-              nơi và có thể chạm để mở thẻ địa điểm. Animation nằm ở lớp con để
-              không ghi đè phép translate dùng cho vị trí/parallax. */}
+          {/* Gợi ý + khay dưới xếp chung MỘT cột đáy: gợi ý luôn nằm ngay trên khay
+              dù khay cao bao nhiêu. Trước đây gợi ý đặt cố định bottom-44 (176px)
+              còn khay cao ~250px nên "Máy không có la bàn…", thông báo check-in
+              và "Đang tìm…" đè lên nội dung khay. */}
+          <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col">
+          {/* Bạn đồng hành có vị trí riêng, kéo không làm xoay camera AR. */}
           {companionEnabled && !showBadges && !selected && (
             <button
               type="button"
-              disabled={!companionTarget}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                if (!event.isPrimary || event.button !== 0) return;
+                event.currentTarget.setPointerCapture(event.pointerId);
+                companionDragged.current = false;
+                companionDrag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, left: companionLeft, top: companionTop, moved: false };
+              }}
+              onPointerMove={(event) => {
+                event.stopPropagation();
+                const drag = companionDrag.current;
+                if (!drag || drag.id !== event.pointerId) return;
+                const dx = event.clientX - drag.x;
+                const dy = event.clientY - drag.y;
+                if (Math.hypot(dx, dy) > 6) drag.moved = true;
+                if (drag.moved) {
+                  companionDragged.current = true;
+                  moveCompanion(drag.left + dx, drag.top + dy);
+                }
+              }}
+              onPointerUp={(event) => {
+                event.stopPropagation();
+                if (companionDrag.current?.id !== event.pointerId) return;
+                companionDrag.current = null;
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+              }}
+              onPointerCancel={(event) => {
+                event.stopPropagation();
+                companionDrag.current = null;
+                companionDragged.current = true;
+              }}
+              onLostPointerCapture={() => { companionDrag.current = null; }}
+              onKeyDown={(event) => {
+                const directions: Record<string, [number, number]> = { ArrowLeft: [-16, 0], ArrowRight: [16, 0], ArrowUp: [0, -16], ArrowDown: [0, 16] };
+                const delta = directions[event.key];
+                if (!delta) return;
+                event.preventDefault();
+                moveCompanion(companionLeft + delta[0], companionTop + delta[1]);
+              }}
               onClick={() => {
+                if (companionDragged.current) { companionDragged.current = false; return; }
                 if (!companionTarget) return;
                 setSelectedId(companionTarget.id);
                 if (sensorMode === 'drag') turnTo(companionTarget.bearing);
               }}
               className={cn(
-                'ar-companion pointer-events-auto absolute z-[19] flex w-[148px] flex-col items-center disabled:pointer-events-none',
+                'ar-companion pointer-events-auto fixed z-[19] flex w-20 touch-none cursor-grab active:cursor-grabbing flex-col items-center rounded-3xl outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-4 focus-visible:ring-offset-black/60 disabled:pointer-events-none',
                 arrivedPoi && 'ar-companion-celebrate',
               )}
               style={{
-                left: companionX,
-                bottom: 'clamp(168px, 24vh, 232px)',
-                transform: `translate(-50%, ${Math.max(-10, Math.min(10, pose.pitch * 0.18))}px)`,
+                left: companionLeft,
+                top: companionTop,
+                transform: 'translate(-50%, -50%)',
+                touchAction: 'none',
               }}
-              aria-label={companionTarget ? `${companionMessage} Chạm để mở ${companionTarget.name}` : companionMessage}
+              title="Kéo để di chuyển · Chạm để xem địa điểm"
+              aria-label={`${companionMessage} Kéo hoặc dùng phím mũi tên để di chuyển. Chạm để xem địa điểm.`}
             >
-              <span className="mb-1 max-w-[190px] rounded-2xl rounded-bl-sm border border-white/30 bg-black/65 px-3 py-2 text-center text-[11px] font-semibold leading-snug text-white shadow-xl backdrop-blur-md">
+              <span className="ar-companion-message absolute bottom-full mb-2 hidden w-[156px] rounded-2xl border border-white/25 bg-slate-950/80 px-2.5 py-1.5 text-center text-[11px] font-medium leading-snug text-white shadow-lg backdrop-blur-md">
                 {companionMessage}
               </span>
-              <span className="ar-companion-body relative block h-[112px] w-[108px] origin-bottom">
+              <span className="ar-companion-body relative block h-[clamp(44px,7dvh,60px)] w-[clamp(42px,6.5dvh,56px)] origin-bottom">
+                <Sparkles className="ar-companion-sparkle pointer-events-none absolute -right-1 top-2 size-3 text-amber-200" aria-hidden />
+                <Sparkles className="ar-companion-sparkle ar-companion-sparkle-delayed pointer-events-none absolute -left-1 bottom-5 size-2.5 text-emerald-200" aria-hidden />
                 <span
                   className="block size-full transition-transform duration-300"
                   style={{ transform: companionOffset < -4 ? 'scaleX(-1)' : 'scaleX(1)' }}
                 >
                   <img
-                    src="/ar-companion.webp"
+                    src="/ar-companion-v2.png"
                     alt=""
                     draggable={false}
-                    className="size-full object-contain drop-shadow-[0_10px_12px_rgba(0,0,0,0.38)]"
+                    className="ar-companion-sprite size-full object-contain drop-shadow-[0_5px_8px_rgba(0,0,0,0.38)]"
                   />
                 </span>
-                <span className="ar-companion-shadow absolute bottom-0 left-1/2 h-2 w-16 -translate-x-1/2 rounded-full bg-black/35 blur-[2px]" aria-hidden />
+                <span className="ar-companion-shadow absolute bottom-0 left-1/2 h-1.5 w-10 -translate-x-1/2 rounded-full bg-black/35 blur-[2px]" aria-hidden />
               </span>
               {companionTarget && !arrivedPoi && (
                 <span className="mt-1 flex items-center gap-1 rounded-full border border-white/20 bg-emerald-500/85 px-2.5 py-1 text-[10px] font-bold text-white shadow-lg backdrop-blur">
@@ -1203,11 +1248,6 @@ export function ArExplorer({
             </button>
           )}
 
-          {/* Gợi ý + khay dưới xếp chung MỘT cột đáy: gợi ý luôn nằm ngay trên khay
-              dù khay cao bao nhiêu. Trước đây gợi ý đặt cố định bottom-44 (176px)
-              còn khay cao ~250px nên "Máy không có la bàn…", thông báo check-in
-              và "Đang tìm…" đè lên nội dung khay. */}
-          <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col">
           <div className="pointer-events-none flex flex-col items-center gap-2 px-4 text-center">
             {notice && (
               <output
@@ -1248,9 +1288,15 @@ export function ArExplorer({
 
           {/* Khay dưới: radar + bán kính + "ngay quanh bạn" */}
           <div
-            className="ar-tray bg-gradient-to-t from-black/80 via-black/50 to-transparent px-4 pt-10 pb-[max(1rem,env(safe-area-inset-bottom))]"
+            className={cn('ar-tray', trayExpanded && 'ar-tray-expanded', 'bg-gradient-to-t from-black/80 via-black/50 to-transparent px-4 pt-10 pb-[max(1rem,env(safe-area-inset-bottom))]')}
             onPointerDown={(event) => event.stopPropagation()}
           >
+            {!showBadges && !selected && (
+              <button type="button" onClick={() => setTrayExpanded((open) => !open)} aria-expanded={trayExpanded} aria-controls="ar-browse-controls" className="mb-2 ml-auto flex items-center gap-1 rounded-full bg-slate-900/85 px-3 py-2 text-xs text-white sm:hidden">
+                {trayExpanded ? 'Thu gọn' : 'Thêm thông tin'}
+                {trayExpanded ? <ChevronDown className="size-4" aria-hidden /> : <ChevronUp className="size-4" aria-hidden />}
+              </button>
+            )}
             {showBadges ? (
               <BadgePanel
                 summary={checkInSummary}
@@ -1328,7 +1374,7 @@ export function ArExplorer({
                 )}
               </div>
             ) : (
-              <div className="flex items-end gap-3">
+              <div id="ar-browse-controls" className="flex items-end gap-3">
                 <Radar placed={placed} heading={pose.heading} fov={viewport.fov} radius={radius} checked={checkedIds} />
                 <div className="min-w-0 flex-1 space-y-2">
                   {arrivedPoi && (
@@ -1359,7 +1405,7 @@ export function ArExplorer({
                         setSelectedId(nearestStop.id);
                         if (sensorMode === 'drag') turnTo(nearestStop.bearing);
                       }}
-                      className="flex max-w-full items-center gap-1.5 rounded-full bg-blue-600/80 px-3 py-1 text-xs font-medium backdrop-blur hover:bg-blue-500/80"
+                      className="ar-tray-extra flex max-w-full items-center gap-1.5 rounded-full bg-slate-900/80 px-3 py-1 text-xs font-medium backdrop-blur hover:bg-blue-500/80"
                     >
                       <BusFront className="size-3.5 shrink-0" aria-hidden />
                       <span className="truncate">
@@ -1451,7 +1497,7 @@ function Radar({
   const half = toRad(fov / 2);
   const wedge = `M ${size / 2} ${size / 2} L ${size / 2 + r * Math.sin(-half)} ${size / 2 - r * Math.cos(half)} A ${r} ${r} 0 0 1 ${size / 2 + r * Math.sin(half)} ${size / 2 - r * Math.cos(half)} Z`;
   return (
-    <svg width={size} height={size} className="ar-radar shrink-0" aria-hidden>
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="ar-radar shrink-0" aria-hidden>
       <circle cx={size / 2} cy={size / 2} r={r} fill="rgb(0 0 0 / 45%)" stroke="rgb(255 255 255 / 35%)" />
       <circle cx={size / 2} cy={size / 2} r={r / 2} fill="none" stroke="rgb(255 255 255 / 15%)" />
       <path d={wedge} fill="rgb(16 185 129 / 30%)" />
