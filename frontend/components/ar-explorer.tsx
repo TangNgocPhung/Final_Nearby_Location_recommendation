@@ -29,6 +29,7 @@ import {
 import { useWakeLock } from '@/hooks/use-wake-lock';
 import { distanceMeters, formatMeters } from '@/lib/assistant';
 import { authHeaders } from '@/lib/auth';
+import { arArrivalDistance, arViewOffset } from '@/lib/ar-view';
 import { cn } from '@/lib/utils';
 
 /**
@@ -40,7 +41,8 @@ import { cn } from '@/lib/utils';
  * vị trí" chứ không bám hình — GPS lệch 10-20 m và la bàn trôi vài độ, thẻ chỉ
  * chỉ đúng phía, không dính vào mặt tiền. Khi đã tới rất gần, góc phương vị
  * không còn đáng tin vì nhiễu GPS lớn hơn khoảng cách tới POI; lúc đó thẻ được
- * chuyển sang chế độ tĩnh "đã đến nơi" thay vì biến mất khỏi camera.
+ * giữ độ cao thẻ ổn định và có lối mở check-in ở khay dưới; thẻ vẫn ẩn khi
+ * quay camera ra hướng khác.
  *
  * Máy không có cảm biến hướng (laptop) thì kéo màn hình để xoay — đủ để demo.
  *
@@ -113,26 +115,8 @@ const BADGE_ICONS: Record<string, LucideIcon> = {
 };
 
 const RADIUS_OPTIONS = [300, 600, 1_200] as const;
-/** POI gần hơn ngưỡng này được neo tĩnh giữa camera. Hướng tới một điểm cách
- * vài mét là vô nghĩa khi chính GPS có thể lệch 5–20 m. */
-const STATIC_POI_BASE_METERS = 15;
-/** Không để GPS báo sai số quá lớn biến mọi POI quanh đó thành thẻ tĩnh. */
-const STATIC_POI_MAX_METERS = 40;
-/** Khuôn viên rộng dùng điểm POI ở giữa khu đất, không phải tại cổng. */
-const STATIC_CATEGORY_METERS: Record<string, number> = {
-  school: 150,
-  university: 200,
-  park: 120,
-  theme_park: 120,
-  shopping_mall: 100,
-  sports_field: 100,
-  market: 80,
-};
-/** Các POI gần nhất luôn được dựng thẻ (kẹp ở mép nếu la bàn lệch), trước
- * khi xét POI xa. Điều này giúp nơi ngay trước mắt không bị POI xa chiếm slot. */
+/** Nearby places are considered first, but must still face the camera. */
 const PRIORITY_NEAR_METERS = 120;
-const staticDistanceForPoi = (poi: ArPoi, gpsDistance: number) =>
-  Math.max(gpsDistance, STATIC_CATEGORY_METERS[poi.category ?? ''] ?? 0);
 /** Thẻ còn trong khung nhưng tâm lệch sát mép thì kẹp vào đây để không bị cắt/khó bấm. */
 const CARD_EDGE_MARGIN_PX = 76;
 /** Bán kính check-in nhỏ nhất của server (`CHECKIN_RADIUS_METERS`) — chỉ để
@@ -682,17 +666,11 @@ export function ArExplorer({
     [pois, position, radius],
   );
 
-  // Cộng sai số GPS vào vùng neo tĩnh: điện thoại báo accuracy=12 m thì một
-  // POI cách 20 m vẫn có thể chính là nơi người dùng đang đứng. Kẹp ở 40 m để
-  // khu phố đông không biến toàn bộ thẻ thành "đã đến nơi".
-  const staticPoiDistance = Math.min(
-    STATIC_POI_MAX_METERS,
-    Math.max(STATIC_POI_BASE_METERS, (gps?.accuracy ?? 0) + STATIC_POI_BASE_METERS),
-  );
+  // Arrival hints only cover the immediate GPS area; large campuses must not
+  // appear as arrived or remain pinned when the camera turns away.
+  const staticPoiDistance = arArrivalDistance(gps?.accuracy ?? 0);
   const arrivedPoi =
-    placed.find(
-      (poi) => poi.kind !== 'bus' && poi.distance <= staticDistanceForPoi(poi, staticPoiDistance),
-    ) ?? null;
+    placed.find((poi) => poi.kind !== 'bus' && poi.distance <= staticPoiDistance) ?? null;
 
   const nearby = placed.filter((poi) => poi.distance < NEAR_CHIP_METERS);
   // Trạm thưa hơn quán xá nhiều nên hay nằm ngoài khung hình — chip này cho biết
@@ -713,11 +691,10 @@ export function ArExplorer({
     // toàn khi < 8 m, khiến đứng đúng cổng trường thì thẻ/nút biến mất và phải
     // đi vòng ra xa mới thấy lại.
     const fixedPois = placed.filter(
-      (poi) => poi.kind !== 'bus' && poi.distance <= staticDistanceForPoi(poi, staticPoiDistance),
+      (poi) => poi.kind !== 'bus' && poi.distance <= staticPoiDistance,
     );
     const fixedSet = new Set(fixedPois);
-    // POI gần luôn có một slot trước POI xa. Nếu la bàn đang lệch, thẻ được kẹp
-    // ở mép màn hình để người dùng vẫn thấy và có thể chạm/điều hướng tới nó.
+    // Nearby POIs have priority among cards actually inside the camera view.
     const priorityPois = placed.filter(
       (poi) => poi.kind !== 'bus' && !fixedSet.has(poi) && poi.distance <= PRIORITY_NEAR_METERS,
     );
@@ -737,10 +714,9 @@ export function ArExplorer({
     for (const poi of ordered) {
       if (out.length >= (width < 640 ? 3 : MAX_CARDS)) break;
       const fixed = fixedSet.has(poi);
-      const priority = prioritySet.has(poi);
-      const offset = fixed ? 0 : wrap180(poi.bearing - pose.heading);
-      if (!fixed && !priority && Math.abs(offset) > fov / 2 + 4) continue;
-      const rawX = fixed ? width / 2 : width / 2 + offset * pxPerDeg;
+      const offset = arViewOffset(poi.bearing, pose.heading, fov);
+      if (offset === null) continue;
+      const rawX = width / 2 + offset * pxPerDeg;
       const x = Math.max(CARD_EDGE_MARGIN_PX, Math.min(width - CARD_EDGE_MARGIN_PX, rawX));
       // Xa thì nổi cao hơn đường chân trời một chút và nhỏ hơn — gợi phối cảnh.
       const t = Math.min(1, poi.distance / radius);
@@ -760,8 +736,8 @@ export function ArExplorer({
       const minY = TOP_SAFE_PX + h;
       const maxY = height - BOTTOM_SAFE_PX;
       if (minY > maxY) continue;
-      // Thẻ tĩnh không đi theo pitch/la bàn nữa: neo tại 42% chiều cao để tên
-      // và nút không nhảy khi người dùng xoay điện thoại ngay tại POI.
+      // Keep nearby cards vertically steady, while their horizontal position
+      // and visibility follow the camera like every other place.
       const idealY = fixed ? height * 0.42 : horizonY - 20 - t * 70;
       const baseY = Math.max(minY, Math.min(maxY, idealY));
       const hits = (cy: number) =>
@@ -1326,8 +1302,9 @@ export function ArExplorer({
                   <button
                     type="button"
                     onClick={() => setSelectedId(null)}
-                    className="grid size-8 place-items-center rounded-full hover:bg-slate-100 dark:hover:bg-white/10"
-                    aria-label="Đóng"
+                    className="grid size-11 shrink-0 place-items-center rounded-full border border-slate-200 bg-slate-50 hover:bg-slate-100 dark:border-white/15 dark:bg-white/10 dark:hover:bg-white/15"
+                    aria-label="Đóng bảng địa điểm"
+                    title="Đóng bảng địa điểm"
                   >
                     <X className="size-4" />
                   </button>
@@ -1372,6 +1349,13 @@ export function ArExplorer({
                     </button>
                   </div>
                 )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(null)}
+                  className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
+                >
+                  <X className="size-4" aria-hidden /> Đóng bảng
+                </button>
               </div>
             ) : (
               <div id="ar-browse-controls" className="flex items-end gap-3">
