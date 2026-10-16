@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+
 import {
   Baby,
   Banknote,
@@ -312,6 +314,73 @@ const DEFAULT_STYLE: CoverStyle = {
   surface: 'bg-emerald-700 bg-linear-to-br from-emerald-600 via-teal-700 to-slate-900',
 };
 
+// Local assets keep the fallback available without an external image service.
+// These describe a category, never the actual place. Source URLs and license
+// are recorded in public/images/poi-covers/sources.json.
+const COVER_PHOTOS: Record<string, string> = Object.fromEntries(
+  Object.entries({
+    cafe: ['cafe', 'bakery', 'bar'],
+    restaurant: ['restaurant'],
+    park: ['park', 'playground', 'theme_park', 'florist', 'pet'],
+    shopping: [
+      'shopping',
+      'shopping_mall',
+      'clothes',
+      'supermarket',
+      'convenience',
+      'market',
+      'electronics',
+      'shoes',
+      'jewelry',
+      'optician',
+    ],
+    hotel: ['hotel', 'event_venue'],
+    school: ['school', 'kindergarten'],
+    university: ['university'],
+    healthcare: ['hospital', 'pharmacy', 'dentist'],
+    library: ['library', 'bookstore'],
+    sports: [
+      'gym',
+      'sports_field',
+      'swimming_pool',
+      'spa',
+      'beauty',
+      'hairdresser',
+    ],
+    transport: [
+      'airport',
+      'bus_station',
+      'train_station',
+      'parking',
+      'fuel',
+      'charging_station',
+      'car_repair',
+      'car_wash',
+    ],
+    city: [
+      'office',
+      'bank',
+      'atm',
+      'museum',
+      'gallery',
+      'landmark',
+      'theatre',
+      'cinema',
+      'place_of_worship',
+      'post_office',
+      'police',
+      'government',
+      'toilets',
+      'laundry',
+    ],
+  }).flatMap(([photo, categories]) =>
+    categories.map((category) => [
+      category,
+      `/images/poi-covers/${photo}.webp`,
+    ]),
+  ),
+);
+
 function initialOf(name: string): string {
   // Array.from chứ không phải name[0]: tên tiếng Việt có dấu tổ hợp, cắt theo
   // mã đơn vị UTF-16 có thể lấy ra nửa ký tự và hiện thành ô vuông.
@@ -328,8 +397,36 @@ export function PoiCover({
   category: string;
   className?: string;
 }) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const photoSrc = COVER_PHOTOS[category] ?? '/images/poi-covers/city.webp';
   const style = COVER_STYLES[category] ?? DEFAULT_STYLE;
   const Icon = style.icon;
+
+  if (failedSrc !== photoSrc) {
+    return (
+      <div
+        className={cn('relative size-full overflow-hidden bg-muted', className)}
+      >
+        <img
+          src={photoSrc}
+          alt={`Ảnh minh họa theo loại địa điểm, không phải ảnh thực tế của ${name}`}
+          className="size-full object-cover"
+          onError={() => setFailedSrc(photoSrc)}
+        />
+        <p className="absolute inset-x-0 bottom-0 bg-black/65 px-3 py-2 text-[11px] leading-snug text-white">
+          Ảnh minh họa theo loại địa điểm ·{' '}
+          <a
+            href="https://unsplash.com/license"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            Unsplash
+          </a>
+        </p>
+      </div>
+    );
+  }
 
   return (
     // Không có file ảnh thật để đổi sang thẻ <img> — đây là ảnh bìa SINH BẰNG

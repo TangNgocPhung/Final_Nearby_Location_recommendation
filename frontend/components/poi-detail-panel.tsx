@@ -1168,20 +1168,6 @@ export function PoiDetailPanel(props: {
             ) : (
               <div className="relative aspect-[16/10] w-full">
                 <PoiCover name={detail.name} category={detail.category} />
-                <p className="absolute inset-x-0 bottom-0 bg-black/45 px-3 py-1.5 text-[11px] leading-snug text-white/95">
-                  {/* BA trạng thái khác hẳn nhau, gộp bất kỳ hai cái nào cũng là
-                      nói sai về dữ liệu: "chưa hỏi nổi nguồn ảnh", "hỏi rồi,
-                      nguồn thật sự không có ảnh", và "nguồn CÓ ảnh nhưng trình
-                      duyệt tải không nổi" (mọi ảnh 404 nên brokenIds lọc sạch —
-                      xem ghi chú ở photoList). Tới được đây thì photoList chắc
-                      chắn rỗng, nên `photos.photos` còn phần tử tức là khác biệt
-                      chỉ có thể do brokenIds. */}
-                  {photos == null || photos.status === 'unavailable'
-                    ? 'Chưa dò được ảnh — hệ thống chưa hỏi được nguồn ảnh, không phải là địa điểm không có ảnh'
-                    : (photos.photos?.length ?? 0) > 0
-                      ? `Không tải được ảnh — nguồn có ${photos.photos.length} ảnh nhưng trình duyệt tải không nổi (file trên Wikimedia Commons đã bị đổi tên/gỡ, hoặc mạng chặn). KHÔNG phải là địa điểm không có ảnh.`
-                      : 'Chưa có ảnh cho địa điểm này'}
-                </p>
               </div>
             )}
           </div>

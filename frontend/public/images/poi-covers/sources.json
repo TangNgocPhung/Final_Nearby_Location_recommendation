@@ -1,0 +1,66 @@
+{
+  "usage": "Illustrative category covers only; never photographs of the selected POI.",
+  "license": "https://unsplash.com/license",
+  "photos": [
+    {
+      "file": "cafe.webp",
+      "source": "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 81366
+    },
+    {
+      "file": "restaurant.webp",
+      "source": "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 177254
+    },
+    {
+      "file": "park.webp",
+      "source": "https://images.unsplash.com/photo-1519331379826-f10be5486c6f?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 322144
+    },
+    {
+      "file": "shopping.webp",
+      "source": "https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 122206
+    },
+    {
+      "file": "hotel.webp",
+      "source": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 180884
+    },
+    {
+      "file": "school.webp",
+      "source": "https://images.unsplash.com/photo-1580582932707-520aed937b7b?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 100956
+    },
+    {
+      "file": "university.webp",
+      "source": "https://images.unsplash.com/photo-1562774053-701939374585?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 193684
+    },
+    {
+      "file": "healthcare.webp",
+      "source": "https://images.unsplash.com/photo-1519494026892-80bbd2d6fd0d?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 70810
+    },
+    {
+      "file": "city.webp",
+      "source": "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 159176
+    },
+    {
+      "file": "library.webp",
+      "source": "https://images.unsplash.com/photo-1507842217343-583bb7270b66?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 231884
+    },
+    {
+      "file": "sports.webp",
+      "source": "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 108424
+    },
+    {
+      "file": "transport.webp",
+      "source": "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1000&h=625&q=80&fm=webp",
+      "bytes": 88526
+    }
+  ]
+}
