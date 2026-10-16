@@ -56,6 +56,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { formatStreetAddress, type StreetAddress } from '@/lib/address';
 import { authHeaders, useAuth } from '@/lib/auth';
 import { cn, formatMeters } from '@/lib/utils';
+import { verifiedPlacePhotos } from '@/lib/verified-place-photos';
 
 /* ------------------------------------------------------------------ *
  * Kiểu dữ liệu — gõ ĐÚNG hợp đồng API, không thêm không bớt tên trường.
@@ -244,6 +245,7 @@ export type PoiPhoto = {
   source: string;
   sourceUrl: string;
   license: string | null;
+  licenseUrl?: string;
   attribution: string | null;
   authorAttributions?: { displayName?: string; uri?: string; photoUri?: string }[];
 };
@@ -629,7 +631,11 @@ export function PhotoCaption({
       {/* Ghi công + giấy phép là ĐIỀU KIỆN của giấy phép CC, không phải phần
           trang trí được phép cắt cho gọn. */}
       <p className="text-muted-foreground">
-        {photo.license ?? 'Giấy phép: chưa rõ'}
+        {photo.licenseUrl ? (
+          <a href={photo.licenseUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+            {photo.license}
+          </a>
+        ) : (photo.license ?? 'Giấy phép: chưa rõ')}
         {photo.attribution ? ` · ${photo.attribution}` : ''}
         {' · '}
         <a
@@ -726,8 +732,11 @@ export function PoiDetailPanel(props: {
   // ra khỏi danh sách rồi rơi về ảnh bìa sinh sẵn thì trung thực hơn hẳn.
   const photoList = useMemo(
     () =>
-      (photos?.photos ?? []).filter((photo) => !brokenIds.includes(photo.id)),
-    [photos, brokenIds],
+      [...verifiedPlacePhotos(detail), ...(photos?.photos ?? [])]
+        .filter((photo) => !brokenIds.includes(photo.id))
+        .filter((photo, index, all) =>
+          all.findIndex((item) => item.id === photo.id || item.url === photo.url) === index),
+    [detail, photos, brokenIds],
   );
   const poiId = detail?.id ?? null;
   const { views: streetViews, loading: streetLoading } = useStreetViews(
@@ -1092,7 +1101,7 @@ export function PoiDetailPanel(props: {
   const streetHero = !hasPlacePhoto && streetReady;
   // Chờ cả câu trả lời Mapillary trước khi vẽ ảnh bìa, để ảnh khu vực không
   // hiện một nhịp rồi bị thay.
-  const heroPending = photosPending || (!hasPlacePhoto && streetLoading);
+  const heroPending = !hasPlacePhoto && (photosPending || streetLoading);
   const today = detail.weekHours?.find((day) => day.isToday) ?? null;
   const amenityChips = toAmenityChips(detail.amenities);
   const histogram = detail.reviewSummary?.histogram ?? {};
